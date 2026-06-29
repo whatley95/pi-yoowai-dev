@@ -1,0 +1,260 @@
+import type { PlanResult, ReviewResult, SuggestResult, RecommendResult, JudgeResult } from "./types.js";
+
+export function buildPlanPrompt(task: string): { system: string; user: string } {
+  return {
+    system: `You are a senior software architect and planning expert.
+
+Your job is to break down a coding task into an actionable, ordered todo list with clear acceptance criteria for each step.
+
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+{
+  "summary": "one-sentence summary of the overall plan",
+  "todo": ["step 1", "step 2", "step 3"],
+  "acceptanceCriteria": ["criterion 1: when X happens Y should occur", "criterion 2: ..."]
+}
+
+Rules:
+- todo items must be concrete, verifiable, and ordered (what to do, not how to think about it)
+- acceptance criteria must be testable (specific checks, not vague goals)
+- Each todo item should be one small unit of work — the main agent should complete it in 1-2 turns
+- Maximum 5-8 todo items
+- Maximum 5 acceptance criteria
+- Do NOT include commentary, explanations, or any text outside the JSON`,
+
+    user: `Create a plan for this task:\n\n${task}`,
+  };
+}
+
+const REVIEW_RUBRIC = `Review rubric — check ALL of the following categories:
+
+1. ERROR HANDLING: Missing try/catch, null/undefined checks, boundary conditions, empty input handling
+2. IMPORTS & REFERENCES: Broken imports, undefined variables, wrong exports, missing module references
+3. CONVENTIONS: Violates project naming patterns, file structure, or coding style
+4. LOGIC: Type mismatches, race conditions, off-by-one errors, incorrect assumptions
+5. COMPLETENESS: Does the code actually implement what was described? Are all acceptance criteria met?
+
+For each issue found, provide a concrete, actionable fix suggestion. Do NOT suggest fixes that you cannot derive from the code shown.`;
+
+export function buildReviewPrompt(
+  description: string,
+  diff: string,
+  truncated: boolean,
+  acceptanceCriteria?: string[],
+): { system: string; user: string } {
+  const criteriaBlock = acceptanceCriteria?.length
+    ? `\n\nAcceptance criteria for this step:\n${acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
+    : "";
+
+  const truncationNotice = truncated
+    ? "\n\n⚠️ NOTE: The diff was truncated because it was too large. Review only what's visible."
+    : "";
+
+  return {
+    system: `You are a rigorous code reviewer. Your job is to catch bugs, mistakes, and quality issues that the developer missed.
+
+${REVIEW_RUBRIC}
+
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+{
+  "verdict": "pass" | "needs-work" | "blocked",
+  "issues": [
+    { "severity": "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
+  ],
+  "suggestions": ["improvement 1", "improvement 2"],
+  "consensus": true | false
+}
+
+Rules:
+- "verdict" is "pass" only if ALL rubric categories are clean — no issues at any severity
+- "verdict" is "blocked" if the code is fundamentally broken or cannot work as described
+- "verdict" is "needs-work" for anything in between
+- "consensus" is true when verdict is "pass" AND issues is empty
+- Each issue must include a specific, actionable suggestion
+- "file" and "line" are optional but strongly preferred when you can identify the exact location
+- Do NOT flag issues you cannot see evidence for in the diff
+- If code follows a pattern you don't recognize, do NOT flag it as a convention issue
+- Be strict but fair — flag real problems, not preferences`,
+
+    user: `Review this code change. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${criteriaBlock}${truncationNotice}`,
+  };
+}
+
+export function buildSuggestPrompt(question: string): { system: string; user: string } {
+  return {
+    system: `You are a senior developer giving practical advice.
+
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+{
+  "approaches": [
+    { "title": "approach name", "description": "what it is", "pros": ["pro 1", "pro 2"], "cons": ["con 1"] }
+  ]
+}
+
+Rules:
+- Provide 2-3 concrete approaches
+- Each approach must have at least one pro and one con
+- Be specific — no vague advice like "use a better pattern"
+- Do NOT include commentary outside the JSON`,
+
+    user: `I need advice on:\n\n${question}`,
+  };
+}
+
+export function buildRecommendPrompt(situation: string, planTodo?: string[]): { system: string; user: string } {
+  const planContext = planTodo?.length
+    ? `\n\nCurrent plan (check items already done):\n${planTodo.map((t, i) => `${i + 1}. ${t}`).join("\n")}`
+    : "";
+
+  return {
+    system: `You are an experienced pair programmer advising on what to do next.
+
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+{
+  "nextStep": "concrete, actionable next step",
+  "reasoning": "why this is the right step",
+  "alternatives": ["alternative 1", "alternative 2"]
+}
+
+Rules:
+- Return exactly ONE recommended step — be decisive
+- The step must be concrete and immediately actionable
+- Reasoning must explain the trade-off
+- Provide 1-2 alternatives that were considered but rejected`,
+
+    user: `Here's where I'm at:\n\n${situation}${planContext}\n\nWhat should I do next?`,
+  };
+}
+
+export function buildJudgePrompt(
+  description: string,
+  planTodo?: string[],
+  acceptanceCriteria?: string[],
+): { system: string; user: string } {
+  const planBlock = planTodo?.length
+    ? `\n\nOriginal plan:\n${planTodo.map((t, i) => `${i + 1}. ${t}`).join("\n")}`
+    : "";
+
+  const criteriaBlock = acceptanceCriteria?.length
+    ? `\n\nAcceptance criteria:\n${acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
+    : "";
+
+  return {
+    system: `You are a senior engineer performing a final holistic review of completed work.
+
+${REVIEW_RUBRIC}
+
+Additionally, check:
+6. PLAN COMPLETENESS: Does the completed work satisfy all items in the original plan?
+7. COHERENCE: Do all pieces work together? Is there anything contradictory?
+
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+{
+  "verdict": "pass" | "needs-work" | "blocked",
+  "issues": [
+    { "severity": "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
+  ],
+  "suggestions": ["improvement 1"],
+  "consensus": true | false,
+  "summary": "one-paragraph holistic assessment of the completed work"
+}
+
+Rules:
+- "consensus" is true only when verdict is "pass" AND issues is empty
+- Provide a real summary that captures the overall quality, not filler
+- If any plan step is incomplete, that's a medium-severity issue`,
+
+    user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}`,
+  };
+}
+
+export function parseJsonResponse<T>(text: string): T | null {
+  let cleaned = text.trim();
+
+  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    cleaned = fenceMatch[1].trim();
+  }
+
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch { /* continue */ }
+
+  const objMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (objMatch) {
+    try {
+      return JSON.parse(objMatch[0]) as T;
+    } catch { /* continue */ }
+  }
+
+  return null;
+}
+
+export function validatePlanResult(data: unknown): PlanResult | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const r = data as Record<string, unknown>;
+  if (!Array.isArray(r.todo) || !Array.isArray(r.acceptanceCriteria) || typeof r.summary !== "string") return null;
+  return {
+    todo: r.todo.map(String),
+    acceptanceCriteria: r.acceptanceCriteria.map(String),
+    summary: String(r.summary),
+  };
+}
+
+export function validateReviewResult(data: unknown): ReviewResult | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const r = data as Record<string, unknown>;
+  const verdict = r.verdict;
+  if (verdict !== "pass" && verdict !== "needs-work" && verdict !== "blocked") return null;
+  return {
+    verdict,
+    issues: Array.isArray(r.issues)
+      ? r.issues.filter((i: unknown) => i && typeof i === "object" && typeof (i as Record<string, unknown>).issue === "string")
+                 .map((i: Record<string, unknown>) => ({
+                   severity: ["high", "medium", "low"].includes(String(i.severity)) ? String(i.severity) as "high" | "medium" | "low" : "medium",
+                   file: typeof i.file === "string" ? i.file : undefined,
+                   line: typeof i.line === "number" ? i.line : undefined,
+                   issue: String(i.issue),
+                   suggestion: typeof i.suggestion === "string" ? i.suggestion : "",
+                 }))
+      : [],
+    suggestions: Array.isArray(r.suggestions) ? r.suggestions.map(String) : [],
+    consensus: r.consensus === true,
+  };
+}
+
+export function validateSuggestResult(data: unknown): SuggestResult | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const r = data as Record<string, unknown>;
+  if (!Array.isArray(r.approaches)) return null;
+  return {
+    approaches: r.approaches
+      .filter((a: unknown) => a && typeof a === "object" && typeof (a as Record<string, unknown>).title === "string")
+      .map((a: Record<string, unknown>) => ({
+        title: String(a.title),
+        description: typeof a.description === "string" ? a.description : "",
+        pros: Array.isArray(a.pros) ? a.pros.map(String) : [],
+        cons: Array.isArray(a.cons) ? a.cons.map(String) : [],
+      })),
+  };
+}
+
+export function validateRecommendResult(data: unknown): RecommendResult | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const r = data as Record<string, unknown>;
+  if (typeof r.nextStep !== "string" || typeof r.reasoning !== "string") return null;
+  return {
+    nextStep: r.nextStep,
+    reasoning: r.reasoning,
+    alternatives: Array.isArray(r.alternatives) ? r.alternatives.map(String) : [],
+  };
+}
+
+export function validateJudgeResult(data: unknown): JudgeResult | null {
+  const base = validateReviewResult(data);
+  if (!base) return null;
+  const r = data as Record<string, unknown>;
+  return {
+    ...base,
+    summary: typeof r.summary === "string" ? r.summary : "",
+  };
+}
