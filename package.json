@@ -1,7 +1,12 @@
 {
   "name": "pi-heyyoo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pair-programmer extension for Pi. Secondary model reviews, judges, suggests, and plans — catches mistakes the main agent misses.",
+  "homepage": "https://whatley.xyz",
+  "author": {
+    "name": "whatley.xyz",
+    "url": "https://whatley.xyz"
+  },
   "type": "module",
   "main": "src/index.ts",
   "files": [

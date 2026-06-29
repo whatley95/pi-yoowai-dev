@@ -3,6 +3,9 @@ import { Type } from "@sinclair/typebox";
 import { loadHeyyooConfig } from "./config.js";
 import { callSecondaryModel } from "./secondary-model.js";
 import { getDiff, getVcsInfo } from "./diff-grabber.js";
+
+const VERSION = "0.2.0";
+const HOMEPAGE = "https://whatley.xyz";
 import {
   buildPlanPrompt,
   buildReviewPrompt,
@@ -474,39 +477,40 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("yoo", {
-    description: "Show yoo pair-programmer configuration and status",
+    description: "Show yoo pair-programmer status card",
     handler: async (_args, ctx) => {
       const config = loadHeyyooConfig(ctx.cwd);
       const state = getState(ctx.cwd);
       const cost = getSessionCost(ctx.cwd);
       const conventions = loadConventions(ctx.cwd);
+      const vcs = getVcsInfo(ctx.cwd);
+
+      const modelLine = config.secondary.provider && config.secondary.id
+        ? `${config.secondary.provider}:${config.secondary.id}${config.secondary.thinking ? ` • ${config.secondary.thinking}` : ""}`
+        : "not configured";
+
+      const planLine = state.plan
+        ? `${state.completedSteps}/${state.totalSteps} steps — ${state.plan.summary}`
+        : "no active plan";
+
+      const vcsLine = vcs.type === "unknown"
+        ? "no VCS"
+        : `${vcs.type}${vcs.branch ? ` • ${vcs.branch}` : ""}${vcs.revision ? ` • ${vcs.revision.slice(0, 8)}` : ""}${vcs.dirty ? " • dirty" : ""}`;
 
       const lines = [
-        "── yoo pair-programmer ──",
+        `pi-heyyoo v${VERSION}`,
+        HOMEPAGE,
         "",
-        "Secondary model:",
-        config.secondary.provider && config.secondary.id
-          ? `  ${config.secondary.provider}:${config.secondary.id}` + (config.secondary.thinking ? ` • ${config.secondary.thinking}` : "")
-          : "  not configured — set pi-heyyoo.secondary in settings.json",
+        `Model: ${modelLine}`,
+        `Plan: ${planLine}`,
+        `VCS: ${vcsLine}`,
+        `Cost: ${formatCost(cost.costUsd)} (${cost.calls} calls)`,
+        conventions ? `Conventions: ${conventions.stack} (${conventions.naming})` : "Conventions: not scanned",
         "",
-        `Session cost: ${formatCost(cost.costUsd)} (${cost.calls} call${cost.calls === 1 ? "" : "s"})`,
-        "",
-        "Session plan:",
-        state.plan
-          ? `  ${state.completedSteps}/${state.totalSteps} steps completed`
-          : "  no active plan",
-        state.plan
-          ? `  ${state.plan.todo.map((t, i) => `${state.completedSteps > i ? " ✓" : " ·"} ${t}`).join("\n  ")}`
-          : "",
-        "",
-        conventions ? `Project conventions: ${conventions.stack} (${conventions.naming})` : "Project conventions: not scanned — run yoo({ scan: true })",
-        "",
-        "Configure: /yoo-model to interactively pick a model",
-        "          /yoo-config <provider.model> for quick setup",
-        "          /yoo-info for detailed diagnostics",
+        "/yoo-status · detailed diagnostics  /yoo-model · pick model  /yoo-clear · reset",
       ];
 
-      await ctx.ui.select("yoo status", lines.filter(Boolean));
+      await ctx.ui.select("yoo status", lines);
     },
   });
 
@@ -615,7 +619,8 @@ export default function (pi: ExtensionAPI) {
       const vcs = getVcsInfo(ctx.cwd);
 
       const lines = [
-        "── yoo status ──",
+        `pi-heyyoo v${VERSION}`,
+        HOMEPAGE,
         "",
         "Configuration:",
         config.secondary.provider && config.secondary.id
@@ -672,6 +677,11 @@ export default function (pi: ExtensionAPI) {
         lines.push("  Not scanned — run yoo({ scan: true })");
       }
 
+      lines.push(
+        "",
+        `${HOMEPAGE} · pi-heyyoo v${VERSION}`,
+      );
+
       await ctx.ui.select("yoo status", lines.filter(Boolean));
     },
   });
@@ -679,7 +689,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("yoo-info", {
     description: "Alias for /yoo-status",
     handler: async (_args, ctx) => {
-      ctx.ui.notify("Use /yoo-status for detailed diagnostics.", "info");
+      ctx.ui.notify(`pi-heyyoo v${VERSION} · ${HOMEPAGE} — use /yoo-status for detailed diagnostics.`, "info");
     },
   });
 
