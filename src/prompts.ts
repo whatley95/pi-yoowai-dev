@@ -134,6 +134,7 @@ export function buildJudgePrompt(
   description: string,
   planTodo?: string[],
   acceptanceCriteria?: string[],
+  reviewHistory?: string,
 ): { system: string; user: string } {
   const planBlock = planTodo?.length
     ? `\n\nOriginal plan:\n${planTodo.map((t, i) => `${i + 1}. ${t}`).join("\n")}`
@@ -143,6 +144,10 @@ export function buildJudgePrompt(
     ? `\n\nAcceptance criteria:\n${acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
     : "";
 
+  const historyBlock = reviewHistory
+    ? `\n\n<review_history>\nStep-by-step review results:\n${reviewHistory}\n</review_history>`
+    : "";
+
   return {
     system: `You are a senior engineer performing a final holistic review of completed work.
 
@@ -150,7 +155,8 @@ ${REVIEW_RUBRIC}
 
 Additionally, check:
 6. PLAN COMPLETENESS: Does the completed work satisfy all items in the original plan?
-7. COHERENCE: Do all pieces work together? Is there anything contradictory?
+7. REVIEW HISTORY: Look at the review_history below. Every plan step should have been reviewed and passed before judging. If ANY step was not reviewed, that is a blocking issue.
+8. COHERENCE: Do all pieces work together? Is there anything contradictory?
 
 Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
 {
@@ -166,9 +172,10 @@ Return ONLY a JSON object with this exact structure — no extra text, no markdo
 Rules:
 - "consensus" is true only when verdict is "pass" AND issues is empty
 - Provide a real summary that captures the overall quality, not filler
-- If any plan step is incomplete, that's a medium-severity issue`,
+- If any plan step is incomplete or unreviewed, that's a medium-severity issue
+- Check the review_history — unreviewed steps are blocking`,
 
-    user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}`,
+    user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}${historyBlock}`,
   };
 }
 

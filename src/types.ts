@@ -27,6 +27,9 @@ export interface ReviewResult {
   issues: ReviewIssue[];
   suggestions: string[];
   consensus: boolean;
+  planProgress?: string;
+  nextStep?: string;
+  escalated?: boolean;
 }
 
 export interface Approach {
@@ -54,6 +57,7 @@ export interface HeyyooSessionState {
   plan?: PlanResult;
   completedSteps: number;
   totalSteps: number;
+  reviewRounds: number;
 }
 
 export type YooAction = "plan" | "review" | "suggest" | "recommend" | "judge";

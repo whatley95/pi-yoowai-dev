@@ -59,31 +59,40 @@ The `yoo` tool is called by the main agent during development:
 | `/yoo` | Show current configuration and session plan status |
 | `/yoo-model` | Interactively pick the secondary model from configured providers |
 | `/yoo-config <provider.model>` | Guide for configuring the secondary model |
+| `/yoo-clear` | Clear the active plan and reset session state |
 
-## Flow
+## Process flow
 
 ```
 yoo.plan("refactor auth")
-  → Plan: 3 steps, 4 acceptance criteria
+  → Plan: 5 steps, 4 acceptance criteria
 
 yoo.review("wrote verifySession middleware")
   → git diff → secondary model
   → verdict: "needs-work" — 2 issues found
+  → Progress: 0/5 steps done
 
   [fix issues...]
 
 yoo.review("fixed error handling")
   → verdict: "pass" — consensus ✓
+  → Progress: 1/5 steps done
+  → Next: migrate login route
 
   [next step...]
 
 yoo.review("migrated all routes")
   → verdict: "pass" — consensus ✓
+  → Progress: 4/5 steps done
 
 yoo.judge("auth refactor complete")
-  → final review against plan
+  → final review against plan + review history
   → verdict: "pass" — all work complete ✓
 ```
+
+### Escalation
+
+If the same step fails review **3 times in a row**, yoo adds an escalation notice suggesting the main agent ask the user for guidance or try a fundamentally different approach. This prevents infinite fix-loop cycles.
 
 ## How it works
 

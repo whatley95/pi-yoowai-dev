@@ -36,6 +36,11 @@ export function renderResult(result: unknown, _opts: { expanded: boolean }, them
     }
     if (r.review.consensus) {
       lines.push(`  ${theme.fg("green", "consensus: both agents agree")}`);
+      if (r.review.planProgress) lines.push(`  ${theme.fg("dim", r.review.planProgress)}`);
+      if (r.review.nextStep) lines.push(`  ${theme.fg("bold", `next: ${r.review.nextStep}`)}`);
+    }
+    if (r.review.escalated) {
+      lines.push(`  ${theme.fg("error", "escalated: 3+ review failures")}`);
     }
   }
 

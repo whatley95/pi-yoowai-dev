@@ -20,6 +20,7 @@ export function loadState(cwd: string): HeyyooSessionState | null {
       plan: data.plan as HeyyooSessionState["plan"] | undefined,
       completedSteps: typeof data.completedSteps === "number" ? data.completedSteps : 0,
       totalSteps: typeof data.totalSteps === "number" ? data.totalSteps : 0,
+      reviewRounds: typeof data.reviewRounds === "number" ? data.reviewRounds : 0,
     };
   } catch {
     return null;
@@ -33,6 +34,7 @@ export function saveState(cwd: string, state: HeyyooSessionState): void {
     plan: state.plan,
     completedSteps: state.completedSteps,
     totalSteps: state.totalSteps,
+    reviewRounds: state.reviewRounds,
   }, null, 2), { encoding: "utf-8", mode: 0o600 });
 }
 

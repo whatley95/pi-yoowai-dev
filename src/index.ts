@@ -17,7 +17,7 @@ import {
   validateJudgeResult,
 } from "./prompts.js";
 import { renderCall, renderResult } from "./render.js";
-import { loadState, saveState } from "./plan-store.js";
+import { loadState, saveState, clearState } from "./plan-store.js";
 import type { YooToolParams, YooToolResult, HeyyooSessionState, PlanResult } from "./types.js";
 
 const sessionStates = new Map<string, HeyyooSessionState>();
@@ -25,7 +25,7 @@ const sessionStates = new Map<string, HeyyooSessionState>();
 function getState(cwd: string): HeyyooSessionState {
   let state = sessionStates.get(cwd);
   if (!state) {
-    state = loadState(cwd) ?? { completedSteps: 0, totalSteps: 0 };
+    state = loadState(cwd) ?? { completedSteps: 0, totalSteps: 0, reviewRounds: 0 };
     sessionStates.set(cwd, state);
   }
   return state;
@@ -36,6 +36,7 @@ function setPlan(cwd: string, plan: PlanResult): void {
   state.plan = plan;
   state.totalSteps = plan.todo.length;
   state.completedSteps = 0;
+  state.reviewRounds = 0;
   saveState(cwd, state);
 }
 
@@ -43,8 +44,39 @@ function markStepComplete(cwd: string): void {
   const state = getState(cwd);
   if (state.totalSteps > 0 && state.completedSteps < state.totalSteps) {
     state.completedSteps++;
+    state.reviewRounds = 0;
     saveState(cwd, state);
   }
+}
+
+function incrementReviewRounds(cwd: string): void {
+  const state = getState(cwd);
+  state.reviewRounds++;
+  saveState(cwd, state);
+}
+
+function getProgress(cwd: string): { current: number; total: number; nextStep?: string } {
+  const state = getState(cwd);
+  const current = state.completedSteps;
+  const total = state.totalSteps;
+  const nextStep = state.plan?.todo[current] ?? undefined;
+  return { current, total, nextStep };
+}
+
+function buildReviewHistory(cwd: string): string {
+  const state = getState(cwd);
+  if (!state.plan || state.plan.todo.length === 0) return "";
+  const lines: string[] = [];
+  for (let i = 0; i < state.plan.todo.length; i++) {
+    if (i < state.completedSteps) {
+      lines.push(`✓ Step ${i + 1}: ${state.plan.todo[i]} — reviewed and passed`);
+    } else if (i === state.completedSteps) {
+      lines.push(`→ Step ${i + 1}: ${state.plan.todo[i]} — current (may or may not be done)`);
+    } else {
+      lines.push(`· Step ${i + 1}: ${state.plan.todo[i]} — not yet started`);
+    }
+  }
+  return lines.join("\n");
 }
 
 const MAX_SESSION_CONTEXT_CHARS = 4000;
@@ -139,6 +171,18 @@ async function executeYooReview(
 
   if (review.consensus) {
     markStepComplete(cwd);
+    const progress = getProgress(cwd);
+    review.planProgress = `${progress.current}/${progress.total} steps done`;
+    if (progress.nextStep) {
+      review.nextStep = progress.nextStep;
+    }
+  } else {
+    incrementReviewRounds(cwd);
+    const updatedState = getState(cwd);
+    if (updatedState.reviewRounds >= 3) {
+      review.escalated = true;
+      review.suggestions.push("This step has failed review 3 times. Consider asking the user for guidance or trying a fundamentally different approach.");
+    }
   }
 
   return { action: "review", review };
@@ -200,7 +244,8 @@ async function executeYooJudge(
   }
 
   const state = getState(cwd);
-  const { system, user } = buildJudgePrompt(description, state.plan?.todo, state.plan?.acceptanceCriteria);
+  const reviewHistory = buildReviewHistory(cwd);
+  const { system, user } = buildJudgePrompt(description, state.plan?.todo, state.plan?.acceptanceCriteria, reviewHistory);
   const raw = await callSecondaryModel(config.secondary.provider, config.secondary.id, system, user, signal);
   const parsed = parseJsonResponse(raw);
   const judge = validateJudgeResult(parsed);
@@ -423,6 +468,15 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(`Secondary model set to ${provider}:${modelId} (${thinking}). /reload to apply.`, "info");
     },
   });
+
+  pi.registerCommand("yoo-clear", {
+    description: "Clear the active yoo plan and session state",
+    handler: async (_args, ctx) => {
+      sessionStates.delete(ctx.cwd);
+      clearState(ctx.cwd);
+      ctx.ui.notify("yoo plan and state cleared.", "info");
+    },
+  });
 }
 
 function formatResultText(result: YooToolResult): string {
@@ -471,8 +525,17 @@ function formatResultText(result: YooToolResult): string {
 
     if (result.review.consensus) {
       lines.push("**Consensus:** Both agents agree — step is complete.");
+      if (result.review.planProgress) {
+        lines.push(`**Progress:** ${result.review.planProgress}`);
+      }
+      if (result.review.nextStep) {
+        lines.push(`**Next step:** ${result.review.nextStep}`);
+      }
     } else if (result.review.verdict === "needs-work") {
       lines.push("**Action:** Fix the issues above and call `yoo.review` again.");
+      if (result.review.escalated) {
+        lines.push("⚠️ **Escalation:** This step has failed review 3+ times. Consider asking the user for guidance or a different approach.");
+      }
     }
   }
 
