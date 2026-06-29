@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "@sinclair/typebox";
 import { loadHeyyooConfig } from "./config.js";
 import { callSecondaryModel } from "./secondary-model.js";
-import { getDiff } from "./diff-grabber.js";
+import { getDiff, getVcsInfo } from "./diff-grabber.js";
 import {
   buildPlanPrompt,
   buildReviewPrompt,
@@ -503,6 +503,7 @@ export default function (pi: ExtensionAPI) {
         "",
         "Configure: /yoo-model to interactively pick a model",
         "          /yoo-config <provider.model> for quick setup",
+        "          /yoo-info for detailed diagnostics",
       ];
 
       await ctx.ui.select("yoo status", lines.filter(Boolean));
@@ -601,6 +602,84 @@ export default function (pi: ExtensionAPI) {
       } catch (err) {
         ctx.ui.notify(`Failed to save yoo model config: ${err instanceof Error ? err.message : String(err)}`, "error");
       }
+    },
+  });
+
+  pi.registerCommand("yoo-status", {
+    description: "Show detailed yoo status (config, plan, VCS, conventions, memory)",
+    handler: async (_args, ctx) => {
+      const config = loadHeyyooConfig(ctx.cwd);
+      const state = getState(ctx.cwd);
+      const cost = getSessionCost(ctx.cwd);
+      const conventions = loadConventions(ctx.cwd);
+      const vcs = getVcsInfo(ctx.cwd);
+
+      const lines = [
+        "── yoo status ──",
+        "",
+        "Configuration:",
+        config.secondary.provider && config.secondary.id
+          ? `  Secondary model: ${config.secondary.provider}:${config.secondary.id}`
+          : "  Secondary model: not configured",
+        config.secondary.thinking ? `  Thinking level: ${config.secondary.thinking}` : "",
+        `  Auto-judge: ${config.autoJudge ? "enabled" : "disabled"}`,
+        config.preReviewCommands && config.preReviewCommands.length > 0
+          ? `  Pre-review commands: ${config.preReviewCommands.join(", ")}`
+          : "  Pre-review commands: none",
+        "",
+        "Session:",
+        `  Cost: ${formatCost(cost.costUsd)} (${cost.calls} call${cost.calls === 1 ? "" : "s"})`,
+        `  Review rounds this step: ${state.reviewRounds}`,
+        "",
+        "Plan:",
+        state.plan
+          ? `  Summary: ${state.plan.summary}`
+          : "  No active plan",
+      ];
+
+      if (state.plan) {
+        lines.push(`  Progress: ${state.completedSteps}/${state.totalSteps} steps completed`);
+        for (let i = 0; i < state.plan.todo.length; i++) {
+          lines.push(`    ${state.completedSteps > i ? "✓" : "·"} ${state.plan.todo[i]}`);
+        }
+        if (state.plan.acceptanceCriteria.length > 0) {
+          lines.push("  Acceptance criteria:");
+          for (const c of state.plan.acceptanceCriteria) {
+            lines.push(`    · ${c}`);
+          }
+        }
+      }
+
+      lines.push("", "Version control:");
+      if (vcs.type === "unknown") {
+        lines.push("  No git or svn repository detected");
+      } else {
+        lines.push(`  Type: ${vcs.type}`);
+        if (vcs.branch) lines.push(`  Branch/URL: ${vcs.branch}`);
+        if (vcs.revision) lines.push(`  Revision: ${vcs.revision}`);
+        if (vcs.dirty !== undefined) lines.push(`  Dirty: ${vcs.dirty ? "yes" : "no"}`);
+        if (vcs.error) lines.push(`  Error: ${vcs.error}`);
+      }
+
+      lines.push("", "Project conventions:");
+      if (conventions) {
+        lines.push(`  Stack: ${conventions.stack}`);
+        lines.push(`  Naming: ${conventions.naming}`);
+        lines.push(`  Structure: ${conventions.structure}`);
+        lines.push(`  Patterns: ${conventions.patterns.length > 0 ? conventions.patterns.join("; ") : "none"}`);
+        lines.push(`  Scanned at: ${conventions.generatedAt}`);
+      } else {
+        lines.push("  Not scanned — run yoo({ scan: true })");
+      }
+
+      await ctx.ui.select("yoo status", lines.filter(Boolean));
+    },
+  });
+
+  pi.registerCommand("yoo-info", {
+    description: "Alias for /yoo-status",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify("Use /yoo-status for detailed diagnostics.", "info");
     },
   });
 

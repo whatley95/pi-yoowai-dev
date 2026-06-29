@@ -73,6 +73,8 @@ The `yoo` tool is called by the main agent during development:
 | Command | What it does |
 |---------|-------------|
 | `/yoo` | Show current configuration, session cost, plan status, and convention scan |
+| `/yoo-status` | Show detailed diagnostics: config, plan, VCS, conventions, session cost |
+| `/yoo-info` | Alias for `/yoo-status` |
 | `/yoo-model` | Interactively pick the secondary model from configured providers |
 | `/yoo-config <provider.model>` | Guide for configuring the secondary model |
 | `/yoo-clear` | Clear the active plan, session state, cost, memory, and conventions |

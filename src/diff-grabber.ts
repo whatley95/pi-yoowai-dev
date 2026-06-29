@@ -11,6 +11,43 @@ export interface DiffResult {
   vcs?: VcsType;
 }
 
+export interface VcsInfo {
+  type: VcsType | "unknown";
+  branch?: string;
+  revision?: string;
+  dirty?: boolean;
+  error?: string;
+}
+
+export function getVcsInfo(cwd: string): VcsInfo {
+  const type = detectVcs(cwd);
+  if (type === "git") return getGitInfo(cwd);
+  if (type === "svn") return getSvnInfo(cwd);
+  return { type: "unknown" };
+}
+
+function getGitInfo(cwd: string): VcsInfo {
+  try {
+    const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf-8", timeout: 3000 }).trim();
+    const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8", timeout: 3000 }).trim();
+    const status = execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf-8", timeout: 3000 }).trim();
+    return { type: "git", branch, revision, dirty: status.length > 0 };
+  } catch (err) {
+    return { type: "git", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function getSvnInfo(cwd: string): VcsInfo {
+  try {
+    const output = execFileSync("svn", ["info"], { cwd, encoding: "utf-8", timeout: 5000 });
+    const revision = output.match(/^Revision:\s*(.+)$/m)?.[1]?.trim();
+    const url = output.match(/^URL:\s*(.+)$/m)?.[1]?.trim();
+    return { type: "svn", revision, branch: url };
+  } catch (err) {
+    return { type: "svn", error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export function getDiff(
   cwd: string,
   options: {
