@@ -1,6 +1,10 @@
 import type { PlanResult, ReviewResult, SuggestResult, RecommendResult, JudgeResult, Conventions } from "./types.js";
 
-export function buildPlanPrompt(task: string): { system: string; user: string } {
+export function buildPlanPrompt(task: string, conventions?: string): { system: string; user: string } {
+  const conventionsBlock = conventions
+    ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>`
+    : "";
+
   return {
     system: `You are a senior software architect and planning expert.
 
@@ -19,9 +23,10 @@ Rules:
 - Each todo item should be one small unit of work — the main agent should complete it in 1-2 turns
 - Maximum 5-8 todo items
 - Maximum 5 acceptance criteria
+- Respect the project conventions shown above when choosing file names, structure, and patterns
 - Do NOT include commentary, explanations, or any text outside the JSON`,
 
-    user: `Create a plan for this task:\n\n${task}`,
+    user: `Create a plan for this task:\n\n${task}${conventionsBlock}`,
   };
 }
 
@@ -122,7 +127,11 @@ Be concise and evidence-based. Do not include commentary outside the JSON.`,
   };
 }
 
-export function buildSuggestPrompt(question: string): { system: string; user: string } {
+export function buildSuggestPrompt(question: string, conventions?: string): { system: string; user: string } {
+  const conventionsBlock = conventions
+    ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>`
+    : "";
+
   return {
     system: `You are a senior developer giving practical advice.
 
@@ -137,15 +146,20 @@ Rules:
 - Provide 2-3 concrete approaches
 - Each approach must have at least one pro and one con
 - Be specific — no vague advice like "use a better pattern"
+- Respect the project conventions shown above when evaluating approaches
 - Do NOT include commentary outside the JSON`,
 
-    user: `I need advice on:\n\n${question}`,
+    user: `I need advice on:\n\n${question}${conventionsBlock}`,
   };
 }
 
-export function buildRecommendPrompt(situation: string, planTodo?: string[]): { system: string; user: string } {
+export function buildRecommendPrompt(situation: string, planTodo?: string[], conventions?: string): { system: string; user: string } {
   const planContext = planTodo?.length
     ? `\n\nCurrent plan (check items already done):\n${planTodo.map((t, i) => `${i + 1}. ${t}`).join("\n")}`
+    : "";
+
+  const conventionsBlock = conventions
+    ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>`
     : "";
 
   return {
@@ -162,9 +176,10 @@ Rules:
 - Return exactly ONE recommended step — be decisive
 - The step must be concrete and immediately actionable
 - Reasoning must explain the trade-off
-- Provide 1-2 alternatives that were considered but rejected`,
+- Provide 1-2 alternatives that were considered but rejected
+- Respect the project conventions shown above when choosing file names, structure, and patterns`,
 
-    user: `Here's where I'm at:\n\n${situation}${planContext}\n\nWhat should I do next?`,
+    user: `Here's where I'm at:\n\n${situation}${planContext}${conventionsBlock}\n\nWhat should I do next?`,
   };
 }
 

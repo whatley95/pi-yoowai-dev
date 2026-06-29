@@ -145,7 +145,10 @@ async function executeYooPlan(
     return { action: "plan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
-  const { system, user } = buildPlanPrompt(task);
+  const conventions = loadConventions(cwd);
+  const conventionsText = conventions ? formatConventions(conventions) : "";
+
+  const { system, user } = buildPlanPrompt(task, conventionsText);
   const { content: raw, usage } = await callSecondaryModel(config.secondary.provider, config.secondary.id, system, user, signal);
   const parsed = parseJsonResponse(raw);
   const plan = validatePlanResult(parsed);
@@ -254,7 +257,10 @@ async function executeYooSuggest(
     return { action: "suggest", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
-  const { system, user } = buildSuggestPrompt(question);
+  const conventions = loadConventions(cwd);
+  const conventionsText = conventions ? formatConventions(conventions) : "";
+
+  const { system, user } = buildSuggestPrompt(question, conventionsText);
   const { content: raw, usage } = await callSecondaryModel(config.secondary.provider, config.secondary.id, system, user, signal);
   const parsed = parseJsonResponse(raw);
   const suggest = validateSuggestResult(parsed);
@@ -277,7 +283,10 @@ async function executeYooRecommend(
   }
 
   const state = getState(cwd);
-  const { system, user } = buildRecommendPrompt(situation, state.plan?.todo);
+  const conventions = loadConventions(cwd);
+  const conventionsText = conventions ? formatConventions(conventions) : "";
+
+  const { system, user } = buildRecommendPrompt(situation, state.plan?.todo, conventionsText);
   const { content: raw, usage } = await callSecondaryModel(config.secondary.provider, config.secondary.id, system, user, signal);
   const parsed = parseJsonResponse(raw);
   const recommend = validateRecommendResult(parsed);
