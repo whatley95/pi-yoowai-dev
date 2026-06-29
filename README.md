@@ -5,7 +5,7 @@ Pair-programmer extension for [Pi](https://github.com/earendil-works/pi). A seco
 ## Install
 
 ```bash
-pi install git:github.com/whatley95/pi-heyyo-dev
+pi install git:github.com/whatley95/pi-heyyoo-dev
 ```
 
 Or from local path:
@@ -17,7 +17,7 @@ pi install ./pi-heyyo
 Try without installing:
 
 ```bash
-pi -e git:github.com/whatley95/pi-heyyo-dev
+pi -e git:github.com/whatley95/pi-heyyoo-dev
 ```
 
 ## Configuration
