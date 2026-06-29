@@ -52,7 +52,6 @@ declare module "@earendil-works/pi-coding-agent" {
 }
 
 declare module "@sinclair/typebox" {
-  // eslint-disable-next-line @typescript-eslint/no-extraneous-class
   export const Type: {
     Object(props: Record<string, unknown>, options?: Record<string, unknown>): unknown;
     Optional(schema: unknown): unknown;
@@ -60,5 +59,6 @@ declare module "@sinclair/typebox" {
     Boolean(options?: Record<string, unknown>): unknown;
     Integer(options?: Record<string, unknown>): unknown;
     Number(options?: Record<string, unknown>): unknown;
+    Array(schema: unknown, options?: Record<string, unknown>): unknown;
   };
 }

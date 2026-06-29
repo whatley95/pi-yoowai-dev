@@ -1,4 +1,4 @@
-import type { PlanResult, ReviewResult, SuggestResult, RecommendResult, JudgeResult } from "./types.js";
+import type { PlanResult, ReviewResult, SuggestResult, RecommendResult, JudgeResult, Conventions } from "./types.js";
 
 export function buildPlanPrompt(task: string): { system: string; user: string } {
   return {
@@ -41,6 +41,9 @@ export function buildReviewPrompt(
   truncated: boolean,
   acceptanceCriteria?: string[],
   sessionContext?: string,
+  conventions?: string,
+  preReviewOutput?: string,
+  memoryContext?: string,
 ): { system: string; user: string } {
   const criteriaBlock = acceptanceCriteria?.length
     ? `\n\nAcceptance criteria for this step:\n${acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join("\n")}`
@@ -48,6 +51,18 @@ export function buildReviewPrompt(
 
   const sessionBlock = sessionContext
     ? `\n\n<session_context>\nRecent conversation relevant to this change:\n${sessionContext}\n</session_context>`
+    : "";
+
+  const conventionsBlock = conventions
+    ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>`
+    : "";
+
+  const preReviewBlock = preReviewOutput
+    ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>`
+    : "";
+
+  const memoryBlock = memoryContext
+    ? `\n\n<memory>\n${memoryContext}\n</memory>`
     : "";
 
   const truncationNotice = truncated
@@ -76,11 +91,31 @@ Rules:
 - "consensus" is true when verdict is "pass" AND issues is empty
 - Each issue must include a specific, actionable suggestion
 - "file" and "line" are optional but strongly preferred when you can identify the exact location
+- Respect the project conventions shown above; do NOT flag a pattern as wrong if it matches the conventions
+- Pay attention to pre-review command output (lint/test/typecheck). Failures there are real issues.
+- Memory shows past issues in the same files. If a past issue appears again, flag it as regression.
 - Do NOT flag issues you cannot see evidence for in the diff
-- If code follows a pattern you don't recognize, do NOT flag it as a convention issue
 - Be strict but fair — flag real problems, not preferences`,
 
-    user: `Review this code change. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${criteriaBlock}${sessionBlock}${truncationNotice}`,
+    user: `Review this code change. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${truncationNotice}`,
+  };
+}
+
+export function buildScanPrompt(): { system: string; user: string } {
+  return {
+    system: `You are analyzing a codebase to extract project conventions and architecture patterns.
+
+Return ONLY a JSON object with this exact structure:
+{
+  "naming": "dominant naming convention (e.g. camelCase, PascalCase, snake_case)",
+  "structure": "project structure summary (e.g. src/, app/, lib/, tests/)",
+  "patterns": ["observed pattern 1", "observed pattern 2"],
+  "stack": "detected tech stack"
+}
+
+Be concise and evidence-based. Do not include commentary outside the JSON.`,
+
+    user: "Analyze the following project file list and infer the naming conventions, structure, patterns, and tech stack.",
   };
 }
 
@@ -217,20 +252,21 @@ export function validateReviewResult(data: unknown): ReviewResult | null {
   const r = data as Record<string, unknown>;
   const verdict = r.verdict;
   if (verdict !== "pass" && verdict !== "needs-work" && verdict !== "blocked") return null;
+  const issues = Array.isArray(r.issues)
+    ? r.issues.filter((i: unknown) => i && typeof i === "object" && typeof (i as Record<string, unknown>).issue === "string")
+               .map((i: Record<string, unknown>) => ({
+                 severity: ["high", "medium", "low"].includes(String(i.severity)) ? String(i.severity) as "high" | "medium" | "low" : "medium",
+                 file: typeof i.file === "string" ? i.file : undefined,
+                 line: typeof i.line === "number" ? i.line : undefined,
+                 issue: String(i.issue),
+                 suggestion: typeof i.suggestion === "string" ? i.suggestion : "",
+               }))
+    : [];
   return {
     verdict,
-    issues: Array.isArray(r.issues)
-      ? r.issues.filter((i: unknown) => i && typeof i === "object" && typeof (i as Record<string, unknown>).issue === "string")
-                 .map((i: Record<string, unknown>) => ({
-                   severity: ["high", "medium", "low"].includes(String(i.severity)) ? String(i.severity) as "high" | "medium" | "low" : "medium",
-                   file: typeof i.file === "string" ? i.file : undefined,
-                   line: typeof i.line === "number" ? i.line : undefined,
-                   issue: String(i.issue),
-                   suggestion: typeof i.suggestion === "string" ? i.suggestion : "",
-                 }))
-      : [],
+    issues,
     suggestions: Array.isArray(r.suggestions) ? r.suggestions.map(String) : [],
-    consensus: r.consensus === true,
+    consensus: verdict === "pass" && issues.length === 0 && r.consensus === true,
   };
 }
 
@@ -268,5 +304,18 @@ export function validateJudgeResult(data: unknown): JudgeResult | null {
   return {
     ...base,
     summary: typeof r.summary === "string" ? r.summary : "",
+  };
+}
+
+export function validateConventionsResult(data: unknown): Conventions | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const r = data as Record<string, unknown>;
+  if (typeof r.naming !== "string" || typeof r.structure !== "string" || typeof r.stack !== "string") return null;
+  return {
+    naming: r.naming,
+    structure: r.structure,
+    patterns: Array.isArray(r.patterns) ? r.patterns.map(String) : [],
+    stack: r.stack,
+    generatedAt: new Date().toISOString(),
   };
 }

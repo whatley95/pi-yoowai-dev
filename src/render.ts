@@ -57,13 +57,19 @@ export function renderResult(result: unknown, _opts: { expanded: boolean }, them
   }
 
   if (r.judge) {
-    const icon = r.judge.verdict === "pass" ? "✓" : "⚠";
-    const color = r.judge.verdict === "pass" ? "green" : "yellow";
+    const icon = r.judge.verdict === "pass" ? "✓" : r.judge.verdict === "blocked" ? "✗" : "⚠";
+    const color = r.judge.verdict === "pass" ? "green" : r.judge.verdict === "blocked" ? "error" : "yellow";
     lines.push(theme.fg(color, `yoo judge ${icon} ${r.judge.verdict}`));
     lines.push(`  ${theme.fg("dim", r.judge.summary)}`);
     if (r.judge.consensus) {
       lines.push(`  ${theme.fg("green", "consensus: both agents agree — work is complete")}`);
     }
+  }
+
+  if (r.scan) {
+    lines.push(theme.fg("yoo", "yoo scan"));
+    lines.push(`  ${r.scan.files.length} file(s) scanned`);
+    lines.push(`  ${theme.fg("dim", `${r.scan.conventions.stack} • ${r.scan.conventions.naming}`)}`);
   }
 
   return lines.join("\n");

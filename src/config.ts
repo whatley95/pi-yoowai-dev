@@ -22,6 +22,8 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
 
   let config: HeyyooConfig = {
     secondary: { provider: "", id: "", thinking: "xhigh" },
+    autoJudge: false,
+    preReviewCommands: [],
   };
 
   if (existsSync(globalPath)) {
@@ -45,12 +47,18 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
   return config;
 }
 
-function mergeConfig(base: HeyyooConfig, override: Partial<HeyyooConfig>): HeyyooConfig {
+function mergeConfig(base: HeyyooConfig, override: unknown): HeyyooConfig {
+  if (!override || typeof override !== "object" || Array.isArray(override)) {
+    return base;
+  }
+  const o = override as Partial<HeyyooConfig>;
   return {
     secondary: {
-      provider: override.secondary?.provider || base.secondary.provider,
-      id: override.secondary?.id || base.secondary.id,
-      thinking: override.secondary?.thinking ?? base.secondary.thinking,
+      provider: o.secondary?.provider || base.secondary.provider,
+      id: o.secondary?.id || base.secondary.id,
+      thinking: o.secondary?.thinking ?? base.secondary.thinking,
     },
+    autoJudge: typeof o.autoJudge === "boolean" ? o.autoJudge : base.autoJudge,
+    preReviewCommands: Array.isArray(o.preReviewCommands) ? o.preReviewCommands.map(String) : base.preReviewCommands,
   };
 }

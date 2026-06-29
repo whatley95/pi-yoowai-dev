@@ -1,5 +1,5 @@
 import { resolveApiKey } from "./auth-reader.js";
-import type { ProviderApiInfo } from "./types.js";
+import type { ProviderApiInfo, UsageCost } from "./types.js";
 
 const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
   "opencode-go": {
@@ -92,7 +92,7 @@ export async function callSecondaryModel(
   systemPrompt: string,
   userPrompt: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ content: string; usage: UsageCost }> {
   const apiInfo = getProviderApiInfo(provider);
   if (!apiInfo) {
     throw new Error(`Unknown provider: ${provider}. Supported providers: ${Object.keys(PROVIDER_API_MAP).join(", ")}`);
@@ -104,20 +104,53 @@ export async function callSecondaryModel(
   }
 
   if (apiInfo.style === "anthropic") {
-    return callAnthropicApi(apiInfo, apiKey, model, systemPrompt, userPrompt, signal);
+    return callAnthropicApi(provider, apiInfo, apiKey, model, systemPrompt, userPrompt, signal);
   }
 
-  return callOpenAiCompatibleApi(apiInfo, apiKey, model, systemPrompt, userPrompt, signal);
+  return callOpenAiCompatibleApi(provider, apiInfo, apiKey, model, systemPrompt, userPrompt, signal);
+}
+
+function estimateCost(provider: string, model: string, inputTokens: number, outputTokens: number): number {
+  // Approximate cost per 1M tokens in USD. These are rough averages.
+  const key = `${provider}:${model}`.toLowerCase();
+  const rates: Record<string, { input: number; output: number }> = {
+    "opencode-go:deepseek-v4-pro": { input: 0.5, output: 2.0 },
+    "opencode-go:deepseek-v4-flash": { input: 0.1, output: 0.5 },
+    "anthropic:claude-sonnet-4-5": { input: 3.0, output: 15.0 },
+    "anthropic:claude-opus-4-5": { input: 15.0, output: 75.0 },
+    "openai:gpt-5": { input: 5.0, output: 15.0 },
+    "openai:gpt-5-mini": { input: 0.5, output: 1.5 },
+  };
+  const rate = rates[key] ?? rates[provider] ?? { input: 2.0, output: 6.0 };
+  return (inputTokens * rate.input + outputTokens * rate.output) / 1_000_000;
+}
+
+function estimateTokens(text: string): number {
+  // Rough estimate: ~4 chars per token for English/code
+  return Math.ceil(text.length / 4);
+}
+
+function buildUsage(provider: string, model: string, systemPrompt: string, userPrompt: string, content: string): UsageCost {
+  const estimatedInputTokens = estimateTokens(systemPrompt + userPrompt);
+  const estimatedOutputTokens = estimateTokens(content);
+  const estimatedCostUsd = estimateCost(provider, model, estimatedInputTokens, estimatedOutputTokens);
+  return {
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    estimatedCostUsd,
+    sessionCostUsd: 0,
+  };
 }
 
 async function callOpenAiCompatibleApi(
+  provider: string,
   apiInfo: ProviderApiInfo,
   apiKey: string,
   model: string,
   systemPrompt: string,
   userPrompt: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ content: string; usage: UsageCost }> {
   const url = `${apiInfo.baseUrl}/chat/completions`;
 
   const body = {
@@ -149,6 +182,7 @@ async function callOpenAiCompatibleApi(
 
   const data = (await response.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
 
   const content = data.choices?.[0]?.message?.content;
@@ -156,17 +190,25 @@ async function callOpenAiCompatibleApi(
     throw new Error("Empty response from secondary model");
   }
 
-  return content;
+  const usage = buildUsage(provider, model, systemPrompt, userPrompt, content);
+  if (data.usage?.prompt_tokens !== undefined && data.usage.completion_tokens !== undefined) {
+    usage.estimatedInputTokens = data.usage.prompt_tokens;
+    usage.estimatedOutputTokens = data.usage.completion_tokens;
+  }
+  usage.estimatedCostUsd = estimateCost(provider, model, usage.estimatedInputTokens, usage.estimatedOutputTokens);
+
+  return { content, usage };
 }
 
 async function callAnthropicApi(
+  provider: string,
   apiInfo: ProviderApiInfo,
   apiKey: string,
   model: string,
   systemPrompt: string,
   userPrompt: string,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<{ content: string; usage: UsageCost }> {
   const url = `${apiInfo.baseUrl}/messages`;
 
   const body = {
@@ -198,6 +240,7 @@ async function callAnthropicApi(
 
   const data = (await response.json()) as {
     content?: Array<{ type: string; text?: string }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
   };
 
   const textContent = data.content?.find((c) => c.type === "text")?.text;
@@ -205,5 +248,12 @@ async function callAnthropicApi(
     throw new Error("Empty response from secondary model");
   }
 
-  return textContent;
+  const usage = buildUsage(provider, model, systemPrompt, userPrompt, textContent);
+  if (data.usage?.input_tokens !== undefined && data.usage.output_tokens !== undefined) {
+    usage.estimatedInputTokens = data.usage.input_tokens;
+    usage.estimatedOutputTokens = data.usage.output_tokens;
+  }
+  usage.estimatedCostUsd = estimateCost(provider, model, usage.estimatedInputTokens, usage.estimatedOutputTokens);
+
+  return { content: textContent, usage };
 }

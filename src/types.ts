@@ -4,6 +4,8 @@ export interface HeyyooConfig {
     id: string;
     thinking?: string;
   };
+  autoJudge?: boolean;
+  preReviewCommands?: string[];
 }
 
 export interface PlanResult {
@@ -30,6 +32,8 @@ export interface ReviewResult {
   planProgress?: string;
   nextStep?: string;
   escalated?: boolean;
+  autoJudged?: boolean;
+  preReviewOutput?: string;
 }
 
 export interface Approach {
@@ -60,7 +64,7 @@ export interface HeyyooSessionState {
   reviewRounds: number;
 }
 
-export type YooAction = "plan" | "review" | "suggest" | "recommend" | "judge";
+export type YooAction = "plan" | "review" | "suggest" | "recommend" | "judge" | "scan";
 
 export interface YooToolParams {
   plan?: string;
@@ -68,6 +72,9 @@ export interface YooToolParams {
   suggest?: string;
   recommend?: string;
   judge?: string;
+  scan?: boolean;
+  files?: string[];
+  exclude?: string[];
 }
 
 export interface YooToolResult {
@@ -77,7 +84,16 @@ export interface YooToolResult {
   suggest?: SuggestResult;
   recommend?: RecommendResult;
   judge?: JudgeResult;
+  scan?: ScanResult;
   error?: string;
+  cost?: UsageCost;
+}
+
+export interface UsageCost {
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  estimatedCostUsd: number;
+  sessionCostUsd: number;
 }
 
 export interface StageProfile {
@@ -91,4 +107,22 @@ export interface ProviderApiInfo {
   baseUrl: string;
   authHeader: string;
   authPrefix: string;
+}
+
+export interface MemoryEntry {
+  file: string;
+  issues: Array<{ severity: ReviewIssue["severity"]; issue: string; suggestion: string; timestamp: string }>;
+}
+
+export interface Conventions {
+  naming: string;
+  structure: string;
+  patterns: string[];
+  stack: string;
+  generatedAt: string;
+}
+
+export interface ScanResult {
+  conventions: Conventions;
+  files: string[];
 }
