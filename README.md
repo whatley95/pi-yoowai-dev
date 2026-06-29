@@ -2,6 +2,8 @@
 
 Pair-programmer extension for [Pi](https://github.com/earendil-works/pi). A secondary model reviews, plans, suggests, recommends, and judges your work — catching bugs, missing error handling, and blind spots.
 
+Built by [whatley.xyz](https://whatley.xyz).
+
 ## Install
 
 ```bash
@@ -36,7 +38,8 @@ Add to `~/.pi/agent/settings.json`:
     "preReviewCommands": [
       "npm run typecheck",
       "npm run lint"
-    ]
+    ],
+    "costBudgetUsd": 0.5
   }
 }
 ```
@@ -52,6 +55,7 @@ If no secondary model is configured, yoo falls back to the main agent's model.
 | `secondary` | object | `{ provider, id, thinking? }` for the secondary model |
 | `autoJudge` | boolean | Run `yoo.judge` automatically when the last plan step passes review |
 | `preReviewCommands` | string[] | Commands to run before each review; output is included in the review prompt |
+| `costBudgetUsd` | number | Maximum estimated session spend before yoo stops with an error |
 
 ## Tools
 
@@ -63,6 +67,8 @@ The `yoo` tool is called by the main agent during development:
 | `yoo({ review: "wrote middleware" })` | After each step | Reviews git diff, returns verdict + issues |
 | `yoo({ review: "wrote middleware", files: ["src/auth.ts"] })` | After each step | Reviews only the listed files |
 | `yoo({ review: "wrote middleware", exclude: ["package-lock.json"] })` | After each step | Reviews diff excluding listed files |
+| `yoo({ review: "wrote middleware", revision: "HEAD~1" })` | After each step | Reviews changes against a specific revision |
+| `yoo({ review: "wrote middleware", untracked: true })` | After each step | Includes untracked (new) files in the review |
 | `yoo({ suggest: "how to..." })` | When stuck | Returns alternative approaches with pros/cons |
 | `yoo({ recommend: "what next" })` | When unsure | Recommends next concrete step |
 | `yoo({ judge: "all done" })` | Final review | Holistic review against original plan |
@@ -73,6 +79,12 @@ The `yoo` tool is called by the main agent during development:
 | Command | What it does |
 |---------|-------------|
 | `/yoo` | Compact status card: version, model, plan, VCS, cost, conventions |
+| `/yoo plan refactor auth middleware` | Create a plan from the terminal |
+| `/yoo review "wrote verifySession"` | Review current changes |
+| `/yoo suggest "redis vs in-memory sessions?"` | Get alternative approaches |
+| `/yoo recommend` | Get a recommended next step |
+| `/yoo judge "auth refactor complete"` | Final holistic review |
+| `/yoo scan` | Scan project conventions |
 | `/yoo-status` | Detailed diagnostics: config, plan, VCS, conventions, session cost |
 | `/yoo-info` | Alias for `/yoo-status` |
 | `/yoo-model` | Interactively pick the secondary model from configured providers |
@@ -128,15 +140,16 @@ This prevents the main agent from spinning in review-fix-review cycles.
 ## How it works
 
 - **No child Pi process** — direct HTTP calls to the secondary model's API
-- **Automatic diff collection** — `yoo.review` auto-runs `git diff HEAD`
-- **Diff scope control** — limit reviews with `files` or `exclude` arrays
+- **Automatic diff collection** — `yoo.review` auto-runs `git diff HEAD` (or `svn diff`)
+- **Diff scope control** — limit reviews with `files`, `exclude`, `revision`, `since`, or `untracked`
 - **Plan persistence** — session state tracks the plan, review prompts include acceptance criteria
-- **Project conventions** — `yoo.scan` and per-file pattern detection feed convention context into reviews
+- **Deep project scan** — `yoo.scan` reads `package.json`, `AGENTS.md`, detects frameworks, tests, ORM, UI, build tools, CI, package manager, entry points, scripts, and samples code style
+- **Project conventions** — scan results feed into plan, suggest, recommend, review, and judge prompts
 - **Review memory** — previous issues per file are included so the model knows what was already fixed
 - **Pre-review commands** — configured lint/test/typecheck output is included in the review prompt
-- **Cost tracking** — estimated spend per call and session total shown in `/yoo`
+- **Cost tracking + budget** — estimated spend per call, session total, and optional hard budget
 - **One round-trip** — secondary model has no tools, pure judgment
-- **Supports OpenAI-compatible and Anthropic APIs** — 14 providers pre-configured
+- **Supports OpenAI-compatible and Anthropic APIs** — 13 providers pre-configured
 
 ## Consensus protocol
 
@@ -162,3 +175,13 @@ The secondary model checks:
 | google | Google Gemini |
 
 API keys are resolved from `~/.pi/agent/auth.json` → environment variables → `!command` execution.
+
+## Version bumping
+
+```bash
+npm run bump:patch   # 0.2.x → 0.2.x+1
+npm run bump:minor   # 0.2.x → 0.3.0
+npm run bump:major   # 0.2.x → 1.0.0
+```
+
+The version shown in `/yoo` is read automatically from `package.json`.
