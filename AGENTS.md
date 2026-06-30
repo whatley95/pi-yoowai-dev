@@ -34,6 +34,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 - **Runtime:** Node.js.
 - **Host platform:** Pi coding agent (`@earendil-works/pi-coding-agent`).
 - **Validation schemas:** `@sinclair/typebox` (used only for tool parameter shapes).
+- **TUI components:** `@earendil-works/pi-tui` (peer dependency; used in `src/render.ts` for tool call/result rendering).
 - **Linting:** ESLint 10 with `@eslint/js` and `typescript-eslint` recommended configs.
 - **Package manager:** npm (lockfile `package-lock.json`).
 

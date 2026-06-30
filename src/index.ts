@@ -360,19 +360,17 @@ function recordCostWithBudget(cwd: string, usage: UsageCost): UsageCost {
 }
 
 export default function (pi: ExtensionAPI) {
-  let cwd = process.cwd();
   const loopState = createLoopDetectionState();
 
   pi.on("session_start", async (_event, ctx) => {
-    cwd = ctx.cwd;
-    const diskState = loadState(cwd);
+    const diskState = loadState(ctx.cwd);
     if (diskState) {
-      sessionStates.set(cwd, diskState);
+      sessionStates.set(ctx.cwd, diskState);
     }
   });
 
-  pi.on("session_shutdown", async () => {
-    sessionStates.delete(cwd);
+  pi.on("session_shutdown", async (_event, ctx) => {
+    sessionStates.delete(ctx.cwd);
   });
 
   pi.on("tool_execution_start", async (event) => {
@@ -663,7 +661,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("yoo-info", {
     description: "Alias for /yoo-status",
     handler: async (_args, ctx) => {
-      ctx.ui.notify(`pi-heyyoo v${VERSION} · ${HOMEPAGE} — use /yoo-status for detailed diagnostics.`, "info");
+      await showYooStatus(ctx);
     },
   });
 
