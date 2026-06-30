@@ -132,7 +132,7 @@ Return ONLY a JSON object with this exact structure:
 
 Omit optional fields you cannot infer. Be concise and evidence-based. Do not include commentary outside the JSON.`,
 
-    user: "Analyze the following project file list and infer the naming conventions, structure, patterns, and tech stack.",
+    user: "Analyze the following project file list and key configuration files, then infer the naming conventions, structure, patterns, and tech stack.",
   };
 }
 

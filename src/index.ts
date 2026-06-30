@@ -29,7 +29,7 @@ import type { YooToolParams, YooToolResult, HeyyooSessionState, PlanResult, YooA
 import { createLoopDetectionState, recordToolCall, checkLoop, shouldSendSteer } from "./loop-detector.js";
 import { recordCost, getSessionCost, formatCost, resetCost } from "./cost-tracker.js";
 import { recordIssues, getPastIssuesForFiles, clearMemory } from "./review-memory.js";
-import { loadConventions, saveConventions, scanProjectConventions, formatConventions, clearConventions, mergeConventions } from "./conventions.js";
+import { loadConventions, saveConventions, scanProjectConventions, formatConventions, clearConventions, mergeConventions, filterSourceFiles, formatConfigFiles } from "./conventions.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "./pre-review.js";
 
 const sessionStates = new Map<string, HeyyooSessionState>();
@@ -367,12 +367,14 @@ async function executeYooScan(
   const localScan = scanProjectConventions(cwd);
 
   const { system, user } = buildScanPrompt();
+  const filesForPrompt = filterSourceFiles(localScan.files).slice(0, 200);
+  const configFilesText = formatConfigFiles(cwd);
   emitProgress(onUpdate, "scan", "Calling secondary model…");
   const { content: raw, usage } = await callSecondaryModel(
     config.secondary.provider,
     config.secondary.id,
     system,
-    `${user}\n\nFiles:\n${localScan.files.slice(0, 200).join("\n")}`,
+    `${user}\n\nFiles:\n${filesForPrompt.join("\n")}${configFilesText}`,
     signal,
     config.secondary.thinking,
   );

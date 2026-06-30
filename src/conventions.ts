@@ -149,6 +149,59 @@ function hasDependency(pkg: Record<string, unknown> | null, name: string): boole
   return Boolean(deps?.[name] ?? devDeps?.[name]);
 }
 
+const EXCLUDED_FILE_PATTERNS = [
+  /\.(png|jpe?g|gif|svg|ico|webp|woff2?|ttf|otf|eot|mp3|mp4|wav|avi|mov|pdf|zip|tar|gz|rar|7z|exe|dll|so|dylib|bin|map|log)$/i,
+  /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|Cargo\.lock|poetry\.lock|Pipfile\.lock|npm-shrinkwrap\.json)$/i,
+];
+
+const CONFIG_FILE_CANDIDATES = [
+  "AGENTS.md",
+  "README.md",
+  "tsconfig.json",
+  "jsconfig.json",
+  "eslint.config.js",
+  "eslint.config.mjs",
+  ".eslintrc.json",
+  "prettier.config.js",
+  ".prettierrc",
+  ".prettierrc.json",
+  "vite.config.ts",
+  "vite.config.js",
+  "webpack.config.js",
+  "rollup.config.js",
+  "tsup.config.ts",
+  "next.config.js",
+  "next.config.ts",
+  "tailwind.config.js",
+  "tailwind.config.ts",
+  "jest.config.js",
+  "jest.config.ts",
+  "vitest.config.ts",
+  "vitest.config.js",
+  "playwright.config.ts",
+  "prisma/schema.prisma",
+];
+
+const CONFIG_FILE_MAX_CHARS = 1500;
+
+export function filterSourceFiles(files: string[]): string[] {
+  return files.filter((f) => !EXCLUDED_FILE_PATTERNS.some((p) => p.test(f)));
+}
+
+export function formatConfigFiles(cwd: string): string {
+  const parts: string[] = [];
+  for (const file of CONFIG_FILE_CANDIDATES) {
+    const content = readTextFile(join(cwd, file));
+    if (!content) continue;
+    const truncated = content.length > CONFIG_FILE_MAX_CHARS
+      ? `${content.slice(0, CONFIG_FILE_MAX_CHARS)}\n...`
+      : content;
+    parts.push(`### ${file}\n${truncated}`);
+  }
+  if (parts.length === 0) return "";
+  return "\n\n<config_files>\n" + parts.join("\n\n") + "\n</config_files>";
+}
+
 function emptyConventions(): Conventions {
   return {
     naming: "unknown",
