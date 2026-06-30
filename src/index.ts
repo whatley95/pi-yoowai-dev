@@ -31,7 +31,7 @@ import { recordCost, getSessionCost, formatCost, resetCost } from "./cost-tracke
 import { recordIssues, getPastIssuesForFiles, clearMemory } from "./review-memory.js";
 import { loadConventions, saveConventions, scanProjectConventions, formatConventions, clearConventions, mergeConventions, filterSourceFiles, formatConfigFiles } from "./conventions.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "./pre-review.js";
-import { logEvent, readRecentLogs } from "./logger.js";
+import { logEvent, readRecentLogs, clearLogs } from "./logger.js";
 
 const sessionStates = new Map<string, HeyyooSessionState>();
 
@@ -223,7 +223,15 @@ async function executeYooReview(
   );
 
   emitProgress(onUpdate, "review", "Calling secondary model…");
-  const { content: raw, usage } = await callSecondaryModel(config.secondary.provider, config.secondary.id, system, user, signal, config.secondary.thinking, cwd);
+  const { content: raw, usage } = await callSecondaryModel(
+    config.secondary.provider,
+    config.secondary.id,
+    system,
+    user,
+    signal,
+    capReviewThinking(config.secondary.thinking),
+    cwd,
+  );
 
   emitProgress(onUpdate, "review", "Parsing review…");
   const parsed = parseJsonResponse(raw);
@@ -417,6 +425,54 @@ function emitProgress(
   });
 }
 
+function capReviewThinking(configured?: string): string {
+  // Review output is structured JSON. High/xhigh reasoning often consumes the output budget
+  // and leaves no room for the actual verdict, causing truncation and false positives.
+  if (!configured || configured === "off") return "medium";
+  if (configured === "high" || configured === "xhigh") return "medium";
+  return configured;
+}
+
+function parseReviewCommandArgs(input: string): { description: string; options: { revision?: string; since?: string; files?: string[]; exclude?: string[]; vcs?: "git" | "svn"; untracked?: boolean } } {
+  const options: { revision?: string; since?: string; files?: string[]; exclude?: string[]; vcs?: "git" | "svn"; untracked?: boolean } = {};
+  const tokens = input.match(/(?:[^\s"']+|["'][^"']*["'])+/g) ?? [];
+  const args = tokens.map((t) => t.replace(/^["']|["']$/g, ""));
+  const descriptionParts: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const next = args[i + 1];
+    switch (arg) {
+      case "--revision":
+      case "-r":
+        if (next) { options.revision = next; i++; }
+        break;
+      case "--since":
+      case "-s":
+        if (next) { options.since = next; i++; }
+        break;
+      case "--files":
+      case "-f":
+        if (next) { options.files = next.split(",").map((f) => f.trim()).filter(Boolean); i++; }
+        break;
+      case "--exclude":
+      case "-x":
+        if (next) { options.exclude = next.split(",").map((f) => f.trim()).filter(Boolean); i++; }
+        break;
+      case "--vcs":
+        if (next === "git" || next === "svn") { options.vcs = next; i++; }
+        break;
+      case "--untracked":
+        options.untracked = true;
+        break;
+      default:
+        descriptionParts.push(arg);
+    }
+  }
+
+  return { description: descriptionParts.join(" ") || "review changes", options };
+}
+
 export default function (pi: ExtensionAPI) {
   const loopState = createLoopDetectionState();
 
@@ -586,9 +642,11 @@ export default function (pi: ExtensionAPI) {
             }
             result = await executeYooPlan(ctx.cwd, restText, signal, notifyProgress);
             break;
-          case "review":
-            result = await executeYooReview(ctx.cwd, restText || "review changes", ctx, {}, signal, notifyProgress);
+          case "review": {
+            const { description, options: reviewOptions } = parseReviewCommandArgs(restText);
+            result = await executeYooReview(ctx.cwd, description, ctx, reviewOptions, signal, notifyProgress);
             break;
+          }
           case "suggest":
             if (!restText) {
               ctx.ui.notify("Usage: /yoo suggest <question>", "warn");
@@ -794,6 +852,14 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       await ctx.ui.select("Recent yoo logs", entries);
+    },
+  });
+
+  pi.registerCommand("yoo-clear-logs", {
+    description: "Clear the yoo error/event log for this project",
+    handler: async (_args, ctx) => {
+      clearLogs(ctx.cwd);
+      ctx.ui.notify("yoo log cleared.", "info");
     },
   });
 }

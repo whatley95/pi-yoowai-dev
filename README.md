@@ -90,6 +90,42 @@ The `yoo` tool is called by the main agent during development:
 | `/yoo-model` | Interactively pick the secondary model from configured providers |
 | `/yoo-config <provider.model>` | Guide for configuring the secondary model |
 | `/yoo-clear` | Clear the active plan, session state, cost, memory, and conventions |
+| `/yoo-next` | Recommend the next step based on the active plan |
+| `/yoo-done` | Mark the current plan step complete and recommend the next step |
+| `/yoo-logs` | Show recent error/event log entries for this project |
+| `/yoo-clear-logs` | Clear the yoo error/event log for this project |
+
+### Review command options
+
+`/yoo review` accepts flags to scope the diff:
+
+```text
+/yoo review upload component --revision HEAD~1
+/yoo review check r1234 changes --since 1230 --vcs svn
+/yoo review look at these files --files src/app.ts,src/lib.ts
+/yoo review exclude generated --exclude dist/,package-lock.json
+/yoo review include new files --untracked
+```
+
+| Flag | Description |
+|------|-------------|
+| `--revision` / `-r` | Compare against a revision (e.g. `HEAD~1`, `1234`, `1234:HEAD`) |
+| `--since` / `-s` | Include changes since a revision or commit ID |
+| `--files` / `-f` | Comma-separated list of files to review |
+| `--exclude` / `-x` | Comma-separated list of files/patterns to exclude |
+| `--vcs git\|svn` | Force Git or SVN diff mode |
+| `--untracked` | Include untracked (new) files |
+
+## Logging
+
+yoo writes error and event entries to `.pi/heyyoo/yoo.log` in the current project. Use these commands to inspect or clear it:
+
+```text
+/yoo-logs        # show last 50 entries
+/yoo-clear-logs  # empty the log
+```
+
+Logged events include secondary model errors, parse failures (with a raw response snippet), command failures, and diagnostic context like provider/model/thinking level.
 
 ## Process flow
 

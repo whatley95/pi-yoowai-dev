@@ -106,7 +106,7 @@ Rules:
 - Respect the project conventions shown above; do NOT flag a pattern as wrong if it matches the conventions
 - Pay attention to pre-review command output (lint/test/typecheck). Failures there are real issues.
 - Memory shows past issues in the same files. If a past issue appears again, flag it as regression.
-- Do NOT flag issues you cannot see evidence for in the diff
+- CRITICAL: Only flag issues you can see evidence for in the diff. If a property, method, template, or style exists outside the diff, do NOT flag it as missing. When unsure, prefer "pass" or "low" severity over guessing.
 - Be strict but fair — flag real problems, not preferences`,
 
     user: `Review this code change. The developer says:\n\n${description}${vcsLine}\n\n<diff>\n${diff}\n</diff>${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${truncationNotice}`,

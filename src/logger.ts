@@ -47,6 +47,15 @@ export function logEvent(
   } catch { /* logging should never crash the tool */ }
 }
 
+export function clearLogs(cwd: string): void {
+  try {
+    const path = getLogPath(cwd);
+    if (existsSync(path)) {
+      writeFileSync(path, "", "utf-8");
+    }
+  } catch { /* ignore */ }
+}
+
 export function readRecentLogs(cwd: string, limit = 100): string[] {
   const path = getLogPath(cwd);
   if (!existsSync(path)) return [];
