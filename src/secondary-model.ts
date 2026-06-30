@@ -93,6 +93,7 @@ export async function callSecondaryModel(
   systemPrompt: string,
   userPrompt: string,
   signal?: AbortSignal,
+  thinking?: string,
 ): Promise<{ content: string; usage: UsageCost }> {
   const apiInfo = getProviderApiInfo(provider);
   if (!apiInfo) {
@@ -105,10 +106,10 @@ export async function callSecondaryModel(
   }
 
   if (apiInfo.style === "anthropic") {
-    return callAnthropicApi(provider, apiInfo, apiKey, model, systemPrompt, userPrompt, signal);
+    return callAnthropicApi(provider, apiInfo, apiKey, model, systemPrompt, userPrompt, signal, thinking);
   }
 
-  return callOpenAiCompatibleApi(provider, apiInfo, apiKey, model, systemPrompt, userPrompt, signal);
+  return callOpenAiCompatibleApi(provider, apiInfo, apiKey, model, systemPrompt, userPrompt, signal, thinking);
 }
 
 function estimateCost(provider: string, model: string, inputTokens: number, outputTokens: number): number {
@@ -151,6 +152,7 @@ async function callOpenAiCompatibleApi(
   systemPrompt: string,
   userPrompt: string,
   signal?: AbortSignal,
+  thinking?: string,
 ): Promise<{ content: string; usage: UsageCost }> {
   const url = buildOpenAiUrl(apiInfo, apiKey);
 
@@ -163,6 +165,10 @@ async function callOpenAiCompatibleApi(
     temperature: 0.3,
     max_tokens: 2048,
   };
+  if (thinking && supportsThinkingParam(provider, model)) {
+    body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking) };
+    delete body.temperature;
+  }
   if (supportsMaxCompletionTokens(provider, model)) {
     delete body.max_tokens;
     body.max_completion_tokens = 2048;
@@ -245,10 +251,11 @@ async function callAnthropicApi(
   systemPrompt: string,
   userPrompt: string,
   signal?: AbortSignal,
+  thinking?: string,
 ): Promise<{ content: string; usage: UsageCost }> {
   const url = `${apiInfo.baseUrl}/messages`;
 
-  const body = {
+  const body: Record<string, unknown> = {
     model,
     max_tokens: 2048,
     system: systemPrompt,
@@ -256,6 +263,9 @@ async function callAnthropicApi(
       { role: "user", content: userPrompt },
     ],
   };
+  if (thinking) {
+    body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking) };
+  }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -293,4 +303,27 @@ async function callAnthropicApi(
   usage.estimatedCostUsd = estimateCost(provider, model, usage.estimatedInputTokens, usage.estimatedOutputTokens);
 
   return { content: textContent, usage };
+}
+
+function supportsThinkingParam(provider: string, model: string): boolean {
+  // DeepSeek models support the thinking parameter via reasoning_effort or thinking.type
+  const lc = `${provider}:${model}`.toLowerCase();
+  if (lc.startsWith("deepseek:")) return true;
+  if (lc.startsWith("opencode-")) return true;
+  if (lc.startsWith("openrouter:")) return true;
+  // Anthropic supports thinking via separate function signature, handled in callAnthropicApi
+  if (provider === "anthropic") return true;
+  return false;
+}
+
+function thinkingBudget(level: string): number {
+  const budgets: Record<string, number> = {
+    off: 0,
+    minimal: 256,
+    low: 512,
+    medium: 1024,
+    high: 2048,
+    xhigh: 4096,
+  };
+  return budgets[level?.toLowerCase()] ?? 1024;
 }

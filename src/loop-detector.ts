@@ -92,7 +92,8 @@ function getYooDescription(args: Record<string, unknown>): string {
     (typeof args.judge === "string" ? args.judge : "") ||
     (typeof args.plan === "string" ? args.plan : "") ||
     (typeof args.suggest === "string" ? args.suggest : "") ||
-    (typeof args.recommend === "string" ? args.recommend : "");
+    (typeof args.recommend === "string" ? args.recommend : "") ||
+    (args.scan === true ? "[scan]" : "");
   return description.trim().toLowerCase().slice(0, 120);
 }
 

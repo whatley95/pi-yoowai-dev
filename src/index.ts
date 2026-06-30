@@ -29,7 +29,7 @@ import type { YooToolParams, YooToolResult, HeyyooSessionState, PlanResult, YooA
 import { createLoopDetectionState, recordToolCall, checkLoop, shouldSendSteer } from "./loop-detector.js";
 import { recordCost, getSessionCost, formatCost, resetCost } from "./cost-tracker.js";
 import { recordIssues, getPastIssuesForFiles, clearMemory } from "./review-memory.js";
-import { loadConventions, saveConventions, scanProjectConventions, formatConventions, clearConventions } from "./conventions.js";
+import { loadConventions, saveConventions, scanProjectConventions, formatConventions, clearConventions, mergeConventions } from "./conventions.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "./pre-review.js";
 
 const sessionStates = new Map<string, HeyyooSessionState>();
@@ -341,14 +341,15 @@ async function executeYooScan(
     system,
     `${user}\n\nFiles:\n${localScan.files.slice(0, 200).join("\n")}`,
     signal,
+    config.secondary.thinking,
   );
 
   const parsed = parseJsonResponse(raw);
   const llmConventions = validateConventionsResult(parsed);
-  const conventions = llmConventions ?? localScan.conventions;
-  if (llmConventions) {
-    saveConventions(cwd, llmConventions);
-  }
+  const conventions = llmConventions
+    ? mergeConventions(localScan.conventions, llmConventions)
+    : localScan.conventions;
+  saveConventions(cwd, conventions);
 
   return { action: "scan", scan: { conventions, files: localScan.files }, cost: recordCostWithBudget(cwd, usage) };
 }
@@ -406,6 +407,7 @@ export default function (pi: ExtensionAPI) {
       "After yoo.review returns 'needs-work', fix the issues and call yoo.review again until it returns 'pass'.",
       "Only one action (plan/review/suggest/recommend/judge/scan) per call. Do not combine them.",
     ],
+    renderShell: "default",
     parameters: Type.Object({
       plan: Type.Optional(Type.String({
         description: "Provide a task description to get a structured todo plan with acceptance criteria.",
@@ -439,9 +441,6 @@ export default function (pi: ExtensionAPI) {
       })),
       vcs: Type.Optional(Type.Union([Type.Literal("git"), Type.Literal("svn")], {
         description: "Version control system to use for diff. Auto-detected if omitted.",
-      })),
-      fix: Type.Optional(Type.Boolean({
-        description: "If true, generate a patch to fix the most recent review issues.",
       })),
       untracked: Type.Optional(Type.Boolean({
         description: "For review: include untracked (new) files in the diff.",

@@ -118,10 +118,19 @@ Return ONLY a JSON object with this exact structure:
   "naming": "dominant naming convention (e.g. camelCase, PascalCase, snake_case)",
   "structure": "project structure summary (e.g. src/, app/, lib/, tests/)",
   "patterns": ["observed pattern 1", "observed pattern 2"],
-  "stack": "detected tech stack"
+  "stack": "detected tech stack",
+  "testing": "test framework if detectable (e.g. jest, vitest)",
+  "orm": "ORM if detectable (e.g. prisma, drizzle)",
+  "ui": "UI framework if detectable (e.g. react, vue)",
+  "styling": "styling approach if detectable (e.g. tailwindcss, css modules)",
+  "buildTool": "build tool if detectable (e.g. vite, webpack)",
+  "ci": "CI provider if detectable (e.g. github-actions)",
+  "packageManager": "package manager if detectable (e.g. npm, pnpm)",
+  "entryPoints": ["src/index.ts"],
+  "scripts": ["build: ...", "test: ..."]
 }
 
-Be concise and evidence-based. Do not include commentary outside the JSON.`,
+Omit optional fields you cannot infer. Be concise and evidence-based. Do not include commentary outside the JSON.`,
 
     user: "Analyze the following project file list and infer the naming conventions, structure, patterns, and tech stack.",
   };
@@ -334,8 +343,17 @@ export function validateConventionsResult(data: unknown): Conventions | null {
     structure: r.structure,
     patterns: Array.isArray(r.patterns) ? r.patterns.map(String) : [],
     stack: r.stack,
+    testing: typeof r.testing === "string" ? r.testing : undefined,
+    orm: typeof r.orm === "string" ? r.orm : undefined,
+    ui: typeof r.ui === "string" ? r.ui : undefined,
+    styling: typeof r.styling === "string" ? r.styling : undefined,
+    buildTool: typeof r.buildTool === "string" ? r.buildTool : undefined,
+    ci: typeof r.ci === "string" ? r.ci : undefined,
+    packageManager: typeof r.packageManager === "string" ? r.packageManager : undefined,
     entryPoints: Array.isArray(r.entryPoints) ? r.entryPoints.map(String) : [],
     scripts: Array.isArray(r.scripts) ? r.scripts.map(String) : [],
+    styleSample: typeof r.styleSample === "string" ? r.styleSample : undefined,
+    agENTSmd: typeof r.agENTSmd === "string" ? r.agENTSmd : undefined,
     generatedAt: new Date().toISOString(),
   };
 }

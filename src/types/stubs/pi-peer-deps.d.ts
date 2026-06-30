@@ -8,8 +8,9 @@ declare module "@earendil-works/pi-coding-agent" {
       promptSnippet?: string;
       promptGuidelines?: string[];
       parameters?: unknown;
-      renderCall?: (args: unknown, theme: { fg(token: string, text: string): string; bg(token: string, text: string): string }) => unknown;
-      renderResult?: (toolResult: unknown, opts: { expanded: boolean }, theme: { fg(token: string, text: string): string; bg(token: string, text: string): string }) => unknown;
+      renderShell?: "default" | "self";
+      renderCall?: (args: unknown, theme: { fg(token: string, text: string): string; bg(token: string, text: string): string }, context?: { lastComponent?: unknown }) => unknown;
+      renderResult?: (toolResult: unknown, opts: { expanded: boolean }, theme: { fg(token: string, text: string): string; bg(token: string, text: string): string }, context?: { lastComponent?: unknown }) => unknown;
       execute: (
         toolCallId: string,
         params: Record<string, unknown>,

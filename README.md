@@ -46,7 +46,7 @@ Add to `~/.pi/agent/settings.json`:
 
 **Recommended:** Use a DIFFERENT model family than your main agent. If main is DeepSeek, set secondary to Claude or GPT. This catches blind spots your main model shares.
 
-If no secondary model is configured, yoo falls back to the main agent's model.
+If no secondary model is configured, yoo returns an error. Configure `pi-heyyoo.secondary` in settings.json or use `/yoo-model` to pick one interactively.
 
 ### Options
 

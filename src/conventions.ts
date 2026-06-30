@@ -80,7 +80,6 @@ export function scanProjectConventions(cwd: string): ScanResult {
     generatedAt: new Date().toISOString(),
   };
 
-  saveConventions(cwd, conventions);
   return { conventions, files };
 }
 
@@ -337,6 +336,19 @@ export function clearConventions(cwd: string): void {
       writeFileSync(path, JSON.stringify(emptyConventions()), { encoding: "utf-8", mode: 0o600 });
     }
   } catch { /* ignore */ }
+}
+
+export function mergeConventions(local: Conventions, override: Conventions): Conventions {
+  const merged = { ...local } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(override)) {
+    if (value === undefined) continue;
+    if (Array.isArray(value) && value.length === 0 && merged[key]) {
+      // Keep locally-inferred arrays if the LLM returned an empty list.
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged as unknown as Conventions;
 }
 
 export function formatConventions(conventions: Conventions): string {

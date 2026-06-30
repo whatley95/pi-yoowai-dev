@@ -1,3 +1,4 @@
+import { Text } from "@earendil-works/pi-tui";
 import type { YooToolParams, YooToolResult } from "./types.js";
 
 interface Theme {
@@ -5,19 +6,68 @@ interface Theme {
   bg(token: string, text: string): string;
 }
 
-export function renderCall(params: unknown, theme: Theme): string {
-  const p = params as YooToolParams;
-  if (p.plan) return theme.fg("yoo", `yoo plan: ${truncate(String(p.plan), 80)}`);
-  if (p.review) return theme.fg("yoo", `yoo review: ${truncate(String(p.review), 80)}`);
-  if (p.suggest) return theme.fg("yoo", `yoo suggest: ${truncate(String(p.suggest), 80)}`);
-  if (p.recommend) return theme.fg("yoo", `yoo recommend: ${truncate(String(p.recommend), 80)}`);
-  if (p.judge) return theme.fg("yoo", `yoo judge: ${truncate(String(p.judge), 80)}`);
-  return theme.fg("yoo", "yoo");
+interface ToolRenderContext {
+  lastComponent?: unknown;
 }
 
-export function renderResult(result: unknown, _opts: { expanded: boolean }, theme: Theme): string {
-  const r = result as YooToolResult;
-  if (r.error) return theme.fg("error", `yoo error: ${r.error}`);
+function isTextComponent(value: unknown): value is Text {
+  return (
+    value instanceof Text ||
+    (!!value &&
+      typeof value === "object" &&
+      typeof (value as Record<string, unknown>).setText === "function" &&
+      typeof (value as Record<string, unknown>).render === "function")
+  );
+}
+
+function getTextComponent(context?: ToolRenderContext): Text {
+  const last = context?.lastComponent;
+  if (isTextComponent(last)) {
+    return last;
+  }
+  return new Text("", 0, 0);
+}
+
+function resolveToolResult(result: unknown): { result: YooToolResult | undefined; isError: boolean } {
+  if (!result || typeof result !== "object") {
+    return { result: undefined, isError: true };
+  }
+  const candidate = result as Record<string, unknown>;
+  // Pi passes the full AgentToolResult wrapper; be defensive in case it ever passes details directly.
+  if ("details" in candidate) {
+    return {
+      result: (candidate.details as YooToolResult) ?? undefined,
+      isError: Boolean(candidate.isError),
+    };
+  }
+  return { result: result as YooToolResult, isError: false };
+}
+
+export function renderCall(params: unknown, theme: Theme, context?: ToolRenderContext): Text {
+  const p = params as YooToolParams;
+  let label: string;
+  if (p.plan) label = `yoo plan: ${truncate(String(p.plan), 80)}`;
+  else if (p.review) label = `yoo review: ${truncate(String(p.review), 80)}`;
+  else if (p.suggest) label = `yoo suggest: ${truncate(String(p.suggest), 80)}`;
+  else if (p.recommend) label = `yoo recommend: ${truncate(String(p.recommend), 80)}`;
+  else if (p.judge) label = `yoo judge: ${truncate(String(p.judge), 80)}`;
+  else if (p.scan) label = "yoo scan";
+  else label = "yoo";
+
+  const text = getTextComponent(context);
+  text.setText(theme.fg("yoo", label));
+  return text;
+}
+
+export function renderResult(result: unknown, _opts: { expanded: boolean }, theme: Theme, context?: ToolRenderContext): Text {
+  const { result: r, isError } = resolveToolResult(result);
+  const text = getTextComponent(context);
+
+  if (!r || r.error || isError) {
+    const message = r?.error ? `yoo error: ${r.error}` : "yoo error";
+    text.setText(theme.fg("error", message));
+    return text;
+  }
 
   const lines: string[] = [];
 
@@ -72,7 +122,8 @@ export function renderResult(result: unknown, _opts: { expanded: boolean }, them
     lines.push(`  ${theme.fg("dim", `${r.scan.conventions.stack} • ${r.scan.conventions.naming}`)}`);
   }
 
-  return lines.join("\n");
+  text.setText(lines.join("\n"));
+  return text;
 }
 
 function truncate(text: string, maxLen: number): string {
