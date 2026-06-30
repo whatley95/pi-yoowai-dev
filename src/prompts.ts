@@ -1,14 +1,16 @@
 import type { PlanResult, ReviewResult, SuggestResult, RecommendResult, JudgeResult, Conventions } from "./types.js";
 
+const PAIR_PROGRAMMER_PERSONA = `You are a senior pair programmer sitting next to the developer. You are collaborative, direct, and focused on shipping correct, maintainable code. You explain your reasoning briefly but stay actionable.`;
+
 export function buildPlanPrompt(task: string, conventions?: string): { system: string; user: string } {
   const conventionsBlock = conventions
     ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>`
     : "";
 
   return {
-    system: `You are a senior software architect and planning expert.
+    system: `${PAIR_PROGRAMMER_PERSONA}
 
-Your job is to break down a coding task into an actionable, ordered todo list with clear acceptance criteria for each step.
+You are creating a structured plan for the developer. Break the task into an actionable, ordered todo list with clear acceptance criteria for each step.
 
 Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
 {
@@ -78,7 +80,9 @@ export function buildReviewPrompt(
   const vcsLine = vcs ? `\n\nVersion control: ${vcs}` : "";
 
   return {
-    system: `You are a rigorous code reviewer. Your job is to catch bugs, mistakes, and quality issues that the developer missed.
+    system: `${PAIR_PROGRAMMER_PERSONA}
+
+You are reviewing the latest code change as the developer's pair. Catch bugs, mistakes, and quality issues they missed.
 
 ${REVIEW_RUBRIC}
 
@@ -111,7 +115,9 @@ Rules:
 
 export function buildScanPrompt(): { system: string; user: string } {
   return {
-    system: `You are analyzing a codebase to extract project conventions and architecture patterns.
+    system: `${PAIR_PROGRAMMER_PERSONA}
+
+You are analyzing the codebase to extract conventions and architecture patterns. This context will ground future pair-programming sessions.
 
 Return ONLY a JSON object with this exact structure:
 {
@@ -142,7 +148,9 @@ export function buildSuggestPrompt(question: string, conventions?: string): { sy
     : "";
 
   return {
-    system: `You are a senior developer giving practical advice.
+    system: `${PAIR_PROGRAMMER_PERSONA}
+
+The developer is asking for advice on a technical choice. Offer practical, balanced options.
 
 Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
 {
@@ -172,7 +180,9 @@ export function buildRecommendPrompt(situation: string, planTodo?: string[], con
     : "";
 
   return {
-    system: `You are an experienced pair programmer advising on what to do next.
+    system: `${PAIR_PROGRAMMER_PERSONA}
+
+Advise the developer on what to do next. Be decisive and actionable.
 
 Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
 {
@@ -211,7 +221,9 @@ export function buildJudgePrompt(
     : "";
 
   return {
-    system: `You are a senior engineer performing a final holistic review of completed work.
+    system: `${PAIR_PROGRAMMER_PERSONA}
+
+You are performing a final holistic review of completed work before the developer ships it.
 
 ${REVIEW_RUBRIC}
 

@@ -156,6 +156,10 @@ async function callOpenAiCompatibleApi(
 ): Promise<{ content: string; usage: UsageCost }> {
   const url = buildOpenAiUrl(apiInfo, apiKey);
 
+  const thinkingEnabled = Boolean(thinking && supportsThinkingParam(provider, model));
+  // When thinking/reasoning is enabled, the output limit must be larger than the thinking budget.
+  const outputTokenLimit = thinkingEnabled ? 8192 : 2048;
+
   const body: Record<string, unknown> = {
     model,
     messages: [
@@ -163,15 +167,15 @@ async function callOpenAiCompatibleApi(
       { role: "user", content: userPrompt },
     ],
     temperature: 0.3,
-    max_tokens: 2048,
+    max_tokens: outputTokenLimit,
   };
-  if (thinking && supportsThinkingParam(provider, model)) {
-    body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking) };
+  if (thinkingEnabled) {
+    body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking ?? "medium") };
     delete body.temperature;
   }
   if (supportsMaxCompletionTokens(provider, model)) {
     delete body.max_tokens;
-    body.max_completion_tokens = 2048;
+    body.max_completion_tokens = outputTokenLimit;
   }
 
   const headers = buildOpenAiHeaders(apiInfo, apiKey);
@@ -189,13 +193,42 @@ async function callOpenAiCompatibleApi(
   }
 
   const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      message?: {
+        content?: string | Array<{ type?: string; text?: string }>;
+        refusal?: string;
+      };
+      finish_reason?: string;
+    }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
+    error?: { message?: string };
   };
 
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error("Empty response from secondary model");
+  if (data.error?.message) {
+    throw new Error(`Secondary model API error: ${data.error.message}`);
+  }
+
+  const choice = data.choices?.[0];
+  if (!choice) {
+    throw new Error(`Empty response from secondary model: no choices. Raw: ${JSON.stringify(data).slice(0, 800)}`);
+  }
+
+  const message = choice.message;
+  if (message?.refusal) {
+    throw new Error(`Secondary model refused: ${message.refusal}`);
+  }
+
+  let content: string | undefined;
+  if (typeof message?.content === "string") {
+    content = message.content;
+  } else if (Array.isArray(message?.content)) {
+    content = message.content.map((c) => (typeof c === "object" && c?.text ? c.text : "")).join("");
+  }
+
+  if (!content || content.trim().length === 0) {
+    throw new Error(
+      `Empty response from secondary model (finish_reason: ${choice.finish_reason ?? "unknown"}). Raw: ${JSON.stringify(data).slice(0, 800)}`,
+    );
   }
 
   const usage = buildUsage(provider, model, systemPrompt, userPrompt, content);
@@ -255,16 +288,20 @@ async function callAnthropicApi(
 ): Promise<{ content: string; usage: UsageCost }> {
   const url = `${apiInfo.baseUrl}/messages`;
 
+  const thinkingEnabled = Boolean(thinking);
+  // Anthropic counts thinking tokens against max_tokens, so reserve room for visible output.
+  const outputTokenLimit = thinkingEnabled ? 8192 : 2048;
+
   const body: Record<string, unknown> = {
     model,
-    max_tokens: 2048,
+    max_tokens: outputTokenLimit,
     system: systemPrompt,
     messages: [
       { role: "user", content: userPrompt },
     ],
   };
-  if (thinking) {
-    body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking) };
+  if (thinkingEnabled) {
+    body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking ?? "medium") };
   }
 
   const headers: Record<string, string> = {
@@ -286,13 +323,23 @@ async function callAnthropicApi(
   }
 
   const data = (await response.json()) as {
-    content?: Array<{ type: string; text?: string }>;
+    content?: Array<{ type: string; text?: string; thinking?: string }>;
     usage?: { input_tokens?: number; output_tokens?: number };
+    error?: { message?: string };
   };
 
-  const textContent = data.content?.find((c) => c.type === "text")?.text;
-  if (!textContent) {
-    throw new Error("Empty response from secondary model");
+  if (data.error?.message) {
+    throw new Error(`Secondary model API error: ${data.error.message}`);
+  }
+
+  const textContent = data.content
+    ?.filter((c) => c.type === "text")
+    .map((c) => c.text ?? "")
+    .join("");
+  if (!textContent || textContent.trim().length === 0) {
+    throw new Error(
+      `Empty response from secondary model. Raw: ${JSON.stringify(data).slice(0, 800)}`,
+    );
   }
 
   const usage = buildUsage(provider, model, systemPrompt, userPrompt, textContent);

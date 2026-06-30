@@ -437,20 +437,19 @@ export default function (pi: ExtensionAPI) {
     name: "yoo",
     label: "Yoo — Pair Programmer",
     description:
-      "Pair-programmer that reviews your work with a secondary model. Use yoo.plan to create a structured todo plan. Use yoo.review after each code change to get a second opinion. Use yoo.suggest when stuck on a question. Use yoo.recommend when unsure what to do next. Use yoo.judge for a final holistic review of all completed work.",
-    promptSnippet: "yoo: secondary model reviews, plans, suggests, recommends, or judges your work",
+      "Mandatory second-opinion workflow powered by a secondary model. Always use yoo.plan before implementing, yoo.review after every change, yoo.scan when opening a new project, yoo.suggest when unsure, yoo.recommend when deciding next steps, and yoo.judge before declaring work complete.",
+    promptSnippet: "yoo: always get a second opinion from the secondary model before acting",
     promptGuidelines: [
-      "Use yoo with plan:true before starting a complex task. The secondary model creates a structured todo list with acceptance criteria.",
-      "Use yoo with review:true after each significant code change. The secondary model examines the diff and catches bugs, missing error handling, and convention violations.",
+      "Always use yoo with plan:true before starting any non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria; do not write code without a plan.",
+      "Always use yoo with review:true after every code change. Treat review feedback as blocking; fix issues and re-run review until it returns 'pass'.",
       "Use yoo with review:true and files:[...] to limit the review to specific files, or exclude:[...] to skip files like generated output.",
-      "Use yoo with scan:true once per project to learn conventions and architecture. Future reviews automatically use this context.",
-      "Use yoo with suggest:true when you need alternative approaches for a specific technical question.",
-      "Use yoo with recommend:true when you're unsure what step to take next.",
+      "Use yoo with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans.",
+      "Use yoo with suggest:true whenever you are uncertain about the best approach for a specific technical question.",
+      "Use yoo with recommend:true whenever you need to decide what step to take next.",
       "Use yoo with judge:true after completing all work for a final holistic review against the original plan.",
       "Enable autoJudge in settings.json to automatically run judge when the last plan step passes review.",
       "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
       "The secondary model should be a DIFFERENT model family than the main model to catch blind spots. Configure in settings.json under pi-heyyoo.secondary.",
-      "After yoo.review returns 'needs-work', fix the issues and call yoo.review again until it returns 'pass'.",
       "Only one action (plan/review/suggest/recommend/judge/scan) per call. Do not combine them.",
     ],
     renderShell: "default",
@@ -558,6 +557,11 @@ export default function (pi: ExtensionAPI) {
       const restText = rest.join(" ").trim();
       const signal = undefined;
 
+      const notifyProgress = (update: unknown) => {
+        const message = (update as { details?: { progressMessage?: string } }).details?.progressMessage;
+        if (message) ctx.ui.notify(message, "info");
+      };
+
       let result: YooToolResult;
       try {
         switch (subcommand.toLowerCase()) {
@@ -569,26 +573,26 @@ export default function (pi: ExtensionAPI) {
               ctx.ui.notify("Usage: /yoo plan <task description>", "warn");
               return;
             }
-            result = await executeYooPlan(ctx.cwd, restText, signal);
+            result = await executeYooPlan(ctx.cwd, restText, signal, notifyProgress);
             break;
           case "review":
-            result = await executeYooReview(ctx.cwd, restText || "review changes", ctx, {}, signal);
+            result = await executeYooReview(ctx.cwd, restText || "review changes", ctx, {}, signal, notifyProgress);
             break;
           case "suggest":
             if (!restText) {
               ctx.ui.notify("Usage: /yoo suggest <question>", "warn");
               return;
             }
-            result = await executeYooSuggest(ctx.cwd, restText, signal);
+            result = await executeYooSuggest(ctx.cwd, restText, signal, notifyProgress);
             break;
           case "recommend":
-            result = await executeYooRecommend(ctx.cwd, restText || "what next", signal);
+            result = await executeYooRecommend(ctx.cwd, restText || "what next", signal, notifyProgress);
             break;
           case "judge":
-            result = await executeYooJudge(ctx.cwd, restText || "all done", signal);
+            result = await executeYooJudge(ctx.cwd, restText || "all done", signal, notifyProgress);
             break;
           case "scan":
-            result = await executeYooScan(ctx.cwd, signal);
+            result = await executeYooScan(ctx.cwd, signal, notifyProgress);
             break;
           default:
             ctx.ui.notify(`Unknown /yoo subcommand: ${subcommand}. Try /yoo status`, "warn");
@@ -724,6 +728,49 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify("yoo plan, state, cost, memory, and conventions cleared.", "info");
     },
   });
+
+  pi.registerCommand("yoo-next", {
+    description: "Recommend the next step based on the active yoo plan",
+    handler: async (_args, ctx) => {
+      const signal = undefined;
+      const progress = getProgress(ctx.cwd);
+      const situation = progress.total > 0
+        ? `Plan progress: ${progress.current}/${progress.total} steps completed. Current step: ${progress.nextStep ?? "none"}`
+        : "No active plan. Recommend a next step for this project.";
+      const result = await executeYooRecommend(ctx.cwd, situation, signal, (update) => {
+        const message = (update as { details?: { progressMessage?: string } }).details?.progressMessage;
+        if (message) ctx.ui.notify(message, "info");
+      });
+      const text = formatResultText(result);
+      ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
+    },
+  });
+
+  pi.registerCommand("yoo-done", {
+    description: "Mark the current yoo plan step complete and recommend the next step",
+    handler: async (_args, ctx) => {
+      const signal = undefined;
+      const progress = getProgress(ctx.cwd);
+      if (progress.total === 0) {
+        ctx.ui.notify("No active yoo plan. Start one with /yoo plan <task>.", "warn");
+        return;
+      }
+      if (progress.current >= progress.total) {
+        ctx.ui.notify("All plan steps are already complete. Run /yoo judge for a final review.", "info");
+        return;
+      }
+      markStepComplete(ctx.cwd);
+      const newProgress = getProgress(ctx.cwd);
+      ctx.ui.notify(`Step ${progress.current + 1} marked complete.`, "info");
+      const situation = `Plan progress: ${newProgress.current}/${newProgress.total} steps completed. Current step: ${newProgress.nextStep ?? "none"}`;
+      const result = await executeYooRecommend(ctx.cwd, situation, signal, (update) => {
+        const message = (update as { details?: { progressMessage?: string } }).details?.progressMessage;
+        if (message) ctx.ui.notify(message, "info");
+      });
+      const text = formatResultText(result);
+      ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
+    },
+  });
 }
 
 async function showYooStatus(ctx: ExtensionContext): Promise<void> {
@@ -835,6 +882,16 @@ function formatResultText(result: YooToolResult): string {
         if (issue.suggestion) lines.push(`  → ${issue.suggestion}`);
       }
       lines.push("");
+
+      if (result.review.verdict !== "pass") {
+        lines.push("### Fix plan");
+        for (let i = 0; i < result.review.issues.length; i++) {
+          const issue = result.review.issues[i];
+          const loc = issue.file ? `\`${issue.file}${issue.line ? `:${issue.line}` : ""}\`` : "unknown";
+          lines.push(`${i + 1}. **${issue.severity}** ${loc}: ${issue.suggestion || issue.issue}`);
+        }
+        lines.push("");
+      }
     }
 
     if (result.review.suggestions.length > 0) {
