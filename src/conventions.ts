@@ -1,10 +1,12 @@
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { getConfigDirName, getProjectConfigPath } from "./pi-paths.js";
+import { logEvent } from "./logger.js";
 import type { Conventions, ScanResult } from "./types.js";
 
 function getConventionsPath(cwd: string): string {
-  return join(cwd, ".pi", "heyyoo", "conventions.json");
+  return getProjectConfigPath(cwd, "heyyoo", "conventions.json");
 }
 
 function isValidConventions(data: unknown): Conventions | null {
@@ -37,15 +39,20 @@ export function loadConventions(cwd: string): Conventions | null {
   try {
     const data = JSON.parse(readFileSync(path, "utf-8"));
     return isValidConventions(data);
-  } catch {
+  } catch (err) {
+    logEvent(cwd, "warn", "Failed to load conventions", { error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
 
 export function saveConventions(cwd: string, conventions: Conventions): void {
-  const dir = join(cwd, ".pi", "heyyoo");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(getConventionsPath(cwd), JSON.stringify(conventions, null, 2), { encoding: "utf-8", mode: 0o600 });
+  try {
+    const dir = getProjectConfigPath(cwd, "heyyoo");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(getConventionsPath(cwd), JSON.stringify(conventions, null, 2), { encoding: "utf-8", mode: 0o600 });
+  } catch (err) {
+    logEvent(cwd, "error", "Failed to save conventions", { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 export function scanProjectConventions(cwd: string): ScanResult {
@@ -84,33 +91,55 @@ export function scanProjectConventions(cwd: string): ScanResult {
 }
 
 const FALLBACK_SCAN_LIMIT = 500;
-const EXCLUDED_SCAN_DIRS = new Set(["node_modules", ".pi", ".git", "dist", "build", "out", "coverage"]);
+const BASE_EXCLUDED_SCAN_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", "coverage"]);
+
+function getExcludedScanDirs(): Set<string> {
+  return new Set([...BASE_EXCLUDED_SCAN_DIRS, getConfigDirName()]);
+}
 
 function listTrackedFiles(cwd: string): string[] {
   if (existsSync(join(cwd, ".git"))) {
     try {
-      return execSync("git ls-files", { cwd, encoding: "utf-8", maxBuffer: 1024 * 1024, timeout: 10000, stdio: ["pipe", "pipe", "pipe"] })
+      return execSync("git ls-files", {
+        cwd,
+        encoding: "utf-8",
+        maxBuffer: 1024 * 1024,
+        timeout: 10000,
+        stdio: ["pipe", "pipe", "pipe"],
+      })
         .split(/\r?\n/)
-        .filter((f) => f.length > 0 && !f.includes("node_modules/") && !f.includes(".pi/"));
-    } catch { /* git command failed */ }
+        .filter((f) => {
+          if (f.length === 0) return false;
+          if (f.includes("node_modules/")) return false;
+          const configDir = getConfigDirName();
+          if (f.includes(`${configDir}/`)) return false;
+          return true;
+        });
+    } catch {
+      /* git command failed */
+    }
   }
-
 
   // fallback: portable recursive directory scan (works on Windows without Unix shell tools)
   try {
     return scanDirectory(cwd, cwd, FALLBACK_SCAN_LIMIT);
-  } catch { /* ignore */ }
+  } catch (err) {
+    logEvent(cwd, "warn", "Portable directory scan failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   return [];
 }
 
 function scanDirectory(root: string, dir: string, limit: number): string[] {
   const files: string[] = [];
+  const excluded = getExcludedScanDirs();
   const entries = readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (files.length >= limit) break;
     if (entry.isDirectory()) {
-      if (!EXCLUDED_SCAN_DIRS.has(entry.name)) {
+      if (!excluded.has(entry.name)) {
         files.push(...scanDirectory(root, join(dir, entry.name), limit - files.length));
       }
       continue;
@@ -196,9 +225,8 @@ export function formatConfigFiles(cwd: string): string {
   for (const file of CONFIG_FILE_CANDIDATES) {
     const content = readTextFile(join(cwd, file));
     if (!content) continue;
-    const truncated = content.length > CONFIG_FILE_MAX_CHARS
-      ? `${content.slice(0, CONFIG_FILE_MAX_CHARS)}\n...`
-      : content;
+    const truncated =
+      content.length > CONFIG_FILE_MAX_CHARS ? `${content.slice(0, CONFIG_FILE_MAX_CHARS)}\n...` : content;
     parts.push(`### ${file}\n${truncated}`);
   }
   if (parts.length === 0) return "";
@@ -217,13 +245,15 @@ function emptyConventions(): Conventions {
   };
 }
 
-function inferNaming(files: string[]): string {
+export function inferNaming(files: string[]): string {
   const names = files.map((f) => f.split("/").pop() || "");
   const camel = names.some((n) => /^[a-z][a-zA-Z0-9]*\.(ts|js|tsx|jsx)$/.test(n));
   const pascal = names.some((n) => /^[A-Z][a-zA-Z0-9]*\.(ts|js|tsx|jsx)$/.test(n));
   const snake = names.some((n) => /^[a-z0-9_]+\.(ts|js|py|rs|go)$/.test(n));
   const kebab = names.some((n) => /^[a-z0-9-]+\.(ts|js)$/.test(n));
-  const detected = [camel && "camelCase", pascal && "PascalCase", snake && "snake_case", kebab && "kebab-case"].filter(Boolean);
+  const detected = [camel && "camelCase", pascal && "PascalCase", snake && "snake_case", kebab && "kebab-case"].filter(
+    Boolean,
+  );
   return detected.length > 0 ? detected.join(", ") : "mixed";
 }
 
@@ -249,14 +279,15 @@ function inferPatterns(files: string[], cwd: string): string[] {
   if (files.some((f) => f === "docker-compose.yml" || f === "Dockerfile")) patterns.push("uses Docker");
   if (files.some((f) => f === ".env.example" || f === ".env.local.example")) patterns.push("has env example files");
   if (files.some((f) => f === "pubspec.yaml")) patterns.push("Flutter project (pubspec.yaml)");
-  if (files.some((f) => f === "pom.xml" || f === "build.gradle" || f === "build.gradle.kts")) patterns.push("JVM project (Maven/Gradle)");
+  if (files.some((f) => f === "pom.xml" || f === "build.gradle" || f === "build.gradle.kts"))
+    patterns.push("JVM project (Maven/Gradle)");
   if (files.some((f) => f.endsWith(".component.ts"))) patterns.push("Angular component files");
   if (files.some((f) => f.endsWith(".vue"))) patterns.push("Vue single-file components");
   if (files.some((f) => f === "vite.config.ts" || f === "vite.config.js")) patterns.push("Vite project");
   return patterns;
 }
 
-function inferStack(files: string[], cwd: string, pkg: Record<string, unknown> | null): string {
+export function inferStack(files: string[], cwd: string, pkg: Record<string, unknown> | null): string {
   const checks: Record<string, boolean> = {
     TypeScript: files.some((f) => /\.(ts|tsx)$/.test(f)),
     React: files.some((f) => /\.(tsx|jsx)$/.test(f)) || hasDependency(pkg, "react"),
@@ -270,11 +301,16 @@ function inferStack(files: string[], cwd: string, pkg: Record<string, unknown> |
     Go: files.some((f) => f.endsWith(".go")),
     Rust: files.some((f) => f.endsWith(".rs")),
     Java: files.some((f) => f.endsWith(".java")),
-    "Spring Boot": hasDependency(pkg, "spring-boot-starter") || (files.some((f) => f === "pom.xml" || f === "build.gradle" || f === "build.gradle.kts") && files.some((f) => f.endsWith(".java"))),
+    "Spring Boot":
+      hasDependency(pkg, "spring-boot-starter") ||
+      (files.some((f) => f === "pom.xml" || f === "build.gradle" || f === "build.gradle.kts") &&
+        files.some((f) => f.endsWith(".java"))),
     Flutter: files.some((f) => f === "pubspec.yaml") && files.some((f) => f.endsWith(".dart")),
     Dart: files.some((f) => f.endsWith(".dart")),
   };
-  const detected = Object.entries(checks).filter(([, v]) => v).map(([k]) => k);
+  const detected = Object.entries(checks)
+    .filter(([, v]) => v)
+    .map(([k]) => k);
   return detected.length > 0 ? detected.join(", ") : "unknown";
 }
 
@@ -285,7 +321,11 @@ function inferTesting(files: string[], pkg: Record<string, unknown> | null): str
   if (hasDependency(pkg, "playwright")) return "playwright";
   if (hasDependency(pkg, "cypress")) return "cypress";
   if (hasDependency(pkg, "@angular/core")) return "karma / jasmine (angular default)";
-  if (files.some((f) => f === "pubspec.yaml") && files.some((f) => /\/(test|integration_test)\//.test(f) && f.endsWith(".dart"))) return "flutter test";
+  if (
+    files.some((f) => f === "pubspec.yaml") &&
+    files.some((f) => /\/(test|integration_test)\//.test(f) && f.endsWith(".dart"))
+  )
+    return "flutter test";
   if (files.some((f) => f.endsWith("Test.java") || f.endsWith("Tests.java"))) return "junit";
   if (files.some((f) => /\.(test|spec)\./.test(f))) return "unknown test files";
   return undefined;
@@ -324,7 +364,7 @@ function inferStyling(files: string[], pkg: Record<string, unknown> | null): str
   return undefined;
 }
 
-function inferBuildTool(files: string[], pkg: Record<string, unknown> | null): string | undefined {
+export function inferBuildTool(files: string[], pkg: Record<string, unknown> | null): string | undefined {
   if (hasDependency(pkg, "vite")) return "vite";
   if (hasDependency(pkg, "webpack")) return "webpack";
   if (hasDependency(pkg, "rollup")) return "rollup";
@@ -372,7 +412,19 @@ function inferEntryPoints(files: string[], pkg: Record<string, unknown> | null):
     }
   }
 
-  const common = ["src/index.ts", "src/index.js", "src/main.ts", "src/main.js", "src/app.ts", "src/app.tsx", "app/index.ts", "app/page.tsx", "main.py", "cmd/main.go", "src/lib.rs"];
+  const common = [
+    "src/index.ts",
+    "src/index.js",
+    "src/main.ts",
+    "src/main.js",
+    "src/app.ts",
+    "src/app.tsx",
+    "app/index.ts",
+    "app/page.tsx",
+    "main.py",
+    "cmd/main.go",
+    "src/lib.rs",
+  ];
   for (const f of common) {
     if (files.includes(f)) entryPoints.push(f);
   }
@@ -388,21 +440,28 @@ function inferScripts(pkg: Record<string, unknown> | null): string[] {
 }
 
 function inferStyleSample(files: string[], cwd: string): string | undefined {
-  const candidates = files.filter((f) => /\.(ts|js|tsx|jsx|py|go|rs|dart|java)$/.test(f) && !/\.(test|spec|d)\./.test(f));
+  const candidates = files.filter(
+    (f) => /\.(ts|js|tsx|jsx|py|go|rs|dart|java)$/.test(f) && !/\.(test|spec|d)\./.test(f),
+  );
   if (candidates.length === 0) return undefined;
 
   // pick a medium-sized representative file
-  const sample = candidates
+  const eligible = candidates
     .map((f) => ({ file: f, size: statSize(join(cwd, f)) }))
     .filter((x) => x.size > 0 && x.size < 20_000)
-    .sort((a, b) => a.size - b.size)[Math.floor(candidates.length / 2)];
+    .sort((a, b) => a.size - b.size);
+  const sample = eligible[Math.floor(eligible.length / 2)];
 
   if (!sample) return undefined;
   try {
     const content = readFileSync(join(cwd, sample.file), "utf-8");
     const lines = content.split(/\r?\n/);
     return lines.slice(0, 40).join("\n");
-  } catch {
+  } catch (err) {
+    logEvent(cwd, "warn", "Failed to read style sample", {
+      file: sample.file,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return undefined;
   }
 }
@@ -421,7 +480,9 @@ export function clearConventions(cwd: string): void {
     if (existsSync(path)) {
       writeFileSync(path, JSON.stringify(emptyConventions()), { encoding: "utf-8", mode: 0o600 });
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    logEvent(cwd, "warn", "Failed to clear conventions", { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 export function mergeConventions(local: Conventions, override: Conventions): Conventions {

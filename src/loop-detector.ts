@@ -23,9 +23,8 @@ export function recordToolCall(state: LoopDetectionState, event: unknown): void 
     if (!e) return;
 
     const toolName = typeof e.toolName === "string" ? e.toolName : "";
-    const args = e.args && typeof e.args === "object" && !Array.isArray(e.args)
-      ? (e.args as Record<string, unknown>)
-      : {};
+    const args =
+      e.args && typeof e.args === "object" && !Array.isArray(e.args) ? (e.args as Record<string, unknown>) : {};
 
     if (!toolName) return;
 
@@ -50,7 +49,8 @@ export function checkLoop(state: LoopDetectionState): { looping: boolean; messag
   if (yooReviewCalls.length >= 3 && nonYooCalls.length === 0) {
     return {
       looping: true,
-      message: "LOOP DETECTED: you keep calling yoo.review/yoo.judge without making real edits. STOP. Pick one concrete issue, fix it in the actual code, then call yoo.review once. If stuck, ask the user or use yoo.suggest.",
+      message:
+        "LOOP DETECTED: you keep calling yoo.review/yoo.judge without making real edits. STOP. Pick one concrete issue, fix it in the actual code, then call yoo.review once. If stuck, ask the user or use yoo.suggest.",
     };
   }
 
@@ -61,7 +61,8 @@ export function checkLoop(state: LoopDetectionState): { looping: boolean; messag
     if (sameDescriptionCount >= 3) {
       return {
         looping: true,
-        message: "LOOP DETECTED: you are repeating the same yoo call with the same description. STOP. The previous result should already guide you. Apply a real change or ask the user if blocked.",
+        message:
+          "LOOP DETECTED: you are repeating the same yoo call with the same description. STOP. The previous result should already guide you. Apply a real change or ask the user if blocked.",
       };
     }
   }
@@ -73,10 +74,12 @@ function countIdenticalDescriptions(calls: ToolCallRecord[], target: ToolCallRec
   const targetDesc = getYooDescription(target.args);
   if (!targetDesc) return 0;
 
+  const targetAction = getYooActionKey(target.args);
   let count = 0;
   for (let i = calls.length - 1; i >= 0; i--) {
     const c = calls[i];
     if (c.toolName !== "yoo") break;
+    if (getYooActionKey(c.args) !== targetAction) break;
     if (getYooDescription(c.args) === targetDesc) {
       count++;
     } else {
@@ -84,6 +87,16 @@ function countIdenticalDescriptions(calls: ToolCallRecord[], target: ToolCallRec
     }
   }
   return count;
+}
+
+export function getYooActionKey(args: Record<string, unknown>): string {
+  if (typeof args.review === "string") return "review";
+  if (typeof args.judge === "string") return "judge";
+  if (typeof args.plan === "string") return "plan";
+  if (typeof args.suggest === "string") return "suggest";
+  if (typeof args.recommend === "string") return "recommend";
+  if (args.scan === true) return "scan";
+  return "";
 }
 
 function getYooDescription(args: Record<string, unknown>): string {

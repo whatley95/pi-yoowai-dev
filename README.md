@@ -24,7 +24,7 @@ pi -e git:github.com/whatley95/pi-heyyoo-dev
 
 ## Configuration
 
-Add to `~/.pi/agent/settings.json`:
+Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
 
 ```json
 {
@@ -32,14 +32,19 @@ Add to `~/.pi/agent/settings.json`:
     "secondary": {
       "provider": "opencode-go",
       "id": "deepseek-v4-pro",
-      "thinking": "xhigh"
+      "thinking": "xhigh",
+      "contextWindow": 64000,
+      "maxOutputTokens": 8192
     },
     "autoJudge": true,
     "preReviewCommands": [
       "npm run typecheck",
       "npm run lint"
     ],
-    "costBudgetUsd": 0.5
+    "costBudgetUsd": 0.5,
+    "reviewFullFileThresholdLines": 300,
+    "reviewMaxInputTokens": 50000,
+    "reviewStrategy": "auto"
   }
 }
 ```
@@ -56,6 +61,12 @@ If no secondary model is configured, yoo returns an error. Configure `pi-heyyoo.
 | `autoJudge` | boolean | Run `yoo.judge` automatically when the last plan step passes review |
 | `preReviewCommands` | string[] | Commands to run before each review; output is included in the review prompt |
 | `costBudgetUsd` | number | Maximum estimated session spend before yoo stops with an error |
+| `reviewMaxDiffChars` | number | Legacy cap on diff characters; prefer `reviewMaxInputTokens` |
+| `reviewFullFileThresholdLines` | number | Include full content for changed files under this line count (default: 300) |
+| `reviewMaxInputTokens` | number | Hard cap on review input tokens |
+| `reviewStrategy` | `"auto" \| "diff-only" \| "full-files"` | How to include changed file contents (default: `"auto"`) |
+| `secondary.contextWindow` | number | Override the model's context window |
+| `secondary.maxOutputTokens` | number | Override the model's max output tokens |
 
 ## Tools
 
@@ -118,7 +129,7 @@ The `yoo` tool is called by the main agent during development:
 
 ## Logging
 
-yoo writes error and event entries to `.pi/heyyoo/yoo.log` in the current project. Use these commands to inspect or clear it:
+yoo writes error and event entries to `<pi-config-dir>/heyyoo/yoo.log` in the current project (by default `.pi/heyyoo/yoo.log`). Use these commands to inspect or clear it:
 
 ```text
 /yoo-logs        # show last 50 entries
@@ -177,6 +188,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 
 - **No child Pi process** — direct HTTP calls to the secondary model's API
 - **Automatic diff collection** — `yoo.review` auto-runs `git diff HEAD` (or `svn diff`)
+- **Adaptive context** — automatically includes full contents of small changed files, outlines for large ones, and respects the model's token budget
 - **Diff scope control** — limit reviews with `files`, `exclude`, `revision`, `since`, or `untracked`
 - **Plan persistence** — session state tracks the plan, review prompts include acceptance criteria
 - **Deep project scan** — `yoo.scan` reads `package.json`, `AGENTS.md`, detects frameworks, tests, ORM, UI, build tools, CI, package manager, entry points, scripts, and samples code style
@@ -211,6 +223,16 @@ The secondary model checks:
 | google | Google Gemini |
 
 API keys are resolved from `~/.pi/agent/auth.json` → environment variables → `!command` execution.
+
+## Development scripts
+
+```bash
+npm run typecheck      # TypeScript type check
+npm run lint           # ESLint
+npm run test           # Node test runner (src/**/*.test.ts)
+npm run format         # Prettier format
+npm run format:check   # Prettier check
+```
 
 ## Version bumping
 

@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { getAgentDir } from "./pi-paths.js";
 import { loadHeyyooConfig } from "./config.js";
 import { callSecondaryModel } from "./secondary-model.js";
 import { getDiff, getVcsInfo } from "./diff-grabber.js";
@@ -10,7 +12,7 @@ const { version: VERSION, homepage: HOMEPAGE = "https://whatley.xyz" } = JSON.pa
 ) as { version: string; homepage?: string };
 import {
   buildPlanPrompt,
-  buildReviewPrompt,
+  buildAdaptiveReviewPrompt,
   buildSuggestPrompt,
   buildRecommendPrompt,
   buildJudgePrompt,
@@ -23,15 +25,42 @@ import {
   validateJudgeResult,
   validateConventionsResult,
 } from "./prompts.js";
+import { calculateReviewBudget, estimateTokens } from "./token-budget.js";
+import { loadFileContentsForReview } from "./file-loader.js";
 import { renderCall, renderResult } from "./render.js";
 import { loadState, saveState, clearState } from "./plan-store.js";
 import type { YooToolParams, YooToolResult, HeyyooSessionState, PlanResult, YooAction, UsageCost } from "./types.js";
-import { createLoopDetectionState, recordToolCall, checkLoop, shouldSendSteer } from "./loop-detector.js";
+import {
+  createLoopDetectionState,
+  recordToolCall,
+  checkLoop,
+  shouldSendSteer,
+  type LoopDetectionState,
+} from "./loop-detector.js";
 import { recordCost, getSessionCost, formatCost, resetCost } from "./cost-tracker.js";
 import { recordIssues, getPastIssuesForFiles, clearMemory } from "./review-memory.js";
-import { loadConventions, saveConventions, scanProjectConventions, formatConventions, clearConventions, mergeConventions, filterSourceFiles, formatConfigFiles } from "./conventions.js";
+import {
+  loadConventions,
+  saveConventions,
+  scanProjectConventions,
+  formatConventions,
+  clearConventions,
+  mergeConventions,
+  filterSourceFiles,
+  formatConfigFiles,
+} from "./conventions.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "./pre-review.js";
 import { logEvent, readRecentLogs, clearLogs } from "./logger.js";
+import { createProgressReporter, clearYooStatus, type ProgressReporter } from "./progress.js";
+
+const STAGES = {
+  plan: 3,
+  review: 10,
+  suggest: 3,
+  recommend: 3,
+  judge: 3,
+  scan: 4,
+} as const;
 
 const sessionStates = new Map<string, HeyyooSessionState>();
 
@@ -128,7 +157,10 @@ function getSessionContext(ctx: ExtensionContext): string {
 function extractTextContent(msg: Record<string, unknown>): string {
   if (Array.isArray(msg.content)) {
     return msg.content
-      .filter((c): c is Record<string, unknown> => c && typeof c === "object" && typeof (c as Record<string, unknown>).text === "string")
+      .filter(
+        (c): c is Record<string, unknown> =>
+          c && typeof c === "object" && typeof (c as Record<string, unknown>).text === "string",
+      )
       .map((c) => (c as Record<string, unknown>).text as string)
       .join(" ");
   }
@@ -139,29 +171,42 @@ function extractTextContent(msg: Record<string, unknown>): string {
 async function executeYooPlan(
   cwd: string,
   task: string,
-  signal?: AbortSignal,
-  onUpdate?: (update: unknown) => void,
+  signal: AbortSignal | undefined,
+  progress: ProgressReporter,
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
   if (!config.secondary.provider || !config.secondary.id) {
     return { action: "plan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
-  emitProgress(onUpdate, "plan", "Loading project conventions…");
+  progress(1, STAGES.plan, "Loading project conventions…");
   const conventions = loadConventions(cwd);
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
-  emitProgress(onUpdate, "plan", "Calling secondary model…");
+  progress(2, STAGES.plan, "Calling secondary model…");
   const { system, user } = buildPlanPrompt(task, conventionsText);
-  const { content: raw, usage } = await callSecondaryModel(config.secondary.provider, config.secondary.id, system, user, signal, config.secondary.thinking, cwd);
+  const { content: raw, usage } = await callSecondaryModel(
+    config.secondary.provider,
+    config.secondary.id,
+    system,
+    user,
+    signal,
+    config.secondary.thinking,
+    cwd,
+  );
 
-  emitProgress(onUpdate, "plan", "Parsing plan…");
+  progress(3, STAGES.plan, "Parsing plan…");
   const parsed = parseJsonResponse(raw);
   const plan = validatePlanResult(parsed);
 
   if (!plan) {
     logEvent(cwd, "warn", "Failed to parse plan from secondary model response", { raw: raw.slice(0, 2000) });
-    return { action: "plan", error: "Failed to parse plan from secondary model response.", plan: { todo: [task], acceptanceCriteria: [], summary: raw.slice(0, 200) }, cost: recordCostWithBudget(cwd, usage) };
+    return {
+      action: "plan",
+      error: "Failed to parse plan from secondary model response.",
+      plan: { todo: [task], acceptanceCriteria: [], summary: raw.slice(0, 200) },
+      cost: recordCostWithBudget(cwd, usage),
+    };
   }
 
   setPlan(cwd, plan);
@@ -180,8 +225,8 @@ async function executeYooReview(
     vcs?: "git" | "svn";
     untracked?: boolean;
   } = {},
-  signal?: AbortSignal,
-  onUpdate?: (update: unknown) => void,
+  signal: AbortSignal | undefined,
+  progress: ProgressReporter,
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
   if (!config.secondary.provider || !config.secondary.id) {
@@ -190,11 +235,14 @@ async function executeYooReview(
 
   const state = getState(cwd);
 
-  emitProgress(onUpdate, "review", "Collecting diff…");
-  const { diff, truncated, changedFiles, vcs } = getDiff(cwd, options);
+  progress(1, STAGES.review, "Collecting diff…");
+  const { diff, truncated, changedFiles, vcs } = getDiff(cwd, {
+    ...options,
+    maxDiffChars: config.reviewMaxDiffChars,
+  });
   const sessionContext = getSessionContext(ctx);
 
-  emitProgress(onUpdate, "review", "Loading project conventions…");
+  progress(2, STAGES.review, "Loading project conventions…");
   let conventionsText = "";
   const conventions = loadConventions(cwd);
   if (conventions) {
@@ -203,26 +251,69 @@ async function executeYooReview(
 
   let preReviewOutput = "";
   if (config.preReviewCommands && config.preReviewCommands.length > 0) {
-    emitProgress(onUpdate, "review", "Running pre-review commands…");
+    progress(3, STAGES.review, "Running pre-review commands…");
     const results = runPreReviewCommands(cwd, config.preReviewCommands);
     preReviewOutput = formatPreReviewOutput(results);
+  } else {
+    progress(3, STAGES.review, "Preparing review context…");
   }
 
   const memoryContext = getPastIssuesForFiles(cwd, changedFiles);
 
-  const { system, user } = buildReviewPrompt(
-    description,
-    diff,
-    truncated,
-    vcs,
-    state.plan?.acceptanceCriteria,
+  progress(4, STAGES.review, "Calculating token budget…");
+  const budget = calculateReviewBudget(config.secondary.provider, config.secondary.id, config, {
+    systemPrompt: "", // estimated separately below to avoid building prompt twice
     sessionContext,
     conventionsText,
     preReviewOutput,
+    description,
     memoryContext,
+  });
+
+  const strategy = config.reviewStrategy ?? "auto";
+  const fullFileThresholdLines = config.reviewFullFileThresholdLines ?? 300;
+  progress(5, STAGES.review, "Loading changed file contents…");
+  const fileResult =
+    strategy === "diff-only"
+      ? { entries: [], dropped: [], totalTokens: 0 }
+      : loadFileContentsForReview({
+          cwd,
+          changedFiles,
+          budget,
+          strategy,
+          fullFileThresholdLines,
+        });
+
+  // Diff gets whatever budget remains after fixed parts and file contents.
+  const systemPromptEstimate = 1000; // approximate; safety margin absorbs error
+  const remainingForDiff = Math.max(0, budget.availableInputTokens - fileResult.totalTokens - systemPromptEstimate);
+  const diffTokens = estimateTokens(diff);
+  const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
+  const diffTruncated = truncated || finalDiff !== diff;
+
+  progress(6, STAGES.review, "Building review prompt…");
+  const { system, user } = buildAdaptiveReviewPrompt(
+    description,
+    finalDiff,
+    fileResult.entries.map((e) => ({
+      file: e.file,
+      content: e.content,
+      mode: e.mode === "diff-only" ? "outline" : e.mode,
+    })),
+    {
+      vcs,
+      criteria: state.plan?.acceptanceCriteria?.join("\n"),
+      sessionContext,
+      conventionsText,
+      preReviewOutput,
+      memoryContext,
+      truncated: diffTruncated,
+      droppedFiles: fileResult.dropped,
+      budgetNote: `Context window: ${budget.contextWindow.toLocaleString()} tokens. Reserved output: ${budget.reservedOutputTokens.toLocaleString()}. Available for context: ${budget.availableInputTokens.toLocaleString()}.`,
+    },
   );
 
-  emitProgress(onUpdate, "review", "Calling secondary model…");
+  progress(7, STAGES.review, "Calling secondary model…");
   const { content: raw, usage } = await callSecondaryModel(
     config.secondary.provider,
     config.secondary.id,
@@ -233,29 +324,49 @@ async function executeYooReview(
     cwd,
   );
 
-  emitProgress(onUpdate, "review", "Parsing review…");
+  progress(8, STAGES.review, "Parsing review…");
   const parsed = parseJsonResponse(raw);
   const review = validateReviewResult(parsed);
   const cost = recordCostWithBudget(cwd, usage);
 
   if (!review) {
     logEvent(cwd, "warn", "Failed to parse review from secondary model response", { raw: raw.slice(0, 2000) });
-    return { action: "review", error: "Failed to parse review from secondary model response.", review: { verdict: "needs-work", issues: [], suggestions: [], consensus: false }, cost };
+    return {
+      action: "review",
+      error: "Failed to parse review from secondary model response.",
+      review: { verdict: "needs-work", issues: [], suggestions: [], consensus: false },
+      cost,
+    };
   }
 
+  progress(9, STAGES.review, "Recording issues…");
   recordIssues(cwd, review.issues);
+
+  // Surface context limitations so the user knows the review was scoped.
+  if (diffTruncated) review.truncated = true;
+  if (fileResult.dropped.length > 0) review.droppedFiles = fileResult.dropped;
+  if (diffTruncated || fileResult.dropped.length > 0) {
+    review.suggestions.push(
+      "The change is large and some context was omitted. If the review missed something, scope it with --files or increase reviewMaxInputTokens.",
+    );
+  }
 
   if (review.consensus) {
     markStepComplete(cwd);
-    const progress = getProgress(cwd);
-    review.planProgress = `${progress.current}/${progress.total} steps done`;
-    if (progress.nextStep) {
-      review.nextStep = progress.nextStep;
+    const planProgress = getProgress(cwd);
+    review.planProgress = `${planProgress.current}/${planProgress.total} steps done`;
+    if (planProgress.nextStep) {
+      review.nextStep = planProgress.nextStep;
     }
 
-    if (config.autoJudge && progress.current === progress.total && progress.total > 0) {
-      emitProgress(onUpdate, "review", "Auto-judging completed work…");
-      const judgeResult = await executeYooJudge(cwd, `All ${progress.total} plan steps completed.`, signal, onUpdate);
+    if (config.autoJudge && planProgress.current === planProgress.total && planProgress.total > 0) {
+      progress(10, STAGES.review, "Auto-judging completed work…");
+      const judgeResult = await executeYooJudge(
+        cwd,
+        `All ${planProgress.total} plan steps completed.`,
+        signal,
+        progress,
+      );
       if (judgeResult.judge) {
         review.autoJudged = true;
         return { action: "review", review, judge: judgeResult.judge, cost };
@@ -266,39 +377,54 @@ async function executeYooReview(
     const updatedState = getState(cwd);
     if (updatedState.reviewRounds >= 3) {
       review.escalated = true;
-      review.suggestions.push("This step has failed review 3 times. Consider asking the user for guidance or trying a fundamentally different approach.");
+      review.suggestions.push(
+        "This step has failed review 3 times. Consider asking the user for guidance or trying a fundamentally different approach.",
+      );
     }
   }
 
+  progress(10, STAGES.review, "Finalizing review…");
   return { action: "review", review, cost };
 }
 
 async function executeYooSuggest(
   cwd: string,
   question: string,
-  signal?: AbortSignal,
-  onUpdate?: (update: unknown) => void,
+  signal: AbortSignal | undefined,
+  progress: ProgressReporter,
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
   if (!config.secondary.provider || !config.secondary.id) {
     return { action: "suggest", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
-  emitProgress(onUpdate, "suggest", "Loading project conventions…");
+  progress(1, STAGES.suggest, "Loading project conventions…");
   const conventions = loadConventions(cwd);
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
   const { system, user } = buildSuggestPrompt(question, conventionsText);
-  emitProgress(onUpdate, "suggest", "Calling secondary model…");
-  const { content: raw, usage } = await callSecondaryModel(config.secondary.provider, config.secondary.id, system, user, signal, config.secondary.thinking, cwd);
+  progress(2, STAGES.suggest, "Calling secondary model…");
+  const { content: raw, usage } = await callSecondaryModel(
+    config.secondary.provider,
+    config.secondary.id,
+    system,
+    user,
+    signal,
+    config.secondary.thinking,
+    cwd,
+  );
 
-  emitProgress(onUpdate, "suggest", "Parsing suggestions…");
+  progress(3, STAGES.suggest, "Parsing suggestions…");
   const parsed = parseJsonResponse(raw);
   const suggest = validateSuggestResult(parsed);
 
   if (!suggest) {
     logEvent(cwd, "warn", "Failed to parse suggestions from secondary model response", { raw: raw.slice(0, 2000) });
-    return { action: "suggest", error: "Failed to parse suggestions from secondary model response.", cost: recordCostWithBudget(cwd, usage) };
+    return {
+      action: "suggest",
+      error: "Failed to parse suggestions from secondary model response.",
+      cost: recordCostWithBudget(cwd, usage),
+    };
   }
 
   return { action: "suggest", suggest, cost: recordCostWithBudget(cwd, usage) };
@@ -307,8 +433,8 @@ async function executeYooSuggest(
 async function executeYooRecommend(
   cwd: string,
   situation: string,
-  signal?: AbortSignal,
-  onUpdate?: (update: unknown) => void,
+  signal: AbortSignal | undefined,
+  progress: ProgressReporter,
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
   if (!config.secondary.provider || !config.secondary.id) {
@@ -317,21 +443,33 @@ async function executeYooRecommend(
 
   const state = getState(cwd);
 
-  emitProgress(onUpdate, "recommend", "Loading project conventions…");
+  progress(1, STAGES.recommend, "Loading project conventions…");
   const conventions = loadConventions(cwd);
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
   const { system, user } = buildRecommendPrompt(situation, state.plan?.todo, conventionsText);
-  emitProgress(onUpdate, "recommend", "Calling secondary model…");
-  const { content: raw, usage } = await callSecondaryModel(config.secondary.provider, config.secondary.id, system, user, signal, config.secondary.thinking, cwd);
+  progress(2, STAGES.recommend, "Calling secondary model…");
+  const { content: raw, usage } = await callSecondaryModel(
+    config.secondary.provider,
+    config.secondary.id,
+    system,
+    user,
+    signal,
+    config.secondary.thinking,
+    cwd,
+  );
 
-  emitProgress(onUpdate, "recommend", "Parsing recommendation…");
+  progress(3, STAGES.recommend, "Parsing recommendation…");
   const parsed = parseJsonResponse(raw);
   const recommend = validateRecommendResult(parsed);
 
   if (!recommend) {
     logEvent(cwd, "warn", "Failed to parse recommendation from secondary model response", { raw: raw.slice(0, 2000) });
-    return { action: "recommend", error: "Failed to parse recommendation from secondary model response.", cost: recordCostWithBudget(cwd, usage) };
+    return {
+      action: "recommend",
+      error: "Failed to parse recommendation from secondary model response.",
+      cost: recordCostWithBudget(cwd, usage),
+    };
   }
 
   return { action: "recommend", recommend, cost: recordCostWithBudget(cwd, usage) };
@@ -340,8 +478,8 @@ async function executeYooRecommend(
 async function executeYooJudge(
   cwd: string,
   description: string,
-  signal?: AbortSignal,
-  onUpdate?: (update: unknown) => void,
+  signal: AbortSignal | undefined,
+  progress: ProgressReporter,
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
   if (!config.secondary.provider || !config.secondary.id) {
@@ -350,18 +488,36 @@ async function executeYooJudge(
 
   const state = getState(cwd);
   const reviewHistory = buildReviewHistory(cwd);
-  const { system, user } = buildJudgePrompt(description, state.plan?.todo, state.plan?.acceptanceCriteria, reviewHistory);
+  progress(1, STAGES.judge, "Building review history…");
+  const { system, user } = buildJudgePrompt(
+    description,
+    state.plan?.todo,
+    state.plan?.acceptanceCriteria,
+    reviewHistory,
+  );
 
-  emitProgress(onUpdate, "judge", "Calling secondary model…");
-  const { content: raw, usage } = await callSecondaryModel(config.secondary.provider, config.secondary.id, system, user, signal, config.secondary.thinking, cwd);
+  progress(2, STAGES.judge, "Calling secondary model…");
+  const { content: raw, usage } = await callSecondaryModel(
+    config.secondary.provider,
+    config.secondary.id,
+    system,
+    user,
+    signal,
+    config.secondary.thinking,
+    cwd,
+  );
 
-  emitProgress(onUpdate, "judge", "Parsing judgment…");
+  progress(3, STAGES.judge, "Parsing judgment…");
   const parsed = parseJsonResponse(raw);
   const judge = validateJudgeResult(parsed);
 
   if (!judge) {
     logEvent(cwd, "warn", "Failed to parse judgment from secondary model response", { raw: raw.slice(0, 2000) });
-    return { action: "judge", error: "Failed to parse judgment from secondary model response.", cost: recordCostWithBudget(cwd, usage) };
+    return {
+      action: "judge",
+      error: "Failed to parse judgment from secondary model response.",
+      cost: recordCostWithBudget(cwd, usage),
+    };
   }
 
   return { action: "judge", judge, cost: recordCostWithBudget(cwd, usage) };
@@ -369,21 +525,21 @@ async function executeYooJudge(
 
 async function executeYooScan(
   cwd: string,
-  signal?: AbortSignal,
-  onUpdate?: (update: unknown) => void,
+  signal: AbortSignal | undefined,
+  progress: ProgressReporter,
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
   if (!config.secondary.provider || !config.secondary.id) {
     return { action: "scan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
-  emitProgress(onUpdate, "scan", "Scanning local project conventions…");
+  progress(1, STAGES.scan, "Scanning local project conventions…");
   const localScan = scanProjectConventions(cwd);
 
   const { system, user } = buildScanPrompt();
   const filesForPrompt = filterSourceFiles(localScan.files).slice(0, 200);
   const configFilesText = formatConfigFiles(cwd);
-  emitProgress(onUpdate, "scan", "Calling secondary model…");
+  progress(2, STAGES.scan, "Calling secondary model…");
   const { content: raw, usage } = await callSecondaryModel(
     config.secondary.provider,
     config.secondary.id,
@@ -394,15 +550,16 @@ async function executeYooScan(
     cwd,
   );
 
-  emitProgress(onUpdate, "scan", "Merging conventions…");
+  progress(3, STAGES.scan, "Merging conventions…");
   const parsed = parseJsonResponse(raw);
   const llmConventions = validateConventionsResult(parsed);
   if (!llmConventions && raw.trim().length > 0) {
-    logEvent(cwd, "warn", "Failed to parse scan conventions from secondary model response", { raw: raw.slice(0, 2000) });
+    logEvent(cwd, "warn", "Failed to parse scan conventions from secondary model response", {
+      raw: raw.slice(0, 2000),
+    });
   }
-  const conventions = llmConventions
-    ? mergeConventions(localScan.conventions, llmConventions)
-    : localScan.conventions;
+  const conventions = llmConventions ? mergeConventions(localScan.conventions, llmConventions) : localScan.conventions;
+  progress(4, STAGES.scan, "Saving conventions…");
   saveConventions(cwd, conventions);
 
   return { action: "scan", scan: { conventions, files: localScan.files }, cost: recordCostWithBudget(cwd, usage) };
@@ -413,28 +570,104 @@ function recordCostWithBudget(cwd: string, usage: UsageCost): UsageCost {
   return recordCost(cwd, usage, config.costBudgetUsd);
 }
 
-function emitProgress(
-  onUpdate: ((update: unknown) => void) | undefined,
-  action: YooAction,
-  message: string,
-): void {
-  if (!onUpdate) return;
-  onUpdate({
-    content: [{ type: "text", text: message }],
-    details: { action, inProgress: true, progressMessage: message },
-  });
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
 }
 
 function capReviewThinking(configured?: string): string {
   // Review output is structured JSON. High/xhigh reasoning often consumes the output budget
   // and leaves no room for the actual verdict, causing truncation and false positives.
-  if (!configured || configured === "off") return "medium";
-  if (configured === "high" || configured === "xhigh") return "medium";
+  if (!configured) return "medium";
+  if (configured.toLowerCase() === "off") return "off";
+  const lowered = configured.toLowerCase();
+  if (lowered === "high" || lowered === "xhigh") return "medium";
   return configured;
 }
 
-function parseReviewCommandArgs(input: string): { description: string; options: { revision?: string; since?: string; files?: string[]; exclude?: string[]; vcs?: "git" | "svn"; untracked?: boolean } } {
-  const options: { revision?: string; since?: string; files?: string[]; exclude?: string[]; vcs?: "git" | "svn"; untracked?: boolean } = {};
+interface ValidatedParams {
+  ok: true;
+  params: YooToolParams;
+  action: YooAction;
+}
+
+interface InvalidParams {
+  ok: false;
+  error: string;
+}
+
+type ValidationResult = ValidatedParams | InvalidParams;
+
+const YOO_ACTIONS: YooAction[] = ["plan", "review", "suggest", "recommend", "judge", "scan"];
+
+function validateYooToolParams(params: unknown): ValidationResult {
+  if (!params || typeof params !== "object") {
+    return { ok: false, error: "Invalid parameters: expected an object." };
+  }
+  const p = params as Record<string, unknown>;
+
+  const active = YOO_ACTIONS.filter((a) => {
+    const value = p[a];
+    if (a === "scan") return value === true;
+    return typeof value === "string" && value.length > 0;
+  });
+
+  if (active.length === 0) {
+    return {
+      ok: false,
+      error: "No action specified. Provide one of: plan, review, suggest, recommend, judge, or scan.",
+    };
+  }
+  if (active.length > 1) {
+    return { ok: false, error: `Only one action per call is allowed. Received: ${active.join(", ")}.` };
+  }
+
+  const action = active[0];
+
+  const stringArray = (value: unknown): string[] | undefined => {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value)) return undefined;
+    return value.filter((v): v is string => typeof v === "string");
+  };
+
+  const result: YooToolParams = {
+    plan: action === "plan" ? (p.plan as string) : undefined,
+    review: action === "review" ? (p.review as string) : undefined,
+    suggest: action === "suggest" ? (p.suggest as string) : undefined,
+    recommend: action === "recommend" ? (p.recommend as string) : undefined,
+    judge: action === "judge" ? (p.judge as string) : undefined,
+    scan: action === "scan" ? true : undefined,
+    files: stringArray(p.files),
+    exclude: stringArray(p.exclude),
+    revision: typeof p.revision === "string" ? p.revision : undefined,
+    since: typeof p.since === "string" ? p.since : undefined,
+    vcs: p.vcs === "git" || p.vcs === "svn" ? p.vcs : undefined,
+    untracked: p.untracked === true ? true : undefined,
+  };
+
+  return { ok: true, params: result, action } as ValidatedParams;
+}
+
+function parseReviewCommandArgs(input: string): {
+  description: string;
+  options: {
+    revision?: string;
+    since?: string;
+    files?: string[];
+    exclude?: string[];
+    vcs?: "git" | "svn";
+    untracked?: boolean;
+  };
+} {
+  const options: {
+    revision?: string;
+    since?: string;
+    files?: string[];
+    exclude?: string[];
+    vcs?: "git" | "svn";
+    untracked?: boolean;
+  } = {};
   const tokens = input.match(/(?:[^\s"']+|["'][^"']*["'])+/g) ?? [];
   const args = tokens.map((t) => t.replace(/^["']|["']$/g, ""));
   const descriptionParts: string[] = [];
@@ -445,22 +678,43 @@ function parseReviewCommandArgs(input: string): { description: string; options: 
     switch (arg) {
       case "--revision":
       case "-r":
-        if (next) { options.revision = next; i++; }
+        if (next) {
+          options.revision = next;
+          i++;
+        }
         break;
       case "--since":
       case "-s":
-        if (next) { options.since = next; i++; }
+        if (next) {
+          options.since = next;
+          i++;
+        }
         break;
       case "--files":
       case "-f":
-        if (next) { options.files = next.split(",").map((f) => f.trim()).filter(Boolean); i++; }
+        if (next) {
+          options.files = next
+            .split(",")
+            .map((f) => f.trim())
+            .filter(Boolean);
+          i++;
+        }
         break;
       case "--exclude":
       case "-x":
-        if (next) { options.exclude = next.split(",").map((f) => f.trim()).filter(Boolean); i++; }
+        if (next) {
+          options.exclude = next
+            .split(",")
+            .map((f) => f.trim())
+            .filter(Boolean);
+          i++;
+        }
         break;
       case "--vcs":
-        if (next === "git" || next === "svn") { options.vcs = next; i++; }
+        if (next === "git" || next === "svn") {
+          options.vcs = next;
+          i++;
+        }
         break;
       case "--untracked":
         options.untracked = true;
@@ -474,7 +728,15 @@ function parseReviewCommandArgs(input: string): { description: string; options: 
 }
 
 export default function (pi: ExtensionAPI) {
-  const loopState = createLoopDetectionState();
+  const loopStates = new Map<string, LoopDetectionState>();
+  function getLoopState(cwd: string): LoopDetectionState {
+    let state = loopStates.get(cwd);
+    if (!state) {
+      state = createLoopDetectionState();
+      loopStates.set(cwd, state);
+    }
+    return state;
+  }
 
   pi.on("session_start", async (_event, ctx) => {
     const diskState = loadState(ctx.cwd);
@@ -485,13 +747,15 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     sessionStates.delete(ctx.cwd);
+    loopStates.delete(ctx.cwd);
   });
 
-  pi.on("tool_execution_start", async (event) => {
+  pi.on("tool_execution_start", async (event, ctx) => {
     try {
-      recordToolCall(loopState, event);
-      const loop = checkLoop(loopState);
-      if (loop && shouldSendSteer(loopState, loop)) {
+      const state = getLoopState(ctx.cwd);
+      recordToolCall(state, event);
+      const loop = checkLoop(state);
+      if (loop && shouldSendSteer(state, loop)) {
         pi.sendUserMessage(loop.message, { deliverAs: "steer" });
       }
     } catch {
@@ -510,95 +774,134 @@ export default function (pi: ExtensionAPI) {
       "Always use yoo with review:true after every code change. Treat review feedback as blocking; fix issues and re-run review until it returns 'pass'.",
       "Use yoo with review:true and files:[...] to limit the review to specific files, or exclude:[...] to skip files like generated output.",
       "Use yoo with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans.",
-      "Use yoo with suggest:true whenever you are uncertain about the best approach for a specific technical question.",
-      "Use yoo with recommend:true whenever you need to decide what step to take next.",
+      "Use yoo with suggest:true whenever you are uncertain about the best approach for a specific technical question. If you are stuck, looping, or about to ask the user for help, call yoo.suggest first.",
+      "Use yoo with recommend:true whenever you need to decide what step to take next. If you have spent more than one turn without clear progress, call yoo.recommend.",
       "Use yoo with judge:true after completing all work for a final holistic review against the original plan.",
       "Enable autoJudge in settings.json to automatically run judge when the last plan step passes review.",
       "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
       "The secondary model should be a DIFFERENT model family than the main model to catch blind spots. Configure in settings.json under pi-heyyoo.secondary.",
       "Only one action (plan/review/suggest/recommend/judge/scan) per call. Do not combine them.",
+      "When stuck, confused, or looping, stop and use a yoo tool. Do not spin in place or guess.",
     ],
-    renderShell: "default",
     parameters: Type.Object({
-      plan: Type.Optional(Type.String({
-        description: "Provide a task description to get a structured todo plan with acceptance criteria.",
-      })),
-      review: Type.Optional(Type.String({
-        description: "Provide a description of what you just implemented. The secondary model examines the diff and returns a verdict with issues.",
-      })),
-      suggest: Type.Optional(Type.String({
-        description: "Ask a specific question to get alternative approaches from the secondary model.",
-      })),
-      recommend: Type.Optional(Type.String({
-        description: "Describe your current situation to get a recommended next step from the secondary model.",
-      })),
-      judge: Type.Optional(Type.String({
-        description: "Provide a description of all completed work for a final holistic review against the original plan.",
-      })),
-      scan: Type.Optional(Type.Boolean({
-        description: "If true, scan project conventions and architecture patterns. Stores results for future reviews.",
-      })),
-      files: Type.Optional(Type.Array(Type.String(), {
-        description: "For review: limit diff to these file paths.",
-      })),
-      exclude: Type.Optional(Type.Array(Type.String(), {
-        description: "For review: exclude these file paths from diff.",
-      })),
-      revision: Type.Optional(Type.String({
-        description: "For review: compare against this revision (e.g. 'HEAD~1', '1234', '1234:HEAD').",
-      })),
-      since: Type.Optional(Type.String({
-        description: "For review: include changes since this revision or commit ID.",
-      })),
-      vcs: Type.Optional(Type.Union([Type.Literal("git"), Type.Literal("svn")], {
-        description: "Version control system to use for diff. Auto-detected if omitted.",
-      })),
-      untracked: Type.Optional(Type.Boolean({
-        description: "For review: include untracked (new) files in the diff.",
-      })),
+      plan: Type.Optional(
+        Type.String({
+          description: "Provide a task description to get a structured todo plan with acceptance criteria.",
+        }),
+      ),
+      review: Type.Optional(
+        Type.String({
+          description:
+            "Provide a description of what you just implemented. The secondary model examines the diff and returns a verdict with issues.",
+        }),
+      ),
+      suggest: Type.Optional(
+        Type.String({
+          description: "Ask a specific question to get alternative approaches from the secondary model.",
+        }),
+      ),
+      recommend: Type.Optional(
+        Type.String({
+          description: "Describe your current situation to get a recommended next step from the secondary model.",
+        }),
+      ),
+      judge: Type.Optional(
+        Type.String({
+          description:
+            "Provide a description of all completed work for a final holistic review against the original plan.",
+        }),
+      ),
+      scan: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, scan project conventions and architecture patterns. Stores results for future reviews.",
+        }),
+      ),
+      files: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "For review: limit diff to these file paths.",
+        }),
+      ),
+      exclude: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "For review: exclude these file paths from diff.",
+        }),
+      ),
+      revision: Type.Optional(
+        Type.String({
+          description: "For review: compare against this revision (e.g. 'HEAD~1', '1234', '1234:HEAD').",
+        }),
+      ),
+      since: Type.Optional(
+        Type.String({
+          description: "For review: include changes since this revision or commit ID.",
+        }),
+      ),
+      vcs: Type.Optional(
+        Type.Union([Type.Literal("git"), Type.Literal("svn")], {
+          description: "Version control system to use for diff. Auto-detected if omitted.",
+        }),
+      ),
+      untracked: Type.Optional(
+        Type.Boolean({
+          description: "For review: include untracked (new) files in the diff.",
+        }),
+      ),
     }),
     renderCall,
     renderResult,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const p = params as unknown as YooToolParams;
-
-      if (!p.plan && !p.review && !p.suggest && !p.recommend && !p.judge && !p.scan) {
+      const validation = validateYooToolParams(params);
+      if (!validation.ok) {
         return {
-          content: [{ type: "text", text: "yoo: No action specified. Provide one of: plan, review, suggest, recommend, judge, or scan." }],
+          content: [{ type: "text", text: `yoo: ${validation.error}` }],
           isError: true,
         };
       }
+      const p = validation.params;
+      const action = validation.action;
 
+      const progress = createProgressReporter(action, ctx, onUpdate);
       let result: YooToolResult;
 
       try {
         if (p.plan) {
-          result = await executeYooPlan(ctx.cwd, p.plan, signal, onUpdate);
+          result = await executeYooPlan(ctx.cwd, p.plan, signal, progress);
         } else if (p.review) {
-          result = await executeYooReview(ctx.cwd, p.review, ctx, {
-            files: p.files,
-            exclude: p.exclude,
-            revision: p.revision,
-            since: p.since,
-            vcs: p.vcs,
-            untracked: p.untracked,
-          }, signal, onUpdate);
+          result = await executeYooReview(
+            ctx.cwd,
+            p.review,
+            ctx,
+            {
+              files: p.files,
+              exclude: p.exclude,
+              revision: p.revision,
+              since: p.since,
+              vcs: p.vcs,
+              untracked: p.untracked,
+            },
+            signal,
+            progress,
+          );
         } else if (p.suggest) {
-          result = await executeYooSuggest(ctx.cwd, p.suggest, signal, onUpdate);
+          result = await executeYooSuggest(ctx.cwd, p.suggest, signal, progress);
         } else if (p.recommend) {
-          result = await executeYooRecommend(ctx.cwd, p.recommend, signal, onUpdate);
+          result = await executeYooRecommend(ctx.cwd, p.recommend, signal, progress);
         } else if (p.judge) {
-          result = await executeYooJudge(ctx.cwd, p.judge, signal, onUpdate);
+          result = await executeYooJudge(ctx.cwd, p.judge, signal, progress);
         } else if (p.scan) {
-          result = await executeYooScan(ctx.cwd, signal, onUpdate);
+          result = await executeYooScan(ctx.cwd, signal, progress);
         } else {
-          result = { action: "plan", error: "Unknown action" };
+          result = { action, error: "Unknown action" };
         }
       } catch (err) {
-        const action: YooAction = p.plan ? "plan" : p.review ? "review" : p.suggest ? "suggest" : p.recommend ? "recommend" : p.judge ? "judge" : "scan";
-        logEvent(ctx.cwd, "error", `yoo tool ${action} failed`, { error: err instanceof Error ? err.message : String(err) });
+        logEvent(ctx.cwd, "error", `yoo tool ${action} failed`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
         result = { action, error: err instanceof Error ? err.message : String(err) };
+      } finally {
+        clearYooStatus(ctx);
       }
 
       const text = formatResultText(result);
@@ -612,7 +915,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("yoo", {
-    description: "Run a yoo action or show status. Usage: /yoo [plan|review|suggest|recommend|judge|scan|status] [args]",
+    description:
+      "Run a yoo action or show status. Usage: /yoo [plan|review|suggest|recommend|judge|scan|status] [args]",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (!trimmed) {
@@ -624,9 +928,23 @@ export default function (pi: ExtensionAPI) {
       const restText = rest.join(" ").trim();
       const signal = undefined;
 
-      const notifyProgress = (update: unknown) => {
-        const message = (update as { details?: { progressMessage?: string } }).details?.progressMessage;
-        if (message) ctx.ui.notify(message, "info");
+      const action: YooAction =
+        subcommand.toLowerCase() === "plan"
+          ? "plan"
+          : subcommand.toLowerCase() === "review"
+            ? "review"
+            : subcommand.toLowerCase() === "suggest"
+              ? "suggest"
+              : subcommand.toLowerCase() === "recommend"
+                ? "recommend"
+                : subcommand.toLowerCase() === "judge"
+                  ? "judge"
+                  : "scan";
+
+      const progress = createProgressReporter(action, ctx);
+      const notifyProgress: ProgressReporter = (stage, total, message) => {
+        progress(stage, total, message);
+        ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
       };
 
       let result: YooToolResult;
@@ -672,6 +990,8 @@ export default function (pi: ExtensionAPI) {
         logEvent(ctx.cwd, "error", `yoo ${subcommand} command failed`, { error: message });
         ctx.ui.notify(`yoo error: ${message}`, "error");
         return;
+      } finally {
+        clearYooStatus(ctx);
       }
 
       const text = formatResultText(result);
@@ -682,7 +1002,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("yoo-config", {
     description: "Configure secondary model for yoo pair-programmer",
     handler: async (args, ctx) => {
-      ctx.ui.notify("Edit ~/.pi/agent/settings.json and set pi-heyyoo.secondary.provider and pi-heyyoo.secondary.id", "info");
+      const settingsPath = join(getAgentDir(), "settings.json");
+      ctx.ui.notify(`Edit ${settingsPath} and set pi-heyyoo.secondary.provider and pi-heyyoo.secondary.id`, "info");
       if (args.trim()) {
         ctx.ui.notify(`Suggested: ${args.trim()}`, "info");
       }
@@ -730,7 +1051,9 @@ export default function (pi: ExtensionAPI) {
         provider = picked.split(" ")[0];
       }
 
-      const providerModels = configuredModels.filter((m) => m.provider === provider).sort((a, b) => a.id.localeCompare(b.id));
+      const providerModels = configuredModels
+        .filter((m) => m.provider === provider)
+        .sort((a, b) => a.id.localeCompare(b.id));
       const modelItems = providerModels.map((m) => m.id);
       const currentConfig = loadHeyyooConfig(ctx.cwd);
       const isCurrent = currentConfig.secondary.provider === provider && currentConfig.secondary.id;
@@ -747,7 +1070,10 @@ export default function (pi: ExtensionAPI) {
 
       const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"];
       const currentThinking = currentConfig.secondary.thinking ?? "xhigh";
-      const thinkingItems = thinkingLevels.map((t) => `${t}${t === currentThinking && isCurrent && currentConfig.secondary.id === modelId ? " ✓ current" : ""}`);
+      const thinkingItems = thinkingLevels.map(
+        (t) =>
+          `${t}${t === currentThinking && isCurrent && currentConfig.secondary.id === modelId ? " ✓ current" : ""}`,
+      );
       const thinkingPicked = await ctx.ui.select("Pick thinking level:", thinkingItems);
       if (!thinkingPicked) return;
       const thinking = thinkingPicked.replace(" ✓ current", "");
@@ -763,7 +1089,9 @@ export default function (pi: ExtensionAPI) {
         }
         if (!settings["pi-heyyoo"]) settings["pi-heyyoo"] = {};
         (settings["pi-heyyoo"] as Record<string, unknown>).secondary = {
-          provider, id: modelId, thinking,
+          provider,
+          id: modelId,
+          thinking,
         };
         writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
 
@@ -804,14 +1132,18 @@ export default function (pi: ExtensionAPI) {
     description: "Recommend the next step based on the active yoo plan",
     handler: async (_args, ctx) => {
       const signal = undefined;
-      const progress = getProgress(ctx.cwd);
-      const situation = progress.total > 0
-        ? `Plan progress: ${progress.current}/${progress.total} steps completed. Current step: ${progress.nextStep ?? "none"}`
-        : "No active plan. Recommend a next step for this project.";
-      const result = await executeYooRecommend(ctx.cwd, situation, signal, (update) => {
-        const message = (update as { details?: { progressMessage?: string } }).details?.progressMessage;
-        if (message) ctx.ui.notify(message, "info");
-      });
+      const planProgress = getProgress(ctx.cwd);
+      const situation =
+        planProgress.total > 0
+          ? `Plan progress: ${planProgress.current}/${planProgress.total} steps completed. Current step: ${planProgress.nextStep ?? "none"}`
+          : "No active plan. Recommend a next step for this project.";
+      const progress = createProgressReporter("recommend", ctx);
+      const notifyProgress: ProgressReporter = (stage, total, message) => {
+        progress(stage, total, message);
+        ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
+      };
+      const result = await executeYooRecommend(ctx.cwd, situation, signal, notifyProgress);
+      clearYooStatus(ctx);
       const text = formatResultText(result);
       ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
     },
@@ -821,23 +1153,26 @@ export default function (pi: ExtensionAPI) {
     description: "Mark the current yoo plan step complete and recommend the next step",
     handler: async (_args, ctx) => {
       const signal = undefined;
-      const progress = getProgress(ctx.cwd);
-      if (progress.total === 0) {
+      const planProgress = getProgress(ctx.cwd);
+      if (planProgress.total === 0) {
         ctx.ui.notify("No active yoo plan. Start one with /yoo plan <task>.", "warn");
         return;
       }
-      if (progress.current >= progress.total) {
+      if (planProgress.current >= planProgress.total) {
         ctx.ui.notify("All plan steps are already complete. Run /yoo judge for a final review.", "info");
         return;
       }
       markStepComplete(ctx.cwd);
       const newProgress = getProgress(ctx.cwd);
-      ctx.ui.notify(`Step ${progress.current + 1} marked complete.`, "info");
+      ctx.ui.notify(`Step ${planProgress.current + 1} marked complete.`, "info");
       const situation = `Plan progress: ${newProgress.current}/${newProgress.total} steps completed. Current step: ${newProgress.nextStep ?? "none"}`;
-      const result = await executeYooRecommend(ctx.cwd, situation, signal, (update) => {
-        const message = (update as { details?: { progressMessage?: string } }).details?.progressMessage;
-        if (message) ctx.ui.notify(message, "info");
-      });
+      const progress = createProgressReporter("recommend", ctx);
+      const notifyProgress: ProgressReporter = (stage, total, message) => {
+        progress(stage, total, message);
+        ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
+      };
+      const result = await executeYooRecommend(ctx.cwd, situation, signal, notifyProgress);
+      clearYooStatus(ctx);
       const text = formatResultText(result);
       ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
     },
@@ -890,9 +1225,7 @@ async function showYooStatus(ctx: ExtensionContext): Promise<void> {
     `  Review rounds this step: ${state.reviewRounds}`,
     "",
     "Plan:",
-    state.plan
-      ? `  Summary: ${state.plan.summary}`
-      : "  No active plan",
+    state.plan ? `  Summary: ${state.plan.summary}` : "  No active plan",
   ];
 
   if (state.plan) {
@@ -930,19 +1263,41 @@ async function showYooStatus(ctx: ExtensionContext): Promise<void> {
     lines.push("  Not scanned — run yoo({ scan: true })");
   }
 
-  lines.push(
-    "",
-    `${HOMEPAGE} · pi-heyyoo v${VERSION}`,
-  );
+  lines.push("", `${HOMEPAGE} · pi-heyyoo v${VERSION}`);
 
   await ctx.ui.select("yoo status", lines.filter(Boolean));
+}
+
+function issueEmoji(severity: "high" | "medium" | "low"): string {
+  switch (severity) {
+    case "high":
+      return "🔴";
+    case "medium":
+      return "🟡";
+    default:
+      return "💡";
+  }
 }
 
 function formatResultText(result: YooToolResult): string {
   if (result.error) return `yoo error: ${result.error}`;
 
-  const costLine = result.cost ? `\n_Estimated cost: ${formatCost(result.cost.estimatedCostUsd)} | Session total: ${formatCost(result.cost.sessionCostUsd)}_` : "";
   const lines: string[] = [];
+
+  if (result.cost) {
+    const inTokens = formatTokenCount(result.cost.estimatedInputTokens);
+    const outTokens = formatTokenCount(result.cost.estimatedOutputTokens);
+    const cost =
+      result.cost.estimatedCostUsd < 0.001
+        ? `${(result.cost.estimatedCostUsd * 1000).toFixed(2)}¢`
+        : `$${result.cost.estimatedCostUsd.toFixed(4)}`;
+    const session =
+      result.cost.sessionCostUsd < 0.001
+        ? `${(result.cost.sessionCostUsd * 1000).toFixed(2)}¢`
+        : `$${result.cost.sessionCostUsd.toFixed(4)}`;
+    lines.push(`_${inTokens} in · ${outTokens} out · ${cost} (session ${session})_`);
+    lines.push("");
+  }
 
   if (result.plan) {
     lines.push("## yoo plan");
@@ -965,11 +1320,20 @@ function formatResultText(result: YooToolResult): string {
     lines.push(`## yoo review ${icon} ${result.review.verdict}`);
     lines.push("");
 
+    if (result.review.truncated || (result.review.droppedFiles && result.review.droppedFiles.length > 0)) {
+      const warnings: string[] = [];
+      if (result.review.truncated) warnings.push("diff truncated");
+      if (result.review.droppedFiles && result.review.droppedFiles.length > 0)
+        warnings.push(`${result.review.droppedFiles.length} file(s) omitted from context`);
+      lines.push(`⚠️ **Large change:** ${warnings.join(" · ")}`);
+      lines.push("");
+    }
+
     if (result.review.issues.length > 0) {
       lines.push("### Issues");
       for (const issue of result.review.issues) {
         const loc = issue.file ? `\`${issue.file}${issue.line ? `:${issue.line}` : ""}\`` : "unknown";
-        lines.push(`- **${issue.severity}** ${loc}: ${issue.issue}`);
+        lines.push(`- ${issueEmoji(issue.severity)} **${issue.severity}** ${loc}: ${issue.issue}`);
         if (issue.suggestion) lines.push(`  → ${issue.suggestion}`);
       }
       lines.push("");
@@ -979,7 +1343,9 @@ function formatResultText(result: YooToolResult): string {
         for (let i = 0; i < result.review.issues.length; i++) {
           const issue = result.review.issues[i];
           const loc = issue.file ? `\`${issue.file}${issue.line ? `:${issue.line}` : ""}\`` : "unknown";
-          lines.push(`${i + 1}. **${issue.severity}** ${loc}: ${issue.suggestion || issue.issue}`);
+          lines.push(
+            `${i + 1}. ${issueEmoji(issue.severity)} **${issue.severity}** ${loc}: ${issue.suggestion || issue.issue}`,
+          );
         }
         lines.push("");
       }
@@ -988,7 +1354,7 @@ function formatResultText(result: YooToolResult): string {
     if (result.review.suggestions.length > 0) {
       lines.push("### Suggestions");
       for (const s of result.review.suggestions) {
-        lines.push(`- ${s}`);
+        lines.push(`- 💡 ${s}`);
       }
       lines.push("");
     }
@@ -1007,7 +1373,9 @@ function formatResultText(result: YooToolResult): string {
     } else if (result.review.verdict === "needs-work") {
       lines.push("**Action:** Fix the issues above and call `yoo.review` again.");
       if (result.review.escalated) {
-        lines.push("⚠️ **Escalation:** This step has failed review 3+ times. Consider asking the user for guidance or a different approach.");
+        lines.push(
+          "⚠️ **Escalation:** This step has failed review 3+ times. Consider asking the user for guidance or a different approach.",
+        );
       }
     }
   }
@@ -1058,7 +1426,7 @@ function formatResultText(result: YooToolResult): string {
       lines.push("### Remaining Issues");
       for (const issue of result.judge.issues) {
         const loc = issue.file ? `\`${issue.file}${issue.line ? `:${issue.line}` : ""}\`` : "unknown";
-        lines.push(`- **${issue.severity}** ${loc}: ${issue.issue}`);
+        lines.push(`- ${issueEmoji(issue.severity)} **${issue.severity}** ${loc}: ${issue.issue}`);
       }
       lines.push("");
     }
@@ -1076,5 +1444,5 @@ function formatResultText(result: YooToolResult): string {
     lines.push(`Scanned ${result.scan.files.length} files.`);
   }
 
-  return lines.join("\n") + costLine;
+  return lines.join("\n");
 }

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { getProjectConfigPath } from "./pi-paths.js";
+import { logEvent } from "./logger.js";
 import type { ReviewIssue } from "./types.js";
 
 interface MemoryStore {
@@ -13,7 +14,7 @@ interface FileMemory {
 }
 
 function getMemoryPath(cwd: string): string {
-  return join(cwd, ".pi", "heyyoo", "memory.json");
+  return getProjectConfigPath(cwd, "heyyoo", "memory.json");
 }
 
 function loadMemory(cwd: string): MemoryStore {
@@ -25,16 +26,25 @@ function loadMemory(cwd: string): MemoryStore {
     const raw = readFileSync(path, "utf-8");
     const data = JSON.parse(raw) as MemoryStore;
     return { files: data.files || {}, updatedAt: data.updatedAt || new Date().toISOString() };
-  } catch {
+  } catch (err) {
+    logEvent(cwd, "warn", "Failed to load yoo review memory", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return { files: {}, updatedAt: new Date().toISOString() };
   }
 }
 
 function saveMemory(cwd: string, memory: MemoryStore): void {
-  const dir = join(cwd, ".pi", "heyyoo");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  memory.updatedAt = new Date().toISOString();
-  writeFileSync(getMemoryPath(cwd), JSON.stringify(memory, null, 2), { encoding: "utf-8", mode: 0o600 });
+  try {
+    const dir = getProjectConfigPath(cwd, "heyyoo");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    memory.updatedAt = new Date().toISOString();
+    writeFileSync(getMemoryPath(cwd), JSON.stringify(memory, null, 2), { encoding: "utf-8", mode: 0o600 });
+  } catch (err) {
+    logEvent(cwd, "error", "Failed to save yoo review memory", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 export function recordIssues(cwd: string, issues: ReviewIssue[]): void {
@@ -86,5 +96,11 @@ function normalizeFile(file: string): string {
 }
 
 export function clearMemory(cwd: string): void {
-  saveMemory(cwd, { files: {}, updatedAt: new Date().toISOString() });
+  try {
+    saveMemory(cwd, { files: {}, updatedAt: new Date().toISOString() });
+  } catch (err) {
+    logEvent(cwd, "warn", "Failed to clear yoo review memory", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

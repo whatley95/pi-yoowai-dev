@@ -3,10 +3,16 @@ export interface HeyyooConfig {
     provider: string;
     id: string;
     thinking?: string;
+    contextWindow?: number;
+    maxOutputTokens?: number;
   };
   autoJudge?: boolean;
   preReviewCommands?: string[];
   costBudgetUsd?: number;
+  reviewMaxDiffChars?: number;
+  reviewFullFileThresholdLines?: number;
+  reviewMaxInputTokens?: number;
+  reviewStrategy?: "auto" | "diff-only" | "full-files";
 }
 
 export interface PlanResult {
@@ -35,6 +41,8 @@ export interface ReviewResult {
   escalated?: boolean;
   autoJudged?: boolean;
   preReviewOutput?: string;
+  truncated?: boolean;
+  droppedFiles?: string[];
 }
 
 export interface Approach {
@@ -145,4 +153,3 @@ export interface ScanResult {
   conventions: Conventions;
   files: string[];
 }
-

@@ -8,9 +8,17 @@ declare module "@earendil-works/pi-coding-agent" {
       promptSnippet?: string;
       promptGuidelines?: string[];
       parameters?: unknown;
-      renderShell?: "default" | "self";
-      renderCall?: (args: unknown, theme: { fg(token: string, text: string): string; bg(token: string, text: string): string }, context?: { lastComponent?: unknown }) => unknown;
-      renderResult?: (toolResult: unknown, opts: { expanded: boolean; isPartial?: boolean }, theme: { fg(token: string, text: string): string; bg(token: string, text: string): string }, context?: { lastComponent?: unknown }) => unknown;
+      renderCall?: (
+        args: unknown,
+        theme: { fg(token: string, text: string): string; bg(token: string, text: string): string },
+        context?: { lastComponent?: unknown },
+      ) => unknown;
+      renderResult?: (
+        toolResult: unknown,
+        opts: { expanded: boolean; isPartial?: boolean },
+        theme: { fg(token: string, text: string): string; bg(token: string, text: string): string },
+        context?: { lastComponent?: unknown },
+      ) => unknown;
       execute: (
         toolCallId: string,
         params: Record<string, unknown>,
@@ -19,10 +27,13 @@ declare module "@earendil-works/pi-coding-agent" {
         ctx: ExtensionContext,
       ) => Promise<{ content: Array<{ type: string; text: string }>; details?: unknown; isError?: boolean }>;
     }): void;
-    registerCommand(name: string, command: {
-      description: string;
-      handler: (args: string, ctx: ExtensionContext) => Promise<void> | void;
-    }): void;
+    registerCommand(
+      name: string,
+      command: {
+        description: string;
+        handler: (args: string, ctx: ExtensionContext) => Promise<void> | void;
+      },
+    ): void;
     sendUserMessage(message: string, options?: Record<string, unknown>): void;
   }
 
@@ -50,18 +61,4 @@ declare module "@earendil-works/pi-coding-agent" {
   }
 
   export function getAgentDir(): string;
-}
-
-declare module "@sinclair/typebox" {
-  export const Type: {
-    Object(props: Record<string, unknown>, options?: Record<string, unknown>): unknown;
-    Optional(schema: unknown): unknown;
-    String(options?: Record<string, unknown>): unknown;
-    Boolean(options?: Record<string, unknown>): unknown;
-    Integer(options?: Record<string, unknown>): unknown;
-    Number(options?: Record<string, unknown>): unknown;
-    Array(schema: unknown, options?: Record<string, unknown>): unknown;
-    Union(schemas: unknown[], options?: Record<string, unknown>): unknown;
-    Literal(value: string | number | boolean, options?: Record<string, unknown>): unknown;
-  };
 }

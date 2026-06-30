@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { getProjectConfigPath } from "./pi-paths.js";
+import { logEvent } from "./logger.js";
 import type { UsageCost } from "./types.js";
 
 interface CostLog {
@@ -11,7 +12,7 @@ interface CostLog {
 }
 
 function getCostPath(cwd: string): string {
-  return join(cwd, ".pi", "heyyoo", "cost.json");
+  return getProjectConfigPath(cwd, "heyyoo", "cost.json");
 }
 
 function loadCost(cwd: string): CostLog {
@@ -29,15 +30,20 @@ function loadCost(cwd: string): CostLog {
       costUsd: data.costUsd || 0,
       updatedAt: data.updatedAt || new Date().toISOString(),
     };
-  } catch {
+  } catch (err) {
+    logEvent(cwd, "warn", "Failed to load yoo cost log", { error: err instanceof Error ? err.message : String(err) });
     return { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, updatedAt: new Date().toISOString() };
   }
 }
 
 function saveCost(cwd: string, log: CostLog): void {
-  const dir = join(cwd, ".pi", "heyyoo");
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(getCostPath(cwd), JSON.stringify(log, null, 2), { encoding: "utf-8", mode: 0o600 });
+  try {
+    const dir = getProjectConfigPath(cwd, "heyyoo");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(getCostPath(cwd), JSON.stringify(log, null, 2), { encoding: "utf-8", mode: 0o600 });
+  } catch (err) {
+    logEvent(cwd, "error", "Failed to save yoo cost log", { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 export function recordCost(cwd: string, usage: UsageCost, budgetUsd?: number): UsageCost {

@@ -1,8 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { logEvent } from "./logger.js";
+import { isSafeRelativePath, validateRevision } from "./path-security.js";
 
-const MAX_DIFF_CHARS = 6000;
+const DEFAULT_MAX_DIFF_CHARS = 6000;
+const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
 
 export type VcsType = "git" | "svn";
 
@@ -30,9 +33,27 @@ export function getVcsInfo(cwd: string): VcsInfo {
 
 function getGitInfo(cwd: string): VcsInfo {
   try {
-    const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).trim();
-    const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).trim();
-    const status = execFileSync("git", ["status", "--porcelain"], { cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] }).trim();
+    const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    }).trim();
+    const revision = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    }).trim();
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    }).trim();
     return { type: "git", branch, revision, dirty: status.length > 0 };
   } catch (err) {
     return { type: "git", error: err instanceof Error ? err.message : String(err) };
@@ -41,7 +62,13 @@ function getGitInfo(cwd: string): VcsInfo {
 
 function getSvnInfo(cwd: string): VcsInfo {
   try {
-    const output = execFileSync("svn", ["info"], { cwd, encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "pipe"] });
+    const output = execFileSync("svn", ["info"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
     const revision = output.match(/^Revision:\s*(.+)$/m)?.[1]?.trim();
     const url = output.match(/^URL:\s*(.+)$/m)?.[1]?.trim();
     return { type: "svn", revision, branch: url };
@@ -59,6 +86,7 @@ export function getDiff(
     files?: string[];
     exclude?: string[];
     untracked?: boolean;
+    maxDiffChars?: number;
   } = {},
 ): DiffResult {
   const vcs = options.vcs ?? detectVcs(cwd);
@@ -76,29 +104,47 @@ export function getGitDiff(
     files?: string[];
     exclude?: string[];
     untracked?: boolean;
+    maxDiffChars?: number;
   } = {},
 ): DiffResult {
+  const revision = validateRevision(options.revision);
+  const since = validateRevision(options.since);
   const pathArgs = buildGitPathArgs(options.files, options.exclude);
+  const maxDiffChars = options.maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
 
   try {
-    const args = buildGitRevisionArgs(options.revision, options.since, pathArgs);
+    const args = buildGitRevisionArgs(revision, since, pathArgs);
     const diff = runVcsDiff(cwd, ["git", ...args]);
-    if (diff.trim()) return processDiff(diff, "git");
-  } catch { /* git diff failed or no repo */ }
+    if (diff.trim()) return processDiff(diff, "git", maxDiffChars);
+  } catch (err) {
+    logEvent(cwd, "debug", "Git diff attempt failed", {
+      error: err instanceof Error ? err.message : String(err),
+      args: buildGitRevisionArgs(revision, since, pathArgs),
+    });
+  }
 
   try {
     const diff = runVcsDiff(cwd, ["git", "diff", "--", ...pathArgs]);
-    if (diff.trim()) return processDiff(diff, "git");
-  } catch { /* ignore */ }
+    if (diff.trim()) return processDiff(diff, "git", maxDiffChars);
+  } catch (err) {
+    logEvent(cwd, "debug", "Git working-tree diff failed", { error: err instanceof Error ? err.message : String(err) });
+  }
 
   if (options.untracked) {
     try {
-      const untracked = runVcsDiff(cwd, ["git", "diff", "--no-index", "/dev/null", ...pathArgs]);
-      if (untracked.trim()) return processDiff(untracked, "git");
-    } catch { /* ignore */ }
+      const untracked = runGitUntrackedDiff(cwd, pathArgs);
+      if (untracked.trim()) return processDiff(untracked, "git", maxDiffChars);
+    } catch (err) {
+      logEvent(cwd, "debug", "Git untracked diff failed", { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
-  return { diff: "(no changes detected — review session context instead)", truncated: false, changedFiles: [], vcs: "git" };
+  return {
+    diff: "(no changes detected — review session context instead)",
+    truncated: false,
+    changedFiles: [],
+    vcs: "git",
+  };
 }
 
 export function getSvnDiff(
@@ -108,24 +154,37 @@ export function getSvnDiff(
     since?: string;
     files?: string[];
     exclude?: string[];
+    maxDiffChars?: number;
   } = {},
 ): DiffResult {
-  const pathArgs = options.files && options.files.length > 0 ? options.files : ["."];
+  const revision = validateRevision(options.revision);
+  const since = validateRevision(options.since);
+  const pathArgs =
+    options.files && options.files.length > 0 ? options.files.filter((f) => isSafeRelativePath(f)) : ["."];
+  const maxDiffChars = options.maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
 
   try {
-    const args = buildSvnRevisionArgs(options.revision, options.since);
-    if (options.exclude && options.exclude.length > 0) {
+    const args = buildSvnRevisionArgs(revision, since);
+    const safeExcludes = options.exclude?.filter((e) => isSafeRelativePath(e)) ?? [];
+    if (safeExcludes.length > 0) {
       args.push("--diff-cmd", "internal");
     }
     args.push(...pathArgs);
     const diff = runVcsDiff(cwd, ["svn", "diff", ...args]);
     if (diff.trim()) {
-      const filtered = applyExclude(diff, options.exclude);
-      return processDiff(filtered, "svn");
+      const filtered = applyExclude(diff, safeExcludes);
+      return processDiff(filtered, "svn", maxDiffChars);
     }
-  } catch { /* svn diff failed or no repo */ }
+  } catch (err) {
+    logEvent(cwd, "debug", "SVN diff attempt failed", { error: err instanceof Error ? err.message : String(err) });
+  }
 
-  return { diff: "(no SVN changes detected — review session context instead)", truncated: false, changedFiles: [], vcs: "svn" };
+  return {
+    diff: "(no SVN changes detected — review session context instead)",
+    truncated: false,
+    changedFiles: [],
+    vcs: "svn",
+  };
 }
 
 function buildGitRevisionArgs(revision?: string, since?: string, pathArgs: string[] = []): string[] {
@@ -151,23 +210,30 @@ function buildSvnRevisionArgs(revision?: string, since?: string): string[] {
 function buildGitPathArgs(files?: string[], exclude?: string[]): string[] {
   const args: string[] = [];
   if (files && files.length > 0) {
-    args.push(...files);
-  } else {
+    for (const f of files) {
+      if (isSafeRelativePath(f)) {
+        args.push(f);
+      }
+    }
+  }
+  if (args.length === 0) {
     args.push(".");
   }
   if (exclude && exclude.length > 0) {
     for (const e of exclude) {
-      args.push(":(exclude)" + e);
+      if (isSafeRelativePath(e)) {
+        args.push(":(exclude)" + e);
+      }
     }
   }
   return args;
 }
 
-function applyExclude(diff: string, exclude?: string[]): string {
+export function applyExclude(diff: string, exclude?: string[]): string {
   if (!exclude || exclude.length === 0) return diff;
   const patterns = exclude.map((e) => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const regex = new RegExp(`^(Index: |--- |\\+\\+\\+ )(${patterns.join("|")})`, "m");
-  const blocks = diff.split(/(?=^(?:Index: |--- )\s*)/m);
+  const regex = new RegExp(`^(Index: |--- )(${patterns.join("|")})`, "m");
+  const blocks = diff.split(/^(?=Index: )/m);
   return blocks.filter((b) => !regex.test(b)).join("");
 }
 
@@ -178,23 +244,45 @@ function runVcsDiff(cwd: string, command: string[]): string {
     encoding: "utf-8",
     maxBuffer: 1024 * 1024,
     timeout: 10000,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
   });
 }
 
-function processDiff(diff: string, vcs: VcsType): DiffResult {
+function runGitUntrackedDiff(cwd: string, pathArgs: string[]): string {
+  try {
+    return execFileSync("git", ["diff", "--no-index", NULL_DEVICE, ...pathArgs], {
+      cwd,
+      encoding: "utf-8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } catch (err) {
+    const stdout =
+      err && typeof err === "object" && "stdout" in err && typeof (err as { stdout?: unknown }).stdout === "string"
+        ? (err as { stdout: string }).stdout
+        : "";
+    if (stdout) return stdout;
+    throw err;
+  }
+}
+
+function processDiff(diff: string, vcs: VcsType, maxDiffChars: number): DiffResult {
   const changedFiles = extractChangedFiles(diff, vcs);
-  if (diff.length <= MAX_DIFF_CHARS) {
+  if (diff.length <= maxDiffChars) {
     return { diff, truncated: false, changedFiles, vcs };
   }
   return {
-    diff: diff.slice(0, MAX_DIFF_CHARS) + "\n... diff truncated (too large)",
+    diff: diff.slice(0, maxDiffChars) + "\n... diff truncated (too large)",
     truncated: true,
     changedFiles,
     vcs,
   };
 }
 
-function extractChangedFiles(diff: string, vcs: VcsType): string[] {
+export function extractChangedFiles(diff: string, vcs: VcsType): string[] {
   const files = new Set<string>();
   if (vcs === "svn") {
     const regex = /^Index:\s*(.+)$/gm;
@@ -219,14 +307,30 @@ function detectVcs(cwd: string): VcsType {
 
   // Fallback to command probes for non-standard layouts.
   try {
-    execFileSync("git", ["rev-parse", "--git-dir"], { cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] });
+    execFileSync("git", ["rev-parse", "--git-dir"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
     return "git";
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   try {
-    execFileSync("svn", ["info"], { cwd, encoding: "utf-8", timeout: 3000, stdio: ["pipe", "pipe", "pipe"] });
+    execFileSync("svn", ["info"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 3000,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
     return "svn";
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   return "git";
 }

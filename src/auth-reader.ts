@@ -1,7 +1,24 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 import { getAgentDir } from "./config.js";
+import { logEvent } from "./logger.js";
+
+const SHELL_METACHARACTERS = /[;|&$()`{}[\]<>\\]/;
+
+const ALLOWED_COMMANDS = new Set([
+  "op",
+  "1password-cli",
+  "security",
+  "gpg",
+  "pass",
+  "bw",
+  "rbw",
+  "lpass",
+  "cat",
+  "echo",
+  "printenv",
+]);
 
 export function resolveApiKey(provider: string): string | undefined {
   const authPath = join(getAgentDir(), "auth.json");
@@ -16,7 +33,9 @@ export function resolveApiKey(provider: string): string | undefined {
           return resolveKeyValue(e.key);
         }
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore parse errors — fall back to env */
+    }
   }
 
   const envVar = providerToEnvVar(provider);
@@ -29,9 +48,14 @@ export function resolveApiKey(provider: string): string | undefined {
 
 function resolveKeyValue(key: string): string | undefined {
   if (key.startsWith("!")) {
+    const command = key.slice(1).trim();
     try {
-      return execSync(key.slice(1), { encoding: "utf-8", timeout: 5000 }).trim();
-    } catch {
+      return runAllowedCommand(command);
+    } catch (err) {
+      logEvent(process.cwd(), "warn", "Disallowed or failed auth command", {
+        command: command.split(/\s+/)[0],
+        error: err instanceof Error ? err.message : String(err),
+      });
       return undefined;
     }
   }
@@ -50,20 +74,89 @@ function resolveKeyValue(key: string): string | undefined {
   return key;
 }
 
+function runAllowedCommand(command: string): string | undefined {
+  if (SHELL_METACHARACTERS.test(command) || command.includes("\n") || command.includes("\r")) {
+    throw new Error("Auth command contains disallowed shell characters");
+  }
+
+  const tokens = tokenize(command);
+  if (tokens.length === 0) return undefined;
+
+  const [program, ...args] = tokens;
+  if (!ALLOWED_COMMANDS.has(program)) {
+    throw new Error(`Auth command "${program}" is not in the allowlist`);
+  }
+
+  if (program === "cat" || program === "echo") {
+    for (const arg of args) {
+      if (!isSafeFileArg(arg)) {
+        throw new Error(`Auth command file argument is not allowed: ${arg}`);
+      }
+    }
+  }
+
+  const output = execFileSync(program, args, {
+    encoding: "utf-8",
+    timeout: 5000,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  return output;
+}
+
+function isSafeFileArg(arg: string): boolean {
+  if (arg.startsWith("-") || arg.includes("\0")) return false;
+  if (arg.includes("..") || isAbsolute(arg)) return false;
+  const resolved = resolve(getAgentDir(), arg);
+  const normalizedAgentDir = normalize(getAgentDir());
+  return resolved === normalizedAgentDir || resolved.startsWith(normalizedAgentDir + "/");
+}
+
+function tokenize(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let inQuote: "'" | '"' | null = null;
+  for (const ch of command) {
+    if (inQuote) {
+      if (ch === inQuote) {
+        inQuote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inQuote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current.length > 0) tokens.push(current);
+  if (inQuote) throw new Error("Unclosed quote in auth command");
+  return tokens;
+}
+
 const PROVIDER_ENV_MAP: Record<string, string> = {
   "opencode-go": "OPENCODE_API_KEY",
-  "opencode": "OPENCODE_API_KEY",
-  "anthropic": "ANTHROPIC_API_KEY",
-  "openai": "OPENAI_API_KEY",
-  "deepseek": "DEEPSEEK_API_KEY",
-  "openrouter": "OPENROUTER_API_KEY",
-  "groq": "GROQ_API_KEY",
-  "mistral": "MISTRAL_API_KEY",
-  "xai": "XAI_API_KEY",
-  "together": "TOGETHER_API_KEY",
-  "fireworks": "FIREWORKS_API_KEY",
-  "cerebras": "CEREBRAS_API_KEY",
-  "google": "GEMINI_API_KEY",
+  opencode: "OPENCODE_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  groq: "GROQ_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  xai: "XAI_API_KEY",
+  together: "TOGETHER_API_KEY",
+  fireworks: "FIREWORKS_API_KEY",
+  cerebras: "CEREBRAS_API_KEY",
+  google: "GEMINI_API_KEY",
 };
 
 function providerToEnvVar(provider: string): string | undefined {

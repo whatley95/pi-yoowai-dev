@@ -1,11 +1,18 @@
+import { Value } from "@sinclair/typebox/value";
 import type { PlanResult, ReviewResult, SuggestResult, RecommendResult, JudgeResult, Conventions } from "./types.js";
+import {
+  PlanResultSchema,
+  ReviewResultSchema,
+  SuggestResultSchema,
+  RecommendResultSchema,
+  JudgeResultSchema,
+  ConventionsSchema,
+} from "./schemas.js";
 
 const PAIR_PROGRAMMER_PERSONA = `You are a senior pair programmer sitting next to the developer. You are collaborative, direct, and focused on shipping correct, maintainable code. You explain your reasoning briefly but stay actionable.`;
 
 export function buildPlanPrompt(task: string, conventions?: string): { system: string; user: string } {
-  const conventionsBlock = conventions
-    ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>`
-    : "";
+  const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
 
   return {
     system: `${PAIR_PROGRAMMER_PERSONA}
@@ -61,17 +68,11 @@ export function buildReviewPrompt(
     ? `\n\n<session_context>\nRecent conversation relevant to this change:\n${sessionContext}\n</session_context>`
     : "";
 
-  const conventionsBlock = conventions
-    ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>`
-    : "";
+  const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
 
-  const preReviewBlock = preReviewOutput
-    ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>`
-    : "";
+  const preReviewBlock = preReviewOutput ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>` : "";
 
-  const memoryBlock = memoryContext
-    ? `\n\n<memory>\n${memoryContext}\n</memory>`
-    : "";
+  const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
 
   const truncationNotice = truncated
     ? "\n\n⚠️ NOTE: The diff was truncated because it was too large. Review only what's visible."
@@ -113,6 +114,103 @@ Rules:
   };
 }
 
+export interface FileContentContext {
+  file: string;
+  content: string;
+  mode: "full" | "outline";
+}
+
+export function buildAdaptiveReviewPrompt(
+  description: string,
+  diff: string,
+  fileContents: FileContentContext[],
+  options: {
+    vcs?: string;
+    criteria?: string;
+    sessionContext?: string;
+    conventionsText?: string;
+    preReviewOutput?: string;
+    memoryContext?: string;
+    truncated?: boolean;
+    droppedFiles?: string[];
+    budgetNote?: string;
+  } = {},
+): { system: string; user: string } {
+  const {
+    vcs,
+    criteria,
+    sessionContext,
+    conventionsText,
+    preReviewOutput,
+    memoryContext,
+    truncated,
+    droppedFiles,
+    budgetNote,
+  } = options;
+
+  const criteriaBlock = criteria ? `\n\n<acceptance_criteria>\n${criteria}\n</acceptance_criteria>` : "";
+  const sessionBlock = sessionContext ? `\n\n<session_context>\n${sessionContext}\n</session_context>` : "";
+  const conventionsBlock = conventionsText
+    ? `\n\n<project_conventions>\n${conventionsText}\n</project_conventions>`
+    : "";
+  const preReviewBlock = preReviewOutput ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>` : "";
+  const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
+
+  const fileContentsBlock =
+    fileContents.length > 0
+      ? `\n\n<file_contents>\n${fileContents
+          .map((f) => `--- ${f.file} (${f.mode}) ---\n${f.content}`)
+          .join("\n\n")}\n</file_contents>`
+      : "";
+
+  const droppedBlock =
+    droppedFiles && droppedFiles.length > 0
+      ? `\n\n⚠️ Some changed files were omitted due to token budget: ${droppedFiles.join(", ")}`
+      : "";
+
+  const truncationNotice = truncated
+    ? "\n\n⚠️ NOTE: The diff was truncated because it was too large. Review only what's visible."
+    : "";
+
+  const budgetBlock = budgetNote ? `\n\n${budgetNote}` : "";
+  const vcsLine = vcs ? `\n\nVersion control: ${vcs}` : "";
+
+  return {
+    system: `${PAIR_PROGRAMMER_PERSONA}
+
+You are reviewing the latest code change as the developer's pair. Catch bugs, mistakes, and quality issues they missed.
+
+${REVIEW_RUBRIC}
+
+You are provided with a diff and, when available, the full contents of changed files. Use the full file contents to verify context outside the diff; do not flag something as missing if you can see it in the full file.
+
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+{
+  "verdict": "pass" | "needs-work" | "blocked",
+  "issues": [
+    { "severity": "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
+  ],
+  "suggestions": ["improvement 1", "improvement 2"],
+  "consensus": true | false
+}
+
+Rules:
+- "verdict" is "pass" only if ALL rubric categories are clean — no issues at any severity
+- "verdict" is "blocked" if the code is fundamentally broken or cannot work as described
+- "verdict" is "needs-work" for anything in between
+- "consensus" is true when verdict is "pass" AND issues is empty
+- Each issue must include a specific, actionable suggestion
+- "file" and "line" are optional but strongly preferred when you can identify the exact location
+- Respect the project conventions shown above; do NOT flag a pattern as wrong if it matches the conventions
+- Pay attention to pre-review command output (lint/test/typecheck). Failures there are real issues.
+- Memory shows past issues in the same files. If a past issue appears again, flag it as regression.
+- CRITICAL: Only flag issues you can see evidence for. If a property, method, template, or style exists in the provided full file contents, do NOT flag it as missing. When unsure, prefer "pass" or "low" severity over guessing.
+- Be strict but fair — flag real problems, not preferences`,
+
+    user: `Review this code change. The developer says:\n\n${description}${vcsLine}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
+  };
+}
+
 export function buildScanPrompt(): { system: string; user: string } {
   return {
     system: `${PAIR_PROGRAMMER_PERSONA}
@@ -143,9 +241,7 @@ Omit optional fields you cannot infer. Be concise and evidence-based. Do not inc
 }
 
 export function buildSuggestPrompt(question: string, conventions?: string): { system: string; user: string } {
-  const conventionsBlock = conventions
-    ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>`
-    : "";
+  const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
 
   return {
     system: `${PAIR_PROGRAMMER_PERSONA}
@@ -170,14 +266,16 @@ Rules:
   };
 }
 
-export function buildRecommendPrompt(situation: string, planTodo?: string[], conventions?: string): { system: string; user: string } {
+export function buildRecommendPrompt(
+  situation: string,
+  planTodo?: string[],
+  conventions?: string,
+): { system: string; user: string } {
   const planContext = planTodo?.length
     ? `\n\nCurrent plan (check items already done):\n${planTodo.map((t, i) => `${i + 1}. ${t}`).join("\n")}`
     : "";
 
-  const conventionsBlock = conventions
-    ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>`
-    : "";
+  const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
 
   return {
     system: `${PAIR_PROGRAMMER_PERSONA}
@@ -259,7 +357,9 @@ export function parseJsonResponse<T>(text: string): T | null {
   // Try the whole text first.
   try {
     return JSON.parse(cleaned) as T;
-  } catch { /* continue */ }
+  } catch {
+    /* continue */
+  }
 
   // Try each markdown code fence.
   const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/g;
@@ -267,7 +367,9 @@ export function parseJsonResponse<T>(text: string): T | null {
   while ((fenceMatch = fenceRegex.exec(cleaned)) !== null) {
     try {
       return JSON.parse(fenceMatch[1].trim()) as T;
-    } catch { /* continue */ }
+    } catch {
+      /* continue */
+    }
   }
 
   // Try inline backtick fences.
@@ -276,7 +378,9 @@ export function parseJsonResponse<T>(text: string): T | null {
   while ((inlineMatch = inlineRegex.exec(cleaned)) !== null) {
     try {
       return JSON.parse(inlineMatch[1].trim()) as T;
-    } catch { /* continue */ }
+    } catch {
+      /* continue */
+    }
   }
 
   // Find the largest balanced JSON object in the text.
@@ -284,7 +388,9 @@ export function parseJsonResponse<T>(text: string): T | null {
   if (json) {
     try {
       return JSON.parse(json) as T;
-    } catch { /* continue */ }
+    } catch {
+      /* continue */
+    }
   }
 
   return null;
@@ -314,97 +420,50 @@ function extractLargestJsonObject(text: string): string | null {
   return best;
 }
 
+function castOrNull<T>(schema: Parameters<typeof Value.Cast>[0], data: unknown): T | null {
+  try {
+    const cast = Value.Cast(schema, data);
+    if (Value.Check(schema, cast)) {
+      return cast as T;
+    }
+  } catch {
+    /* invalid */
+  }
+  return null;
+}
+
 export function validatePlanResult(data: unknown): PlanResult | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-  const r = data as Record<string, unknown>;
-  if (!Array.isArray(r.todo) || !Array.isArray(r.acceptanceCriteria) || typeof r.summary !== "string") return null;
-  return {
-    todo: r.todo.map(String),
-    acceptanceCriteria: r.acceptanceCriteria.map(String),
-    summary: String(r.summary),
-  };
+  return castOrNull<PlanResult>(PlanResultSchema, data);
 }
 
 export function validateReviewResult(data: unknown): ReviewResult | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-  const r = data as Record<string, unknown>;
-  const verdict = r.verdict;
-  if (verdict !== "pass" && verdict !== "needs-work" && verdict !== "blocked") return null;
-  const issues = Array.isArray(r.issues)
-    ? r.issues.filter((i: unknown) => i && typeof i === "object" && typeof (i as Record<string, unknown>).issue === "string")
-               .map((i: Record<string, unknown>) => ({
-                 severity: ["high", "medium", "low"].includes(String(i.severity)) ? String(i.severity) as "high" | "medium" | "low" : "medium",
-                 file: typeof i.file === "string" ? i.file : undefined,
-                 line: typeof i.line === "number" ? i.line : undefined,
-                 issue: String(i.issue),
-                 suggestion: typeof i.suggestion === "string" ? i.suggestion : "",
-               }))
-    : [];
-  return {
-    verdict,
-    issues,
-    suggestions: Array.isArray(r.suggestions) ? r.suggestions.map(String) : [],
-    consensus: verdict === "pass" && issues.length === 0 && r.consensus === true,
-  };
+  const result = castOrNull<ReviewResult>(ReviewResultSchema, data);
+  if (!result) return null;
+  // Consensus is meaningful only when the verdict is pass and no issues remain.
+  result.consensus = result.verdict === "pass" && result.issues.length === 0;
+  return result;
 }
 
 export function validateSuggestResult(data: unknown): SuggestResult | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-  const r = data as Record<string, unknown>;
-  if (!Array.isArray(r.approaches)) return null;
-  return {
-    approaches: r.approaches
-      .filter((a: unknown) => a && typeof a === "object" && typeof (a as Record<string, unknown>).title === "string")
-      .map((a: Record<string, unknown>) => ({
-        title: String(a.title),
-        description: typeof a.description === "string" ? a.description : "",
-        pros: Array.isArray(a.pros) ? a.pros.map(String) : [],
-        cons: Array.isArray(a.cons) ? a.cons.map(String) : [],
-      })),
-  };
+  return castOrNull<SuggestResult>(SuggestResultSchema, data);
 }
 
 export function validateRecommendResult(data: unknown): RecommendResult | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-  const r = data as Record<string, unknown>;
-  if (typeof r.nextStep !== "string" || typeof r.reasoning !== "string") return null;
-  return {
-    nextStep: r.nextStep,
-    reasoning: r.reasoning,
-    alternatives: Array.isArray(r.alternatives) ? r.alternatives.map(String) : [],
-  };
+  return castOrNull<RecommendResult>(RecommendResultSchema, data);
 }
 
 export function validateJudgeResult(data: unknown): JudgeResult | null {
-  const base = validateReviewResult(data);
-  if (!base) return null;
-  const r = data as Record<string, unknown>;
-  return {
-    ...base,
-    summary: typeof r.summary === "string" ? r.summary : "",
-  };
+  return castOrNull<JudgeResult>(JudgeResultSchema, data);
 }
 
 export function validateConventionsResult(data: unknown): Conventions | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-  const r = data as Record<string, unknown>;
-  if (typeof r.naming !== "string" || typeof r.structure !== "string" || typeof r.stack !== "string") return null;
-  return {
-    naming: r.naming,
-    structure: r.structure,
-    patterns: Array.isArray(r.patterns) ? r.patterns.map(String) : [],
-    stack: r.stack,
-    testing: typeof r.testing === "string" ? r.testing : undefined,
-    orm: typeof r.orm === "string" ? r.orm : undefined,
-    ui: typeof r.ui === "string" ? r.ui : undefined,
-    styling: typeof r.styling === "string" ? r.styling : undefined,
-    buildTool: typeof r.buildTool === "string" ? r.buildTool : undefined,
-    ci: typeof r.ci === "string" ? r.ci : undefined,
-    packageManager: typeof r.packageManager === "string" ? r.packageManager : undefined,
-    entryPoints: Array.isArray(r.entryPoints) ? r.entryPoints.map(String) : [],
-    scripts: Array.isArray(r.scripts) ? r.scripts.map(String) : [],
-    styleSample: typeof r.styleSample === "string" ? r.styleSample : undefined,
-    agENTSmd: typeof r.agENTSmd === "string" ? r.agENTSmd : undefined,
-    generatedAt: new Date().toISOString(),
-  };
+  const result = castOrNull<Conventions>(ConventionsSchema, data);
+  if (!result) return null;
+  // Preserve an existing timestamp; only set a new one when the model omitted it.
+  const incoming =
+    data && typeof data === "object" && !Array.isArray(data)
+      ? (data as Record<string, unknown>).generatedAt
+      : undefined;
+  result.generatedAt = typeof incoming === "string" ? incoming : new Date().toISOString();
+  return result;
 }

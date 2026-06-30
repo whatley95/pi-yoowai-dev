@@ -30,6 +30,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "format": "prettier --write src",
+    "format:check": "prettier --check src",
     "bump": "node scripts/bump-version.js",
     "bump:patch": "node scripts/bump-version.js patch",
     "bump:minor": "node scripts/bump-version.js minor",
@@ -52,9 +55,11 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@sinclair/typebox": "^0.34.49",
     "@types/node": "^26.0.0",
     "eslint": "^10.5.0",
     "globals": "^17.7.0",
+    "prettier": "^3.9.4",
     "tsx": "^4.0.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.62.0"

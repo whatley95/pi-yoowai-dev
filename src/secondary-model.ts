@@ -1,4 +1,6 @@
 import { resolveApiKey } from "./auth-reader.js";
+import { loadHeyyooConfig } from "./config.js";
+import { formatCost, getSessionCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import type { ProviderApiInfo, UsageCost } from "./types.js";
 
@@ -9,73 +11,73 @@ const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "opencode": {
+  opencode: {
     style: "openai-compatible",
     baseUrl: "https://zen.opencode.ai/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "anthropic": {
+  anthropic: {
     style: "anthropic",
     baseUrl: "https://api.anthropic.com/v1",
     authHeader: "x-api-key",
     authPrefix: "",
   },
-  "openai": {
+  openai: {
     style: "openai-compatible",
     baseUrl: "https://api.openai.com/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "deepseek": {
+  deepseek: {
     style: "openai-compatible",
     baseUrl: "https://api.deepseek.com/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "openrouter": {
+  openrouter: {
     style: "openai-compatible",
     baseUrl: "https://openrouter.ai/api/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "groq": {
+  groq: {
     style: "openai-compatible",
     baseUrl: "https://api.groq.com/openai/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "mistral": {
+  mistral: {
     style: "openai-compatible",
     baseUrl: "https://api.mistral.ai/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "xai": {
+  xai: {
     style: "openai-compatible",
     baseUrl: "https://api.x.ai/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "together": {
+  together: {
     style: "openai-compatible",
     baseUrl: "https://api.together.xyz/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "fireworks": {
+  fireworks: {
     style: "openai-compatible",
     baseUrl: "https://api.fireworks.ai/inference/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "cerebras": {
+  cerebras: {
     style: "openai-compatible",
     baseUrl: "https://api.cerebras.ai/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
   },
-  "google": {
+  google: {
     style: "openai-compatible",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     authHeader: "Authorization",
@@ -104,7 +106,25 @@ export async function callSecondaryModel(
 
   const apiKey = resolveApiKey(provider);
   if (!apiKey) {
-    throw new Error(`No API key found for provider "${provider}". Set the appropriate environment variable or configure auth.json.`);
+    throw new Error(
+      `No API key found for provider "${provider}". Set the appropriate environment variable or configure auth.json.`,
+    );
+  }
+
+  if (cwd) {
+    const budgetUsd = loadHeyyooConfig(cwd).costBudgetUsd;
+    if (budgetUsd !== undefined && budgetUsd > 0) {
+      const estimatedInputTokens = estimateTokens(systemPrompt + userPrompt);
+      const estimatedOutputTokens = thinking && thinking.toLowerCase() !== "off" ? 8192 : 2048;
+      const projectedCost = estimateCost(provider, model, estimatedInputTokens, estimatedOutputTokens);
+      const sessionCost = getSessionCost(cwd).costUsd;
+      if (sessionCost + projectedCost > budgetUsd) {
+        throw new Error(
+          `yoo call would exceed cost budget: projected ${formatCost(sessionCost + projectedCost)} / ${formatCost(budgetUsd)}. ` +
+            `Increase pi-heyyoo.costBudgetUsd in settings or use /yoo-clear to reset.`,
+        );
+      }
+    }
   }
 
   try {
@@ -131,10 +151,21 @@ function estimateCost(provider: string, model: string, inputTokens: number, outp
   const rates: Record<string, { input: number; output: number }> = {
     "opencode-go:deepseek-v4-pro": { input: 0.5, output: 2.0 },
     "opencode-go:deepseek-v4-flash": { input: 0.1, output: 0.5 },
+    "deepseek:deepseek-chat": { input: 0.14, output: 0.28 },
+    "deepseek:deepseek-reasoner": { input: 0.55, output: 2.19 },
     "anthropic:claude-sonnet-4-5": { input: 3.0, output: 15.0 },
     "anthropic:claude-opus-4-5": { input: 15.0, output: 75.0 },
+    "anthropic:claude-3-5-sonnet": { input: 3.0, output: 15.0 },
+    "anthropic:claude-3-opus": { input: 15.0, output: 75.0 },
     "openai:gpt-5": { input: 5.0, output: 15.0 },
     "openai:gpt-5-mini": { input: 0.5, output: 1.5 },
+    "openai:gpt-4o": { input: 2.5, output: 10.0 },
+    "openai:gpt-4o-mini": { input: 0.15, output: 0.6 },
+    "openai:o3-mini": { input: 1.1, output: 4.4 },
+    "openrouter:deepseek/deepseek-r1": { input: 0.55, output: 2.19 },
+    "openrouter:anthropic/claude-3.5-sonnet": { input: 3.0, output: 15.0 },
+    "groq:llama-3.3-70b-versatile": { input: 0.59, output: 0.79 },
+    "together:meta-llama/Llama-3.3-70B-Instruct-Turbo": { input: 0.88, output: 0.88 },
   };
   const rate = rates[key] ?? rates[provider] ?? { input: 2.0, output: 6.0 };
   return (inputTokens * rate.input + outputTokens * rate.output) / 1_000_000;
@@ -145,7 +176,13 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-function buildUsage(provider: string, model: string, systemPrompt: string, userPrompt: string, content: string): UsageCost {
+function buildUsage(
+  provider: string,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  content: string,
+): UsageCost {
   const estimatedInputTokens = estimateTokens(systemPrompt + userPrompt);
   const estimatedOutputTokens = estimateTokens(content);
   const estimatedCostUsd = estimateCost(provider, model, estimatedInputTokens, estimatedOutputTokens);
@@ -199,7 +236,7 @@ async function callOpenAiCompatibleApi(
 
   const headers = buildOpenAiHeaders(apiInfo, apiKey);
 
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -315,9 +352,7 @@ async function callAnthropicApi(
     model,
     max_tokens: outputTokenLimit,
     system: systemPrompt,
-    messages: [
-      { role: "user", content: userPrompt },
-    ],
+    messages: [{ role: "user", content: userPrompt }],
   };
   if (thinkingEnabled) {
     body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking ?? "medium") };
@@ -329,7 +364,7 @@ async function callAnthropicApi(
     "anthropic-version": "2023-06-01",
   };
 
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -356,9 +391,7 @@ async function callAnthropicApi(
     .map((c) => c.text ?? "")
     .join("");
   if (!textContent || textContent.trim().length === 0) {
-    throw new Error(
-      `Empty response from secondary model. Raw: ${JSON.stringify(data).slice(0, 800)}`,
-    );
+    throw new Error(`Empty response from secondary model. Raw: ${JSON.stringify(data).slice(0, 800)}`);
   }
 
   const usage = buildUsage(provider, model, systemPrompt, userPrompt, textContent);
@@ -412,4 +445,28 @@ function thinkingBudget(level: string): number {
     xhigh: 4096,
   };
   return budgets[level?.toLowerCase()] ?? 1024;
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2, baseDelayMs = 500): Promise<Response> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, init);
+      // Retry on 5xx and rate-limit (429); do not retry on 4xx auth/validation errors.
+      if (response.status >= 500 || response.status === 429) {
+        const text = await response.text().catch(() => "(no body)");
+        lastError = new Error(`Transient API error (${response.status}): ${text.slice(0, 200)}`);
+      } else {
+        return response;
+      }
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+    }
+
+    if (attempt < maxRetries) {
+      const delay = baseDelayMs * 2 ** attempt;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError ?? new Error("Secondary model request failed after retries");
 }
