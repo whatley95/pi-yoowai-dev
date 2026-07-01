@@ -379,6 +379,11 @@ function extractLargestJsonObject(text: string): string | null {
 
 function castOrNull<T>(schema: Parameters<typeof Value.Cast>[0], data: unknown): T | null {
   try {
+    // Prefer a plain Check when the data already matches; Cast can fail or mutate unexpectedly
+    // on some provider responses (e.g., extra fields, proxy objects).
+    if (Value.Check(schema, data)) {
+      return data as T;
+    }
     const cast = Value.Cast(schema, data);
     if (Value.Check(schema, cast)) {
       return cast as T;
