@@ -1,5 +1,5 @@
 import { Value } from "@sinclair/typebox/value";
-import type { PlanResult, ReviewResult, SuggestResult, RecommendResult, JudgeResult, Conventions } from "./types.js";
+import type { PlanResult, ReviewResult, ReviewIssue, SuggestResult, RecommendResult, JudgeResult, Conventions } from "./types.js";
 import {
   PlanResultSchema,
   ReviewResultSchema,
@@ -398,9 +398,20 @@ export function validatePlanResult(data: unknown): PlanResult | null {
   return castOrNull<PlanResult>(PlanResultSchema, data);
 }
 
+// The secondary model sometimes returns null or descriptive text for the `line` field.
+// Remove those so downstream code always sees a number or nothing.
+function normalizeIssueLines(issues: ReviewIssue[]): void {
+  for (const issue of issues) {
+    if (typeof issue.line !== "number") {
+      delete issue.line;
+    }
+  }
+}
+
 export function validateReviewResult(data: unknown): ReviewResult | null {
   const result = castOrNull<ReviewResult>(ReviewResultSchema, data);
   if (!result) return null;
+  normalizeIssueLines(result.issues);
   // Consensus is meaningful only when the verdict is pass and no issues remain.
   result.consensus = result.verdict === "pass" && result.issues.length === 0;
   return result;
@@ -415,7 +426,10 @@ export function validateRecommendResult(data: unknown): RecommendResult | null {
 }
 
 export function validateJudgeResult(data: unknown): JudgeResult | null {
-  return castOrNull<JudgeResult>(JudgeResultSchema, data);
+  const result = castOrNull<JudgeResult>(JudgeResultSchema, data);
+  if (!result) return null;
+  normalizeIssueLines(result.issues);
+  return result;
 }
 
 export function validateConventionsResult(data: unknown): Conventions | null {

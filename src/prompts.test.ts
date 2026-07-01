@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseJsonResponse, validateReviewResult, validateConventionsResult } from "./prompts.js";
+import { parseJsonResponse, validateReviewResult, validateJudgeResult, validateConventionsResult } from "./prompts.js";
 
 describe("parseJsonResponse", () => {
   it("parses plain JSON", () => {
@@ -65,6 +65,81 @@ describe("validateReviewResult", () => {
     });
     assert.ok(result);
     assert.equal("extraField" in result!, false);
+  });
+
+  it("normalizes null line values to undefined", () => {
+    const result = validateReviewResult({
+      verdict: "needs-work",
+      issues: [{ severity: "high", line: null, issue: "x", suggestion: "y" }],
+      suggestions: [],
+      consensus: false,
+    });
+    assert.ok(result);
+    assert.equal(result!.issues[0]!.line, undefined);
+  });
+
+  it("normalizes string line values to undefined", () => {
+    const result = validateReviewResult({
+      verdict: "needs-work",
+      issues: [{ severity: "medium", line: "submit method", issue: "x", suggestion: "y" }],
+      suggestions: [],
+      consensus: false,
+    });
+    assert.ok(result);
+    assert.equal(result!.issues[0]!.line, undefined);
+  });
+
+  it("preserves numeric line values", () => {
+    const result = validateReviewResult({
+      verdict: "needs-work",
+      issues: [{ severity: "low", line: 97, issue: "x", suggestion: "y" }],
+      suggestions: [],
+      consensus: false,
+    });
+    assert.ok(result);
+    assert.equal(result!.issues[0]!.line, 97);
+  });
+});
+
+describe("validateJudgeResult", () => {
+  it("normalizes non-numeric line values to undefined", () => {
+    const result = validateJudgeResult({
+      verdict: "needs-work",
+      issues: [
+        { severity: "high", line: null, issue: "x", suggestion: "y" },
+        { severity: "medium", line: "submit method", issue: "x", suggestion: "y" },
+      ],
+      suggestions: [],
+      consensus: false,
+      summary: "test",
+    });
+    assert.ok(result);
+    assert.equal(result!.issues[0]!.line, undefined);
+    assert.equal(result!.issues[1]!.line, undefined);
+  });
+
+  it("preserves numeric line values", () => {
+    const result = validateJudgeResult({
+      verdict: "needs-work",
+      issues: [{ severity: "low", line: 99, issue: "x", suggestion: "y" }],
+      suggestions: [],
+      consensus: false,
+      summary: "test",
+    });
+    assert.ok(result);
+    assert.equal(result!.issues[0]!.line, 99);
+  });
+
+  it("handles empty issues array", () => {
+    const result = validateJudgeResult({
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+      summary: "all good",
+    });
+    assert.ok(result);
+    assert.equal(result!.issues.length, 0);
   });
 });
 

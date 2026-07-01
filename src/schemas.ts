@@ -13,7 +13,7 @@ export const ReviewIssueSchema = Type.Object(
   {
     severity: Type.Union([Type.Literal("high"), Type.Literal("medium"), Type.Literal("low")]),
     file: Type.Optional(Type.String()),
-    line: Type.Optional(Type.Number()),
+    line: Type.Optional(Type.Union([Type.Number(), Type.Null(), Type.String()])),
     issue: Type.String(),
     suggestion: Type.String(),
   },

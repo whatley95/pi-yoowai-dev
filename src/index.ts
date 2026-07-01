@@ -845,7 +845,8 @@ export default function (pi: ExtensionAPI) {
     label: "Yoo — Pair Programmer",
     description:
       "Mandatory second-opinion workflow powered by a secondary model. Always use yoo.plan before implementing, yoo.review after every change, yoo.scan when opening a new project, yoo.suggest for non-trivial architectural or design questions, yoo.recommend when deciding next steps, and yoo.judge before declaring work complete.",
-    promptSnippet: "yoo: always get a second opinion from the secondary model before acting on code or making architectural decisions",
+    promptSnippet:
+      "yoo: always get a second opinion from the secondary model before acting on code or making architectural decisions",
     promptGuidelines: [
       "Always use yoo with plan:true before starting any non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria; do not write code without a plan.",
       "Always use yoo with review:true after every code change. Treat review feedback as blocking; fix issues and re-run review until it returns 'pass'.",
