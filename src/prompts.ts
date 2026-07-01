@@ -1,5 +1,13 @@
 import { Value } from "@sinclair/typebox/value";
-import type { PlanResult, ReviewResult, ReviewIssue, SuggestResult, RecommendResult, JudgeResult, Conventions } from "./types.js";
+import type {
+  PlanResult,
+  ReviewResult,
+  ReviewIssue,
+  SuggestResult,
+  RecommendResult,
+  JudgeResult,
+  Conventions,
+} from "./types.js";
 import {
   PlanResultSchema,
   ReviewResultSchema,

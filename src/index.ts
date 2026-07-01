@@ -34,7 +34,15 @@ import { calculateReviewBudget, estimateTokens } from "./token-budget.js";
 import { loadFileContentsForReview, isReviewableFile } from "./file-loader.js";
 import { renderCall, renderResult } from "./render.js";
 import { loadState, saveState, clearState } from "./plan-store.js";
-import type { YooToolParams, YooToolResult, HeyyooSessionState, PlanResult, YooAction, UsageCost } from "./types.js";
+import type {
+  YooToolParams,
+  YooToolResult,
+  HeyyooConfig,
+  HeyyooSessionState,
+  PlanResult,
+  YooAction,
+  UsageCost,
+} from "./types.js";
 import {
   createLoopDetectionState,
   recordToolCall,
@@ -66,6 +74,11 @@ const STAGES = {
   judge: 3,
   scan: 4,
 } as const;
+
+function secondaryModelLabel(config: HeyyooConfig): string {
+  const { provider, id } = config.secondary;
+  return provider && id ? `${provider}:${id}` : "secondary model";
+}
 
 const sessionStates = new Map<string, HeyyooSessionState>();
 
@@ -193,7 +206,7 @@ async function executeYooPlan(
   const conventions = loadConventions(cwd);
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
-  progress(2, STAGES.plan, "Calling secondary model…");
+  progress(2, STAGES.plan, `Calling ${secondaryModelLabel(config)}…`);
   const { system, user } = buildPlanPrompt(task, conventionsText);
   const { content: raw, usage } = await callSecondaryModel(
     config.secondary.provider,
@@ -342,7 +355,7 @@ async function executeYooReview(
     },
   );
 
-  progress(8, STAGES.review, "Calling secondary model…");
+  progress(8, STAGES.review, `Calling ${secondaryModelLabel(config)}…`);
   const { content: raw, usage } = await callSecondaryModel(
     config.secondary.provider,
     config.secondary.id,
@@ -443,7 +456,7 @@ async function executeYooSuggest(
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
   const { system, user } = buildSuggestPrompt(question, conventionsText);
-  progress(2, STAGES.suggest, "Calling secondary model…");
+  progress(2, STAGES.suggest, `Calling ${secondaryModelLabel(config)}…`);
   const { content: raw, usage } = await callSecondaryModel(
     config.secondary.provider,
     config.secondary.id,
@@ -493,7 +506,7 @@ async function executeYooRecommend(
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
   const { system, user } = buildRecommendPrompt(situation, state.plan?.todo, conventionsText);
-  progress(2, STAGES.recommend, "Calling secondary model…");
+  progress(2, STAGES.recommend, `Calling ${secondaryModelLabel(config)}…`);
   const { content: raw, usage } = await callSecondaryModel(
     config.secondary.provider,
     config.secondary.id,
@@ -556,7 +569,7 @@ async function executeYooJudge(
     memoryContext,
   );
 
-  progress(2, STAGES.judge, "Calling secondary model…");
+  progress(2, STAGES.judge, `Calling ${secondaryModelLabel(config)}…`);
   const { content: raw, usage } = await callSecondaryModel(
     config.secondary.provider,
     config.secondary.id,
@@ -604,7 +617,7 @@ async function executeYooScan(
   const { system, user } = buildScanPrompt();
   const filesForPrompt = filterSourceFiles(localScan.files).slice(0, 200);
   const configFilesText = formatConfigFiles(cwd);
-  progress(2, STAGES.scan, "Calling secondary model…");
+  progress(2, STAGES.scan, `Calling ${secondaryModelLabel(config)}…`);
   const { content: raw, usage } = await callSecondaryModel(
     config.secondary.provider,
     config.secondary.id,
