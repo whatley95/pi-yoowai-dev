@@ -409,3 +409,20 @@ export function validateConventionsResult(data: unknown): Conventions | null {
   result.generatedAt = typeof incoming === "string" ? incoming : new Date().toISOString();
   return result;
 }
+
+export function getJsonParseError(text: string): string | null {
+  try {
+    JSON.parse(text.trim());
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+export function getRecommendValidationErrors(data: unknown): Array<{ path: string; message: string; value: unknown }> {
+  return [...Value.Errors(RecommendResultSchema, data)].map((e) => ({
+    path: e.path,
+    message: e.message,
+    value: e.value,
+  }));
+}

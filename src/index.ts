@@ -24,6 +24,8 @@ import {
   validateRecommendResult,
   validateJudgeResult,
   validateConventionsResult,
+  getJsonParseError,
+  getRecommendValidationErrors,
 } from "./prompts.js";
 import { calculateReviewBudget, estimateTokens } from "./token-budget.js";
 import { loadFileContentsForReview, isReviewableFile } from "./file-loader.js";
@@ -494,7 +496,13 @@ async function executeYooRecommend(
   const recommend = validateRecommendResult(parsed);
 
   if (!recommend) {
-    logEvent(cwd, "warn", "Failed to parse recommendation from secondary model response", { raw: raw.slice(0, 2000) });
+    const parseError = getJsonParseError(raw);
+    const validationErrors = parsed ? getRecommendValidationErrors(parsed) : [];
+    logEvent(cwd, "warn", "Failed to parse recommendation from secondary model response", {
+      raw: raw.slice(0, 2000),
+      parseError,
+      validationErrors,
+    });
     return {
       action: "recommend",
       error: "Failed to parse recommendation from secondary model response.",

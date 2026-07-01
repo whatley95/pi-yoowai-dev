@@ -2,6 +2,7 @@ import { resolveApiKey } from "./auth-reader.js";
 import { loadHeyyooConfig } from "./config.js";
 import { formatCost, getSessionCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
+import { resolveModelInfo } from "./model-registry.js";
 import type { ProviderApiInfo, UsageCost } from "./types.js";
 
 const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
@@ -111,11 +112,14 @@ export async function callSecondaryModel(
     );
   }
 
+  const thinkingEnabledForBudget = Boolean(thinking) && thinking?.toLowerCase() !== "off";
+  const modelInfoForBudget = cwd ? resolveModelInfo(provider, model) : undefined;
+
   if (cwd) {
     const budgetUsd = loadHeyyooConfig(cwd).costBudgetUsd;
     if (budgetUsd !== undefined && budgetUsd >= 0) {
       const estimatedInputTokens = estimateTokens(systemPrompt + userPrompt);
-      const estimatedOutputTokens = thinking && thinking.toLowerCase() !== "off" ? 8192 : 2048;
+      const estimatedOutputTokens = thinkingEnabledForBudget ? (modelInfoForBudget?.maxOutputTokens ?? 8192) : 2048;
       const projectedCost = estimateCost(provider, model, estimatedInputTokens, estimatedOutputTokens);
       const sessionCost = getSessionCost(cwd).costUsd;
       if (sessionCost + projectedCost > budgetUsd) {
@@ -222,6 +226,7 @@ async function callOpenAiCompatibleApi(
   userPrompt: string,
   signal?: AbortSignal,
   thinking?: string,
+  retriedWithReasoningOff = false,
 ): Promise<{ content: string; usage: UsageCost }> {
   const url = buildOpenAiUrl(apiInfo, apiKey);
 
@@ -229,8 +234,10 @@ async function callOpenAiCompatibleApi(
   const supportsAnthropicThinking = modelSupportsAnthropicThinking(provider, model);
   const thinkingEnabled =
     Boolean(thinking) && thinking!.toLowerCase() !== "off" && (supportsReasoning || supportsAnthropicThinking);
-  // When thinking/reasoning is enabled, reserve room for both internal reasoning and visible output.
-  const outputTokenLimit = thinkingEnabled ? 8192 : 2048;
+  const modelInfo = resolveModelInfo(provider, model);
+  // Reasoning models can consume a large portion of the output budget in internal reasoning tokens,
+  // so use the model's full output limit when thinking/reasoning is enabled. Otherwise keep calls cheap.
+  const outputTokenLimit = thinkingEnabled ? modelInfo.maxOutputTokens : 2048;
 
   const body: Record<string, unknown> = {
     model,
@@ -244,7 +251,7 @@ async function callOpenAiCompatibleApi(
   if (thinkingEnabled) {
     delete body.temperature;
     if (supportsReasoning) {
-      body.reasoning_effort = reasoningEffortFromThinking(thinking ?? "medium");
+      body.reasoning_effort = reasoningEffortForModel(provider, model, thinking ?? "medium");
     } else {
       body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking ?? "medium") };
     }
@@ -273,6 +280,7 @@ async function callOpenAiCompatibleApi(
       message?: {
         content?: string | Array<{ type?: string; text?: string }>;
         refusal?: string;
+        reasoning_content?: string;
       };
       finish_reason?: string;
     }>;
@@ -299,6 +307,18 @@ async function callOpenAiCompatibleApi(
     content = message.content;
   } else if (Array.isArray(message?.content)) {
     content = message.content.map((c) => (typeof c === "object" && c?.text ? c.text : "")).join("");
+  }
+
+  const reasoningContent = message?.reasoning_content;
+  if (
+    (!content || content.trim().length === 0) &&
+    reasoningContent &&
+    choice.finish_reason === "length" &&
+    !retriedWithReasoningOff
+  ) {
+    // The model spent its whole output budget on reasoning_content. Retry once with reasoning disabled
+    // so there is room for the required structured content.
+    return callOpenAiCompatibleApi(provider, apiInfo, apiKey, model, systemPrompt, userPrompt, signal, "off", true);
   }
 
   if (!content || content.trim().length === 0) {
@@ -452,10 +472,12 @@ function supportsReasoningEffort(provider: string, model: string): boolean {
   const lc = `${provider}:${model}`.toLowerCase();
   const modelLc = model.toLowerCase();
   const deepseekReasoner = /^deepseek[-/]?reasoner/;
+  const deepseekV4 = /^deepseek[-/]?v4/;
   if (deepseekReasoner.test(modelLc)) return true;
+  if (deepseekV4.test(modelLc)) return true;
   if (modelLc.startsWith("o") && /^o\d/.test(modelLc)) return true;
   if (modelLc.startsWith("gpt-5")) return true;
-  if (lc.startsWith("openrouter:deepseek") && deepseekReasoner.test(lc)) return true;
+  if (lc.startsWith("openrouter:deepseek") && (deepseekReasoner.test(lc) || deepseekV4.test(lc))) return true;
   return false;
 }
 
@@ -470,6 +492,15 @@ function reasoningEffortFromThinking(level: string): "low" | "medium" | "high" {
     default:
       return "medium";
   }
+}
+
+function reasoningEffortForModel(provider: string, model: string, level: string): "low" | "medium" | "high" {
+  // DeepSeek V4 models are prone to consuming the entire output budget with reasoning_content,
+  // leaving no tokens for the required JSON content. Cap them at low reasoning effort.
+  if (/^deepseek[-/]?v4/.test(`${provider}:${model}`.toLowerCase())) {
+    return "low";
+  }
+  return reasoningEffortFromThinking(level);
 }
 
 function thinkingBudget(level: string): number {

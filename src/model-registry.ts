@@ -31,8 +31,8 @@ const KNOWN_MODELS: Record<string, ModelInfo> = {
   // DeepSeek
   "deepseek-chat": { contextWindow: 64_000, maxOutputTokens: 8192 },
   "deepseek-reasoner": { contextWindow: 64_000, maxOutputTokens: 8192 },
-  "deepseek-v4-pro": { contextWindow: 64_000, maxOutputTokens: 8192 },
-  "deepseek-v4-flash": { contextWindow: 64_000, maxOutputTokens: 8192 },
+  "deepseek-v4-pro": { contextWindow: 64_000, maxOutputTokens: 16_384 },
+  "deepseek-v4-flash": { contextWindow: 64_000, maxOutputTokens: 16_384 },
   "deepseek-v3": { contextWindow: 64_000, maxOutputTokens: 8192 },
 
   // Google
