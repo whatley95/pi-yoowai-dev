@@ -86,5 +86,6 @@ function mergeConfig(base: HeyyooConfig, override: unknown): HeyyooConfig {
     reviewStrategy: ["auto", "diff-only", "full-files"].includes(o.reviewStrategy ?? "")
       ? o.reviewStrategy
       : base.reviewStrategy,
+    verifyByDefault: typeof o.verifyByDefault === "boolean" ? o.verifyByDefault : base.verifyByDefault,
   };
 }

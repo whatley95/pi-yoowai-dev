@@ -37,10 +37,7 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
       "maxOutputTokens": 8192
     },
     "autoJudge": true,
-    "preReviewCommands": [
-      "npm run typecheck",
-      "npm run lint"
-    ],
+    "preReviewCommands": ["npm run typecheck", "npm run lint"],
     "costBudgetUsd": 0.5,
     "reviewFullFileThresholdLines": 300,
     "reviewMaxInputTokens": 50000,
@@ -55,56 +52,58 @@ If no secondary model is configured, yoo returns an error. Configure `pi-heyyoo.
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `secondary` | object | `{ provider, id, thinking? }` for the secondary model |
-| `autoJudge` | boolean | Run `yoo.judge` automatically when the last plan step passes review |
-| `preReviewCommands` | string[] | Commands to run before each review; output is included in the review prompt |
-| `costBudgetUsd` | number | Maximum estimated session spend before yoo stops with an error. Negative values are treated as unset; `0` means no spend is allowed |
-| `reviewMaxDiffChars` | number | Legacy cap on diff characters; prefer `reviewMaxInputTokens` |
-| `reviewFullFileThresholdLines` | number | Include full content for changed files under this line count (default: 300) |
-| `reviewMaxInputTokens` | number | Hard cap on review input tokens |
-| `reviewStrategy` | `"auto" \| "diff-only" \| "full-files"` | How to include changed file contents (default: `"auto"`) |
-| `secondary.contextWindow` | number | Override the model's context window |
-| `secondary.maxOutputTokens` | number | Override the model's max output tokens |
+| Option                         | Type                                    | Description                                                                                                                         |
+| ------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `secondary`                    | object                                  | `{ provider, id, thinking? }` for the secondary model                                                                               |
+| `autoJudge`                    | boolean                                 | Run `yoo.judge` automatically when the last plan step passes review                                                                 |
+| `preReviewCommands`            | string[]                                | Commands to run before each review; output is included in the review prompt                                                         |
+| `costBudgetUsd`                | number                                  | Maximum estimated session spend before yoo stops with an error. Negative values are treated as unset; `0` means no spend is allowed |
+| `reviewMaxDiffChars`           | number                                  | Legacy cap on diff characters; prefer `reviewMaxInputTokens`                                                                        |
+| `reviewFullFileThresholdLines` | number                                  | Include full content for changed files under this line count (default: 300)                                                         |
+| `reviewMaxInputTokens`         | number                                  | Hard cap on review input tokens                                                                                                     |
+| `reviewStrategy`               | `"auto" \| "diff-only" \| "full-files"` | How to include changed file contents (default: `"auto"`)                                                                            |
+| `verifyByDefault`              | boolean                                 | If true, every yoo result asks the main agent to confirm the finding with evidence                                                  |
+| `secondary.contextWindow`      | number                                  | Override the model's context window                                                                                                 |
+| `secondary.maxOutputTokens`    | number                                  | Override the model's max output tokens                                                                                              |
 
 ## Tools
 
 The `yoo` tool is called by the main agent during development:
 
-| Action | When | What it does |
-|--------|------|-------------|
-| `yoo({ plan: "refactor auth" })` | Before starting | Creates structured todo + acceptance criteria |
-| `yoo({ review: "wrote middleware" })` | After each step | Reviews git diff, returns verdict + issues |
-| `yoo({ review: "wrote middleware", files: ["src/auth.ts"] })` | After each step | Reviews only the listed files |
-| `yoo({ review: "wrote middleware", exclude: ["package-lock.json"] })` | After each step | Reviews diff excluding listed files |
-| `yoo({ review: "wrote middleware", revision: "HEAD~1" })` | After each step | Reviews changes against a specific revision |
-| `yoo({ review: "wrote middleware", untracked: true })` | After each step | Includes untracked (new) files in the review |
-| `yoo({ suggest: "how to..." })` | When stuck | Returns alternative approaches with pros/cons |
-| `yoo({ recommend: "what next" })` | When unsure | Recommends next concrete step |
-| `yoo({ judge: "all done" })` | Final review | Holistic review against original plan |
-| `yoo({ scan: true })` | Once per project | Learns project conventions and architecture |
+| Action                                                                | When                           | What it does                                                       |
+| --------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------ |
+| `yoo({ plan: "refactor auth" })`                                      | Before starting                | Creates structured todo + acceptance criteria                      |
+| `yoo({ review: "wrote middleware" })`                                 | After each step                | Reviews git diff, returns verdict + issues                         |
+| `yoo({ review: "wrote middleware", files: ["src/auth.ts"] })`         | After each step                | Reviews only the listed files                                      |
+| `yoo({ review: "wrote middleware", exclude: ["package-lock.json"] })` | After each step                | Reviews diff excluding listed files                                |
+| `yoo({ review: "wrote middleware", revision: "HEAD~1" })`             | After each step                | Reviews changes against a specific revision                        |
+| `yoo({ review: "wrote middleware", untracked: true })`                | After each step                | Includes untracked (new) files in the review                       |
+| `yoo({ suggest: "how to..." })`                                       | When stuck or asked a question | Returns alternative approaches with pros/cons                      |
+| `yoo({ recommend: "what next" })`                                     | When unsure                    | Recommends next concrete step                                      |
+| `yoo({ judge: "all done" })`                                          | Final review                   | Holistic review against original plan                              |
+| `yoo({ scan: true })`                                                 | Once per project               | Learns project conventions and architecture                        |
+| `yoo({ review: "...", verify: true })`                                | Any high-stakes result         | Asks the main agent to confirm or refute the finding with evidence |
 
 ## Commands
 
-| Command | What it does |
-|---------|-------------|
-| `/yoo` | Compact status card: version, model, plan, VCS, cost, conventions |
-| `/yoo plan refactor auth middleware` | Create a plan from the terminal |
-| `/yoo review "wrote verifySession"` | Review current changes |
-| `/yoo suggest "redis vs in-memory sessions?"` | Get alternative approaches |
-| `/yoo recommend` | Get a recommended next step |
-| `/yoo judge "auth refactor complete"` | Final holistic review |
-| `/yoo scan` | Scan project conventions |
-| `/yoo-status` | Detailed diagnostics: config, plan, VCS, conventions, session cost |
-| `/yoo-info` | Alias for `/yoo-status` |
-| `/yoo-model` | Interactively pick the secondary model from configured providers |
-| `/yoo-config <provider.model>` | Set the secondary model directly (e.g. `/yoo-config openai.gpt-4o`) |
-| `/yoo-clear` | Clear the active plan, session state, cost, memory, and conventions |
-| `/yoo-next` | Recommend the next step based on the active plan |
-| `/yoo-done` | Mark the current plan step complete and recommend the next step |
-| `/yoo-logs` | Show recent error/event log entries for this project |
-| `/yoo-clear-logs` | Clear the yoo error/event log for this project |
+| Command                                       | What it does                                                        |
+| --------------------------------------------- | ------------------------------------------------------------------- |
+| `/yoo`                                        | Compact status card: version, model, plan, VCS, cost, conventions   |
+| `/yoo plan refactor auth middleware`          | Create a plan from the terminal                                     |
+| `/yoo review "wrote verifySession"`           | Review current changes                                              |
+| `/yoo suggest "redis vs in-memory sessions?"` | Get alternative approaches                                          |
+| `/yoo recommend`                              | Get a recommended next step                                         |
+| `/yoo judge "auth refactor complete"`         | Final holistic review                                               |
+| `/yoo scan`                                   | Scan project conventions                                            |
+| `/yoo-status`                                 | Detailed diagnostics: config, plan, VCS, conventions, session cost  |
+| `/yoo-info`                                   | Alias for `/yoo-status`                                             |
+| `/yoo-model`                                  | Interactively pick the secondary model from configured providers    |
+| `/yoo-config <provider.model>`                | Set the secondary model directly (e.g. `/yoo-config openai.gpt-4o`) |
+| `/yoo-clear`                                  | Clear the active plan, session state, cost, memory, and conventions |
+| `/yoo-next`                                   | Recommend the next step based on the active plan                    |
+| `/yoo-done`                                   | Mark the current plan step complete and recommend the next step     |
+| `/yoo-logs`                                   | Show recent error/event log entries for this project                |
+| `/yoo-clear-logs`                             | Clear the yoo error/event log for this project                      |
 
 ### Review command options
 
@@ -118,14 +117,14 @@ The `yoo` tool is called by the main agent during development:
 /yoo review include new files --untracked
 ```
 
-| Flag | Description |
-|------|-------------|
+| Flag                | Description                                                     |
+| ------------------- | --------------------------------------------------------------- |
 | `--revision` / `-r` | Compare against a revision (e.g. `HEAD~1`, `1234`, `1234:HEAD`) |
-| `--since` / `-s` | Include changes since a revision or commit ID |
-| `--files` / `-f` | Comma-separated list of files to review |
-| `--exclude` / `-x` | Comma-separated list of files/patterns to exclude |
-| `--vcs git\|svn` | Force Git or SVN diff mode |
-| `--untracked` | Include untracked (new) files |
+| `--since` / `-s`    | Include changes since a revision or commit ID                   |
+| `--files` / `-f`    | Comma-separated list of files to review                         |
+| `--exclude` / `-x`  | Comma-separated list of files/patterns to exclude               |
+| `--vcs git\|svn`    | Force Git or SVN diff mode                                      |
+| `--untracked`       | Include untracked (new) files                                   |
 
 ## Logging
 
@@ -207,20 +206,42 @@ Both agents agree when:
 2. `yoo.judge` returns `{ verdict: "pass", consensus: true }` for the full task
 
 The secondary model checks:
+
 - Error handling (missing try/catch, null checks)
 - Imports and references
 - Project conventions
 - Logic errors
 - Plan completeness
 
+## Verification
+
+When a yoo finding is surprising, high-stakes, or unclear, add `verify: true` to the tool call:
+
+```js
+yoo({ review: "refactored payment service", verify: true });
+```
+
+The tool result then asks the main agent to confirm or refute the finding and provide evidence (specific files, lines, facts, or reasoning). Use this to catch model hallucinations or over-eager approvals before acting.
+
+Set `verifyByDefault: true` in `pi-heyyoo` settings to request verification on every yoo result.
+
+## Questions and decisions
+
+yoo is not only for code changes. Use it for questions and decisions too:
+
+- `yoo({ suggest: "should I use callbacks or async/await here?" })` — get alternative approaches with pros/cons before answering the user.
+- `yoo({ recommend: "what should I investigate next?" })` — get a concrete next step when progress stalls.
+
+When the user asks a technical or architectural question, call `yoo.suggest` or `yoo.recommend` before answering from your own knowledge.
+
 ## Supported providers
 
-| Provider | API style |
-|----------|-----------|
-| opencode-go, opencode | OpenAI-compatible |
-| anthropic | Anthropic native |
+| Provider                                                                        | API style         |
+| ------------------------------------------------------------------------------- | ----------------- |
+| opencode-go, opencode                                                           | OpenAI-compatible |
+| anthropic                                                                       | Anthropic native  |
 | openai, deepseek, openrouter, groq, mistral, xai, together, fireworks, cerebras | OpenAI-compatible |
-| google | Google Gemini |
+| google                                                                          | Google Gemini     |
 
 API keys are resolved from `~/.pi/agent/auth.json` → environment variables → `!command` execution.
 

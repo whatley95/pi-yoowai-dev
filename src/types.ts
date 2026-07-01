@@ -13,6 +13,7 @@ export interface HeyyooConfig {
   reviewFullFileThresholdLines?: number;
   reviewMaxInputTokens?: number;
   reviewStrategy?: "auto" | "diff-only" | "full-files";
+  verifyByDefault?: boolean;
 }
 
 export interface PlanResult {
@@ -88,6 +89,7 @@ export interface YooToolParams {
   since?: string;
   vcs?: "git" | "svn";
   untracked?: boolean;
+  verify?: boolean;
 }
 
 export interface YooToolResult {
@@ -102,6 +104,7 @@ export interface YooToolResult {
   cost?: UsageCost;
   inProgress?: boolean;
   progressMessage?: string;
+  verificationRequested?: boolean;
 }
 
 export interface UsageCost {

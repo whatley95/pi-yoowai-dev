@@ -718,6 +718,7 @@ function validateYooToolParams(params: unknown): ValidationResult {
     since: typeof p.since === "string" ? p.since : undefined,
     vcs: p.vcs === "git" || p.vcs === "svn" ? p.vcs : undefined,
     untracked: p.untracked === true ? true : undefined,
+    verify: p.verify === true ? true : undefined,
   };
 
   return { ok: true, params: result, action } as ValidatedParams;
@@ -843,18 +844,20 @@ export default function (pi: ExtensionAPI) {
     name: "yoo",
     label: "Yoo — Pair Programmer",
     description:
-      "Mandatory second-opinion workflow powered by a secondary model. Always use yoo.plan before implementing, yoo.review after every change, yoo.scan when opening a new project, yoo.suggest when unsure, yoo.recommend when deciding next steps, and yoo.judge before declaring work complete.",
-    promptSnippet: "yoo: always get a second opinion from the secondary model before acting",
+      "Mandatory second-opinion workflow powered by a secondary model. Always use yoo.plan before implementing, yoo.review after every change, yoo.scan when opening a new project, yoo.suggest for non-trivial architectural or design questions, yoo.recommend when deciding next steps, and yoo.judge before declaring work complete.",
+    promptSnippet: "yoo: always get a second opinion from the secondary model before acting on code or making architectural decisions",
     promptGuidelines: [
       "Always use yoo with plan:true before starting any non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria; do not write code without a plan.",
       "Always use yoo with review:true after every code change. Treat review feedback as blocking; fix issues and re-run review until it returns 'pass'.",
       "Use yoo with review:true and files:[...] to limit the review to specific files, or exclude:[...] to skip files like generated output.",
       "Use yoo with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans.",
       "Use yoo with suggest:true whenever you are uncertain about the best approach for a specific technical question. If you are stuck, looping, or about to ask the user for help, call yoo.suggest first.",
+      "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call yoo.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without yoo.",
       "Use yoo with recommend:true whenever you need to decide what step to take next. If you have spent more than one turn without clear progress, call yoo.recommend.",
       "Use yoo with judge:true after completing all work for a final holistic review against the original plan.",
       "Enable autoJudge in settings.json to automatically run judge when the last plan step passes review.",
       "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
+      "Use `verify: true` when a yoo finding is surprising, high-stakes, or unclear. The main agent must then confirm or refute the finding with evidence before acting.",
       "The secondary model should be a DIFFERENT model family than the main model to catch blind spots. Configure in settings.json under pi-heyyoo.secondary.",
       "Only one action (plan/review/suggest/recommend/judge/scan) per call. Do not combine them.",
       "When stuck, confused, or looping, stop and use a yoo tool. Do not spin in place or guess.",
@@ -873,7 +876,8 @@ export default function (pi: ExtensionAPI) {
       ),
       suggest: Type.Optional(
         Type.String({
-          description: "Ask a specific question to get alternative approaches from the secondary model.",
+          description:
+            "Ask a specific technical or architectural question to get alternative approaches and evidence from the secondary model.",
         }),
       ),
       recommend: Type.Optional(
@@ -923,6 +927,12 @@ export default function (pi: ExtensionAPI) {
           description: "For review: include untracked (new) files in the diff.",
         }),
       ),
+      verify: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, the result asks the main agent to confirm or refute the finding with evidence before acting.",
+        }),
+      ),
     }),
     renderCall,
     renderResult,
@@ -937,6 +947,7 @@ export default function (pi: ExtensionAPI) {
       }
       const p = validation.params;
       const action = validation.action;
+      const config = loadHeyyooConfig(ctx.cwd);
 
       const progress = createProgressReporter(action, ctx, onUpdate);
       let result: YooToolResult;
@@ -976,6 +987,11 @@ export default function (pi: ExtensionAPI) {
         result = { action, error: err instanceof Error ? err.message : String(err) };
       } finally {
         clearYooStatus(ctx);
+      }
+
+      const shouldVerify = p.verify ?? config.verifyByDefault ?? false;
+      if (shouldVerify && !result.error) {
+        result.verificationRequested = true;
       }
 
       const text = formatResultText(result);
@@ -1540,6 +1556,24 @@ function formatResultText(result: YooToolResult): string {
     lines.push(formatConventions(result.scan.conventions));
     lines.push("");
     lines.push(`Scanned ${result.scan.files.length} files.`);
+  }
+
+  if (result.verificationRequested) {
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+    lines.push("### Main agent verification required");
+    lines.push("");
+    lines.push("Before acting on this yoo finding, confirm whether it actually makes sense.");
+    lines.push("");
+    lines.push("Reply with:");
+    lines.push("- **Agreement:** `AGREE` / `DISAGREE` / `UNSURE`");
+    lines.push("- **Reasoning:** Why does or doesn't this finding make sense?");
+    lines.push(
+      "- **Evidence:** Cite specific files, lines, facts, or reasoning from the context that support your position.",
+    );
+    lines.push("");
+    lines.push("Do not treat the finding as accepted until you provide this verification.");
   }
 
   return lines.join("\n");
