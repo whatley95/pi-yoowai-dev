@@ -4,8 +4,8 @@ import { formatCost } from "./cost-tracker.js";
 
 describe("formatCost", () => {
   it("formats cents for small costs", () => {
-    assert.equal(formatCost(0.0005), "0.50¢");
-    assert.equal(formatCost(0.0009), "0.90¢");
+    assert.equal(formatCost(0.0005), "0.05¢");
+    assert.equal(formatCost(0.0009), "0.09¢");
   });
 
   it("formats dollars for costs above 0.001", () => {

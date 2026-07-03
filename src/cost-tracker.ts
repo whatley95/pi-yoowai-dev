@@ -79,6 +79,6 @@ export function resetCost(cwd: string): void {
 }
 
 export function formatCost(costUsd: number): string {
-  if (costUsd < 0.001) return `${(costUsd * 1000).toFixed(2)}¢`;
+  if (costUsd < 0.001) return `${(costUsd * 100).toFixed(2)}¢`;
   return `$${costUsd.toFixed(4)}`;
 }
