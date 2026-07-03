@@ -41,7 +41,10 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
     "costBudgetUsd": 0.5,
     "reviewFullFileThresholdLines": 300,
     "reviewMaxInputTokens": 50000,
-    "reviewStrategy": "auto"
+    "reviewStrategy": "auto",
+    "modelInfo": {
+      "qwen3.7-max": { "contextWindow": 128000, "maxOutputTokens": 8192 }
+    }
   }
 }
 ```
@@ -65,6 +68,12 @@ If no secondary model is configured, yoo returns an error. Configure `pi-heyyoo.
 | `verifyByDefault`              | boolean                                 | If true, every yoo result asks the main agent to confirm the finding with evidence                                                  |
 | `secondary.contextWindow`      | number                                  | Override the model's context window                                                                                                 |
 | `secondary.maxOutputTokens`    | number                                  | Override the model's max output tokens                                                                                              |
+| `secondary.baseUrl`            | string                                  | Custom endpoint for any OpenAI-compatible or Anthropic-compatible provider                                                          |
+| `secondary.apiKey`             | string                                  | Inline API key (prefer `auth.json` or env vars)                                                                                     |
+| `secondary.style`              | `"openai-compatible" \| "anthropic"`    | API style when using `baseUrl` (default: `"openai-compatible"`)                                                                     |
+| `secondary.authHeader`         | string                                  | Custom auth header name when using `baseUrl`                                                                                        |
+| `secondary.authPrefix`         | string                                  | Custom auth prefix when using `baseUrl`                                                                                             |
+| `modelInfo`                    | object                                  | Per-model token budget overrides, keyed by model id                                                                                 |
 
 ## Tools
 
@@ -243,7 +252,22 @@ When the user asks a technical or architectural question, call `yoo.suggest` or 
 | openai, deepseek, openrouter, groq, mistral, xai, together, fireworks, cerebras | OpenAI-compatible |
 | google                                                                          | Google Gemini     |
 
-API keys are resolved from `~/.pi/agent/auth.json` → environment variables → `!command` execution.
+You can also use **any OpenAI-compatible or Anthropic-compatible endpoint** by setting `secondary.baseUrl`. Set `secondary.style` to `"anthropic"` for Anthropic-style endpoints.
+
+```json
+{
+  "pi-heyyoo": {
+    "secondary": {
+      "provider": "opencode-custom",
+      "id": "qwen3.7-max",
+      "baseUrl": "https://your.opencode.endpoint/v1",
+      "apiKey": "sk-..."
+    }
+  }
+}
+```
+
+API keys are resolved in order: `secondary.apiKey` → `~/.pi/agent/auth.json` → environment variables → `!command` execution.
 
 ## Development scripts
 
