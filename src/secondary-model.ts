@@ -360,8 +360,21 @@ function redactSessionJsonl(jsonl: string): string {
 }
 
 function isConversationEntry(entry: unknown): entry is Record<string, unknown> {
-  if (!entry || typeof entry !== "object") return false;
-  const role = (entry as Record<string, unknown>).role;
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+  const e = entry as Record<string, unknown>;
+
+  // Real Pi branches return event objects: { type: "message", message: { role, content } }.
+  // Some events have a malformed/undefined message object, so reject those to avoid crashing
+  // the child pi process during session inheritance. Also accept legacy/test entries that
+  // carry the role directly on the event object.
+  if (e.type === "message") {
+    const msg = e.message;
+    if (msg && typeof msg === "object" && !Array.isArray(msg)) {
+      const nestedRole = (msg as Record<string, unknown>).role;
+      if (nestedRole === "system" || nestedRole === "user" || nestedRole === "assistant") return true;
+    }
+  }
+  const role = e.role;
   return role === "system" || role === "user" || role === "assistant";
 }
 

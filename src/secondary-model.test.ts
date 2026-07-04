@@ -250,6 +250,55 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
     assert.ok(inheritedMessages.some((e) => e.content?.[0]?.text === "msg-11"));
   });
 
+  it("skips malformed session entries with undefined message objects", async () => {
+    const cwd = makeTempDir("pi-heyyoo-pi-malformed-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini" });
+
+    const script = join(cwd, "fake-pi-echo.js");
+    writeFileSync(
+      script,
+      `
+const fs = require("node:fs");
+const sessionPath = process.argv.find(a => !a.startsWith("-") && a.endsWith(".jsonl"));
+const jsonl = fs.readFileSync(sessionPath, "utf-8");
+console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:jsonl}],usage:{input:5,output:3,cost:0.0001}}}));
+`,
+      "utf-8",
+    );
+    setPiSpawnResolver(() => ({ command: process.execPath, prefixArgs: [script] }));
+
+    const sessionManager = {
+      getHeader: () => ({ type: "header" }),
+      getBranch: () => [
+        { type: "message", message: { role: "assistant", content: [{ type: "text", text: "valid assistant" }] } },
+        { type: "message", message: undefined },
+        { type: "message" },
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "valid user" }] } },
+        { type: "progress", message: "progress" },
+      ],
+    };
+
+    const { content } = await callSecondaryModel("openai", "gpt-4o-mini", "system", "user", {
+      thinking: "off",
+      cwd,
+      sessionManager,
+    });
+
+    const lines = content.split("\n").filter((l) => l.trim());
+    const entries = lines.map((l) => JSON.parse(l));
+    entries.shift(); // header
+    entries.pop(); // task system
+    entries.pop(); // task user
+
+    const validEntries = entries.filter(
+      (e) => e.type === "message" && e.message && (e.message.role === "user" || e.message.role === "assistant"),
+    );
+    assert.equal(validEntries.length, 2);
+    assert.ok(validEntries.some((e) => e.message.content?.[0]?.text === "valid assistant"));
+    assert.ok(validEntries.some((e) => e.message.content?.[0]?.text === "valid user"));
+  });
+
   it("uses task model override when task option is provided", async () => {
     const cwd = makeTempDir("pi-heyyoo-pi-task-");
     tmpDirs.push(cwd);

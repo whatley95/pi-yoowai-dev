@@ -1728,10 +1728,19 @@ export default function (pi: ExtensionAPI) {
           });
           return action ? `Use for ${action} only` : undefined;
         })();
-        const scopeItems = scopeOptions.map((s) => `${s}${s === currentScope ? " ✓ current" : ""}`);
+        const scopeModelText = (scope: string): string => {
+          const isBase = scope === "Base secondary model";
+          const action = isBase ? undefined : (scope.replace(/^Use for /, "").replace(/ only$/, "") as YooAction);
+          const model = isBase ? currentConfig.secondary : resolveTaskModel(currentConfig, action!);
+          if (!model.provider || !model.id) return "not configured";
+          return `${model.provider}:${model.id}${model.thinking ? ` · ${model.thinking}` : ""}`;
+        };
+        const scopeItems = scopeOptions.map(
+          (s) => `${s} — ${scopeModelText(s)}${s === currentScope ? " ✓ current" : ""}`,
+        );
         const scopePicked = await ctx.ui.select("Which yoo tool should use this model?", scopeItems);
         if (!scopePicked) return;
-        const scope = scopePicked.replace(/ ✓ current$/, "");
+        const scope = scopePicked.replace(/ ✓ current$/, "").split(" — ")[0];
         const action =
           scope === "Base secondary model"
             ? undefined
