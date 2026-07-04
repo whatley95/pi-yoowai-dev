@@ -1982,11 +1982,41 @@ export default function (pi: ExtensionAPI) {
 
       let failures = 0;
       const totalStages = runnableTests.length * 3;
+      interface TestResult {
+        label: string;
+        task?: YooAction;
+        provider: string;
+        id: string;
+        backend?: string;
+        thinking?: string;
+        baseUrl?: string;
+        status: "ok" | "unexpected" | "error";
+        elapsedMs: number;
+        inputTokens?: number;
+        outputTokens?: number;
+        costUsd?: number;
+        response?: string;
+        error?: string;
+      }
+
+      const results: TestResult[] = [];
+
+      const formatModelDetails = (model: TestResult) => {
+        const parts: string[] = [];
+        if (model.backend && model.backend !== "pi") parts.push(`backend: ${model.backend}`);
+        if (model.thinking) parts.push(`thinking: ${model.thinking}`);
+        else parts.push("thinking: off");
+        if (model.baseUrl) parts.push(`endpoint: ${model.baseUrl}`);
+        return parts.length > 0 ? ` (${parts.join(", ")})` : "";
+      };
+
+      const overallStart = Date.now();
 
       for (let i = 0; i < runnableTests.length; i++) {
         const { task: testTask, model, label } = runnableTests[i];
         const taskSuffix = testTask ? ` (${testTask})` : "";
         const baseStage = i * 3;
+        const testStart = Date.now();
 
         notifyProgress(baseStage + 1, totalStages, `Testing ${label}${taskSuffix}…`);
         const controller = new AbortController();
@@ -2007,6 +2037,7 @@ export default function (pi: ExtensionAPI) {
             },
           );
           clearTimeout(timeout);
+          const elapsedMs = Date.now() - testStart;
           notifyProgress(baseStage + 2, totalStages, `Got response from ${label}${taskSuffix}`);
           const response = content.trim();
           const costText = usage
@@ -2018,6 +2049,21 @@ export default function (pi: ExtensionAPI) {
           ) {
             notifyProgress(baseStage + 3, totalStages, `${label}${taskSuffix} OK`);
             ctx.ui.notify(`yoo-test OK: ${label}${taskSuffix} is reachable${costText}`, "info");
+            results.push({
+              label,
+              task: testTask,
+              provider: model.provider,
+              id: model.id,
+              backend: model.backend,
+              thinking: model.thinking,
+              baseUrl: model.baseUrl,
+              status: "ok",
+              elapsedMs,
+              inputTokens: usage?.estimatedInputTokens,
+              outputTokens: usage?.estimatedOutputTokens,
+              costUsd: usage?.estimatedCostUsd,
+              response: response.slice(0, 80),
+            });
           } else {
             failures++;
             notifyProgress(baseStage + 3, totalStages, `${label}${taskSuffix} unexpected response`);
@@ -2025,10 +2071,26 @@ export default function (pi: ExtensionAPI) {
               `yoo-test warning: ${label}${taskSuffix} replied but content was unexpected: "${response.slice(0, 100)}"${costText}`,
               "warn",
             );
+            results.push({
+              label,
+              task: testTask,
+              provider: model.provider,
+              id: model.id,
+              backend: model.backend,
+              thinking: model.thinking,
+              baseUrl: model.baseUrl,
+              status: "unexpected",
+              elapsedMs,
+              inputTokens: usage?.estimatedInputTokens,
+              outputTokens: usage?.estimatedOutputTokens,
+              costUsd: usage?.estimatedCostUsd,
+              response: response.slice(0, 120),
+            });
           }
         } catch (err) {
           failures++;
           clearTimeout(timeout);
+          const elapsedMs = Date.now() - testStart;
           const message = err instanceof Error ? err.message : String(err);
           logEvent(ctx.cwd, "error", "yoo-test failed", {
             provider: model.provider,
@@ -2037,16 +2099,63 @@ export default function (pi: ExtensionAPI) {
           });
           notifyProgress(baseStage + 3, totalStages, `${label}${taskSuffix} connection failed`);
           ctx.ui.notify(`yoo-test failed for ${label}${taskSuffix}: ${message}`, "error");
+          results.push({
+            label,
+            task: testTask,
+            provider: model.provider,
+            id: model.id,
+            backend: model.backend,
+            thinking: model.thinking,
+            baseUrl: model.baseUrl,
+            status: "error",
+            elapsedMs,
+            error: message,
+          });
         }
       }
 
-      if (failures === 0) {
-        notifyProgress(totalStages, totalStages, "All connections verified");
-        ctx.ui.notify("yoo-test complete: all configured models are reachable.", "info");
-      } else {
-        notifyProgress(totalStages, totalStages, `${failures} connection(s) failed`);
-        ctx.ui.notify(`yoo-test complete: ${failures} of ${tests.length} model(s) failed.`, "error");
+      const overallElapsedMs = Date.now() - overallStart;
+      const totalInput = results.reduce((sum, r) => sum + (r.inputTokens ?? 0), 0);
+      const totalOutput = results.reduce((sum, r) => sum + (r.outputTokens ?? 0), 0);
+      const totalCost = results.reduce((sum, r) => sum + (r.costUsd ?? 0), 0);
+      const passed = results.length - failures;
+
+      const summaryLines: string[] = [
+        failures === 0
+          ? `yoo-test complete: ${passed}/${results.length} model(s) passed in ${(overallElapsedMs / 1000).toFixed(1)}s`
+          : `yoo-test complete: ${passed}/${results.length} passed, ${failures} failed in ${(overallElapsedMs / 1000).toFixed(1)}s`,
+        "",
+        ...results.map((r) => {
+          const taskTag = r.task ? ` [${r.task}]` : "";
+          const details = formatModelDetails(r);
+          const elapsed = `${(r.elapsedMs / 1000).toFixed(1)}s`;
+          const usage =
+            r.inputTokens !== undefined
+              ? ` · ${formatTokenCount(r.inputTokens)} in · ${formatTokenCount(r.outputTokens ?? 0)} out · ${formatCost(r.costUsd ?? 0)}`
+              : "";
+          if (r.status === "ok") {
+            return `- ✅ ${r.label}${taskTag}${details} — ${elapsed}${usage}`;
+          }
+          if (r.status === "unexpected") {
+            return `- ⚠️ ${r.label}${taskTag}${details} — unexpected response (${elapsed})${usage}: "${r.response}"`;
+          }
+          return `- ❌ ${r.label}${taskTag}${details} — failed after ${elapsed}: ${r.error}`;
+        }),
+      ];
+
+      if (totalCost > 0) {
+        summaryLines.push(
+          "",
+          `Totals: ${formatTokenCount(totalInput)} in · ${formatTokenCount(totalOutput)} out · ${formatCost(totalCost)}`,
+        );
       }
+
+      notifyProgress(
+        totalStages,
+        totalStages,
+        failures === 0 ? "All connections verified" : `${failures} connection(s) failed`,
+      );
+      ctx.ui.notify(summaryLines.join("\n"), failures === 0 ? "info" : "error");
       clearYooStatus(ctx);
     },
   });
