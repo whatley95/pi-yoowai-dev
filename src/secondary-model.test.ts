@@ -131,7 +131,10 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
     const sessionManager = {
       getHeader: () => ({ type: "header", inherited: true }),
       getBranch: () => [
-        { type: "message", role: "user", content: [{ type: "text", text: "parent user" }], inherited: true },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "parent user" }], inherited: true },
+        },
       ],
     };
 
@@ -166,8 +169,10 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
     for (let i = 0; i < 12; i++) {
       messages.push({
         type: "message",
-        role: i % 2 === 0 ? "user" : "assistant",
-        content: [{ type: "text", text: `msg-${i}` }],
+        message: {
+          role: i % 2 === 0 ? "user" : "assistant",
+          content: [{ type: "text", text: `msg-${i}` }],
+        },
       });
       if (i % 3 === 0) messages.push({ type: "progress", message: `progress-${i}` });
     }
@@ -192,12 +197,14 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
     assert.equal(taskSystem?.role, "system");
     assert.equal(taskUser?.role, "user");
 
-    const inheritedMessages = entries.filter((e) => e.role === "user" || e.role === "assistant");
+    const inheritedMessages = entries.filter(
+      (e) => e.type === "message" && (e.message?.role === "user" || e.message?.role === "assistant"),
+    );
     assert.equal(inheritedMessages.length, 10);
     assert.ok(!entries.some((e) => e.type === "progress"));
-    assert.ok(!inheritedMessages.some((e) => e.content?.[0]?.text === "msg-0"));
-    assert.ok(inheritedMessages.some((e) => e.content?.[0]?.text === "msg-2"));
-    assert.ok(inheritedMessages.some((e) => e.content?.[0]?.text === "msg-11"));
+    assert.ok(!inheritedMessages.some((e) => e.message?.content?.[0]?.text === "msg-0"));
+    assert.ok(inheritedMessages.some((e) => e.message?.content?.[0]?.text === "msg-2"));
+    assert.ok(inheritedMessages.some((e) => e.message?.content?.[0]?.text === "msg-11"));
   });
 
   it("prioritizes relevant paths when selecting inherited branch entries", async () => {
@@ -221,7 +228,10 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
     const messages: unknown[] = [];
     for (let i = 0; i < 12; i++) {
       const text = i === 2 ? "discussing src/utils.ts behavior" : `msg-${i}`;
-      messages.push({ type: "message", role: i % 2 === 0 ? "user" : "assistant", content: [{ type: "text", text }] });
+      messages.push({
+        type: "message",
+        message: { role: i % 2 === 0 ? "user" : "assistant", content: [{ type: "text", text }] },
+      });
     }
 
     const sessionManager = {
@@ -242,12 +252,14 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
     entries.pop(); // task system
     entries.pop(); // task user
 
-    const inheritedMessages = entries.filter((e) => e.role === "user" || e.role === "assistant");
+    const inheritedMessages = entries.filter(
+      (e) => e.type === "message" && (e.message?.role === "user" || e.message?.role === "assistant"),
+    );
     assert.equal(inheritedMessages.length, 10);
-    assert.ok(inheritedMessages.some((e) => e.content?.[0]?.text === "discussing src/utils.ts behavior"));
-    assert.ok(!inheritedMessages.some((e) => e.content?.[0]?.text === "msg-0"));
-    assert.ok(!inheritedMessages.some((e) => e.content?.[0]?.text === "msg-1"));
-    assert.ok(inheritedMessages.some((e) => e.content?.[0]?.text === "msg-11"));
+    assert.ok(inheritedMessages.some((e) => e.message?.content?.[0]?.text === "discussing src/utils.ts behavior"));
+    assert.ok(!inheritedMessages.some((e) => e.message?.content?.[0]?.text === "msg-0"));
+    assert.ok(!inheritedMessages.some((e) => e.message?.content?.[0]?.text === "msg-1"));
+    assert.ok(inheritedMessages.some((e) => e.message?.content?.[0]?.text === "msg-11"));
   });
 
   it("skips malformed session entries with undefined message objects", async () => {

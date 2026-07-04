@@ -359,23 +359,33 @@ function redactSessionJsonl(jsonl: string): string {
     .replace(/(--api-key\s+)\S+/gi, "$1[REDACTED]");
 }
 
-function isConversationEntry(entry: unknown): entry is Record<string, unknown> {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+function isValidSessionEntry(entry: unknown): boolean {
+  return normalizeSessionEntry(entry) !== null;
+}
+
+function normalizeSessionEntry(entry: unknown): unknown | null {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
   const e = entry as Record<string, unknown>;
 
   // Real Pi branches return event objects: { type: "message", message: { role, content } }.
   // Some events have a malformed/undefined message object, so reject those to avoid crashing
-  // the child pi process during session inheritance. Also accept legacy/test entries that
-  // carry the role directly on the event object.
+  // the child pi process during session inheritance.
   if (e.type === "message") {
     const msg = e.message;
     if (msg && typeof msg === "object" && !Array.isArray(msg)) {
       const nestedRole = (msg as Record<string, unknown>).role;
-      if (nestedRole === "system" || nestedRole === "user" || nestedRole === "assistant") return true;
+      if (nestedRole === "system" || nestedRole === "user" || nestedRole === "assistant") return entry;
     }
+    return null;
   }
+
+  // Legacy/test entries that carry the role directly on the event object are wrapped into
+  // the event shape the child pi process expects.
   const role = e.role;
-  return role === "system" || role === "user" || role === "assistant";
+  if (role === "system" || role === "user" || role === "assistant") {
+    return { type: "message", message: entry };
+  }
+  return null;
 }
 
 function normalizePathForMatch(path: string): string {
@@ -393,7 +403,7 @@ function entryMentionsAnyPath(entry: unknown, paths: string[]): boolean {
 }
 
 function selectRelevantEntries(branch: unknown[], maxEntries: number, relevantPaths?: string[]): unknown[] {
-  const messages = branch.map((entry, index) => ({ entry, index })).filter(({ entry }) => isConversationEntry(entry));
+  const messages = branch.map((entry, index) => ({ entry, index })).filter(({ entry }) => isValidSessionEntry(entry));
 
   if (!relevantPaths || relevantPaths.length === 0) {
     return messages.slice(-maxEntries).map(({ entry }) => entry);
@@ -433,7 +443,10 @@ function buildInheritedSessionJsonl(
     if (!header || typeof header !== "object" || !Array.isArray(branch)) return null;
     const lines: string[] = [JSON.stringify(header)];
     const selected = selectRelevantEntries(branch, maxEntries, relevantPaths);
-    for (const entry of selected) lines.push(JSON.stringify(entry));
+    for (const entry of selected) {
+      const normalized = normalizeSessionEntry(entry);
+      if (normalized) lines.push(JSON.stringify(normalized));
+    }
     return redactSessionJsonl(lines.join("\n") + "\n");
   } catch {
     return null;
