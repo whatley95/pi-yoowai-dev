@@ -1671,7 +1671,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("yoo-model", {
-    description: "Interactively pick the secondary model for yoo, optionally per tool",
+    description:
+      "Interactively pick the secondary model for yoo, optionally per tool. Usage: /yoo-model [provider] [filter]",
     handler: async (_args, ctx) => {
       try {
         const registry = ctx.modelRegistry as unknown as {
@@ -1705,29 +1706,79 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
+        const trimmed = _args.trim();
+        const tokens: string[] = [];
+        const tokenRegex = /[^\s"']+|"([^"]*)"|'([^']*)'/g;
+        let tokenMatch: RegExpExecArray | null;
+        while ((tokenMatch = tokenRegex.exec(trimmed)) !== null) {
+          tokens.push(tokenMatch[1] ?? tokenMatch[2] ?? tokenMatch[0]);
+        }
+        const requestedProvider = tokens[0]?.toLowerCase();
+        const filterQuery = tokens[1]?.toLowerCase();
+
+        const currentConfig = loadHeyyooConfig(ctx.cwd);
+
+        // 1. Pick which yoo tool this model is for.
+        const scopeOptions = ["Base secondary model", ...YOO_ACTIONS.map((a) => `Use for ${a} only`)];
+        const currentScope = (() => {
+          if (currentConfig.secondary.provider && currentConfig.secondary.id) return "Base secondary model";
+          const action = YOO_ACTIONS.find((a) => {
+            const override = currentConfig.taskModels?.[a];
+            return override?.provider && override?.id;
+          });
+          return action ? `Use for ${action} only` : undefined;
+        })();
+        const scopeItems = scopeOptions.map((s) => `${s}${s === currentScope ? " ✓ current" : ""}`);
+        const scopePicked = await ctx.ui.select("Which yoo tool should use this model?", scopeItems);
+        if (!scopePicked) return;
+        const scope = scopePicked.replace(/ ✓ current$/, "");
+        const action =
+          scope === "Base secondary model"
+            ? undefined
+            : (scope.replace(/^Use for /, "").replace(/ only$/, "") as YooAction);
+
+        const target = action ? currentConfig.taskModels?.[action] : currentConfig.secondary;
+        const effectiveProvider = target?.provider || currentConfig.secondary.provider;
+        const effectiveId = target?.id || currentConfig.secondary.id;
+        const effectiveThinking = target?.thinking ?? currentConfig.secondary.thinking ?? "xhigh";
+
+        // 2. Pick provider.
         const providers = [...new Set(configuredModels.map((m) => m.provider))].sort();
         let provider: string;
-        if (providers.length === 1) {
+        if (requestedProvider) {
+          const matched = providers.find((p) => p.toLowerCase() === requestedProvider);
+          if (!matched) {
+            ctx.ui.notify(`No configured provider matching "${tokens[0]}".`, "warn");
+            return;
+          }
+          provider = matched;
+        } else if (providers.length === 1) {
           provider = providers[0];
         } else {
-          const picked = await ctx.ui.select(
-            "Pick provider:",
-            providers.map((p) => {
-              const count = configuredModels.filter((m) => m.provider === p).length;
-              return `${p} (${count} models)`;
-            }),
-          );
+          const providerItems = providers.map((p) => {
+            const count = configuredModels.filter((m) => m.provider === p).length;
+            const marker = p.toLowerCase() === effectiveProvider.toLowerCase() ? " ✓ current" : "";
+            return `${p} (${count} models)${marker}`;
+          });
+          const picked = await ctx.ui.select("Pick provider:", providerItems);
           if (!picked) return;
-          provider = picked.split(" ")[0];
+          provider = picked.replace(/ ✓ current$/, "").split(" ")[0];
         }
 
-        const providerModels = configuredModels
+        // 3. Pick model.
+        let providerModels = configuredModels
           .filter((m) => m.provider === provider)
           .sort((a, b) => a.id.localeCompare(b.id));
-        const currentConfig = loadHeyyooConfig(ctx.cwd);
-        const isCurrentBase = currentConfig.secondary.provider === provider && currentConfig.secondary.id.length > 0;
+        if (filterQuery) {
+          providerModels = providerModels.filter((m) => m.id.toLowerCase().includes(filterQuery));
+          if (providerModels.length === 0) {
+            ctx.ui.notify(`No ${provider} models match "${tokens[1]}".`, "warn");
+            return;
+          }
+        }
         const modelItems = providerModels.map((m) => {
-          const marker = isCurrentBase && m.id === currentConfig.secondary.id ? " ✓ current" : "";
+          const marker =
+            provider.toLowerCase() === effectiveProvider.toLowerCase() && m.id === effectiveId ? " ✓ current" : "";
           return `${m.id}${marker}`;
         });
 
@@ -1735,31 +1786,14 @@ export default function (pi: ExtensionAPI) {
         if (!modelIdPicked) return;
         const modelId = modelIdPicked.replace(/ ✓ current$/, "");
 
+        // 4. Pick thinking level.
         const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"];
-        const currentThinking = currentConfig.secondary.thinking ?? "xhigh";
-        const thinkingItems = thinkingLevels.map(
-          (t) =>
-            `${t}${t === currentThinking && isCurrentBase && currentConfig.secondary.id === modelId ? " ✓ current" : ""}`,
-        );
+        const thinkingItems = thinkingLevels.map((t) => `${t}${t === effectiveThinking ? " ✓ current" : ""}`);
         const thinkingPicked = await ctx.ui.select("Pick thinking level:", thinkingItems);
         if (!thinkingPicked) return;
         const thinking = thinkingPicked.replace(" ✓ current", "");
 
-        const scopeOptions = ["Base secondary model", ...YOO_ACTIONS.map((a) => `Use for ${a} only`)];
-        const currentActionScope = YOO_ACTIONS.find((a) => {
-          const override = currentConfig.taskModels?.[a];
-          return override?.provider === provider && override?.id === modelId && override?.thinking === thinking;
-        });
-        const currentScope = isCurrentBase
-          ? "Base secondary model"
-          : currentActionScope
-            ? `Use for ${currentActionScope} only`
-            : undefined;
-        const scopeItems = scopeOptions.map((s) => `${s}${s === currentScope ? " ✓ current" : ""}`);
-        const scopePicked = await ctx.ui.select("Apply model to:", scopeItems);
-        if (!scopePicked) return;
-        const scope = scopePicked.replace(/ ✓ current$/, "");
-
+        // 5. Save.
         const agentDir = getAgentDir();
         const settingsPath = join(agentDir, "settings.json");
         if (!existsSync(agentDir)) {
@@ -1776,11 +1810,11 @@ export default function (pi: ExtensionAPI) {
           yooSettings.secondary = { provider, id: modelId, thinking };
           ctx.ui.notify(`Secondary model set to ${provider}:${modelId} (${thinking}).`, "info");
         } else {
-          const action = scope.replace(/^Use for /, "").replace(/ only$/, "") as YooAction;
           const taskModels = (yooSettings.taskModels as Record<string, unknown>) || {};
-          taskModels[action] = { provider, id: modelId, thinking };
+          const taskAction = action as YooAction;
+          taskModels[taskAction] = { provider, id: modelId, thinking };
           yooSettings.taskModels = taskModels;
-          ctx.ui.notify(`Task model for ${action} set to ${provider}:${modelId} (${thinking}).`, "info");
+          ctx.ui.notify(`Task model for ${taskAction} set to ${provider}:${modelId} (${thinking}).`, "info");
         }
 
         writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
@@ -2108,15 +2142,25 @@ async function showYooStatus(ctx: ExtensionContext): Promise<void> {
   const conventions = loadConventions(ctx.cwd);
   const vcs = getVcsInfo(ctx.cwd);
 
+  function modelStatusLine(model: SecondaryModelConfig): string {
+    const backend = model.backend && model.backend !== "pi" ? ` (${model.backend})` : "";
+    const thinking = model.thinking ? ` · ${model.thinking}` : "";
+    return `${model.provider}:${model.id}${backend}${thinking}`;
+  }
+
+  const taskModelEntries = YOO_ACTIONS.filter((a) => {
+    const override = config.taskModels?.[a];
+    return override?.provider || override?.id;
+  });
+
   const lines = [
     `pi-heyyoo v${VERSION}`,
     HOMEPAGE,
     "",
     "Configuration:",
     config.secondary.provider && config.secondary.id
-      ? `  Secondary model: ${config.secondary.provider}:${config.secondary.id}`
-      : "  Secondary model: not configured",
-    `  Thinking level: ${config.secondary.thinking ?? "off"}`,
+      ? `  Base model: ${modelStatusLine(config.secondary)}`
+      : "  Base model: not configured",
     `  Backend: ${config.secondary.backend ?? "pi"}`,
     `  Auto-judge: ${config.autoJudge ? "enabled" : "disabled"}`,
     config.preReviewCommands && config.preReviewCommands.length > 0
@@ -2130,6 +2174,17 @@ async function showYooStatus(ctx: ExtensionContext): Promise<void> {
     "Plan:",
     state.plan ? `  Summary: ${state.plan.summary}` : "  No active plan",
   ];
+
+  if (taskModelEntries.length > 0) {
+    const sessionIndex = lines.indexOf("Session:");
+    const insertAt = sessionIndex > 0 ? sessionIndex - 1 : lines.length;
+    lines.splice(
+      insertAt,
+      0,
+      "  Per-tool models:",
+      ...taskModelEntries.map((action) => `    ${action}: ${modelStatusLine(resolveTaskModel(config, action))}`),
+    );
+  }
 
   if (state.plan) {
     lines.push(`  Progress: ${state.completedSteps}/${state.totalSteps} steps completed`);

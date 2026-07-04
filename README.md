@@ -44,6 +44,10 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
     "reviewStrategy": "auto",
     "modelInfo": {
       "qwen3.7-max": { "contextWindow": 128000, "maxOutputTokens": 8192 }
+    },
+    "taskModels": {
+      "review": { "provider": "anthropic", "id": "claude-sonnet-4-5", "thinking": "high" },
+      "scan": { "provider": "deepseek", "id": "deepseek-chat", "thinking": "off" }
     }
   }
 }
@@ -51,13 +55,14 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
 
 **Recommended:** Use a DIFFERENT model family than your main agent. If main is DeepSeek, set secondary to Claude or GPT. This catches blind spots your main model shares.
 
-If no secondary model is configured, yoo returns an error. Configure `pi-heyyoo.secondary` in settings.json or use `/yoo-model` to pick one interactively.
+If no secondary model is configured, yoo returns an error. Configure `pi-heyyoo.secondary` in settings.json or use `/yoo-model` to pick one interactively. You can also set a different model per yoo tool with `taskModels` or `/yoo-model`.
 
 ### Options
 
 | Option                         | Type                                    | Description                                                                                                                         |
 | ------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `secondary`                    | object                                  | `{ provider, id, thinking? }` for the secondary model                                                                               |
+| `secondary`                    | object                                  | `{ provider, id, thinking? }` for the base secondary model                                                                          |
+| `taskModels`                   | object                                  | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`)                                |
 | `autoJudge`                    | boolean                                 | Run `yoo.judge` automatically when the last plan step passes review                                                                 |
 | `preReviewCommands`            | string[]                                | Commands to run before each review; output is included in the review prompt                                                         |
 | `costBudgetUsd`                | number                                  | Maximum estimated session spend before yoo stops with an error. Negative values are treated as unset; `0` means no spend is allowed |
@@ -95,24 +100,30 @@ The `yoo` tool is called by the main agent during development:
 
 ## Commands
 
-| Command                                       | What it does                                                        |
-| --------------------------------------------- | ------------------------------------------------------------------- |
-| `/yoo`                                        | Compact status card: version, model, plan, VCS, cost, conventions   |
-| `/yoo plan refactor auth middleware`          | Create a plan from the terminal                                     |
-| `/yoo review "wrote verifySession"`           | Review current changes                                              |
-| `/yoo suggest "redis vs in-memory sessions?"` | Get alternative approaches                                          |
-| `/yoo recommend`                              | Get a recommended next step                                         |
-| `/yoo judge "auth refactor complete"`         | Final holistic review                                               |
-| `/yoo scan`                                   | Scan project conventions                                            |
-| `/yoo-status`                                 | Detailed diagnostics: config, plan, VCS, conventions, session cost  |
-| `/yoo-info`                                   | Alias for `/yoo-status`                                             |
-| `/yoo-model`                                  | Interactively pick the secondary model from configured providers    |
-| `/yoo-config <provider.model>`                | Set the secondary model directly (e.g. `/yoo-config openai.gpt-4o`) |
-| `/yoo-clear`                                  | Clear the active plan, session state, cost, memory, and conventions |
-| `/yoo-next`                                   | Recommend the next step based on the active plan                    |
-| `/yoo-done`                                   | Mark the current plan step complete and recommend the next step     |
-| `/yoo-logs`                                   | Show recent error/event log entries for this project                |
-| `/yoo-clear-logs`                             | Clear the yoo error/event log for this project                      |
+| Command                                       | What it does                                                                           |
+| --------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `/yoo`                                        | Compact status card: version, model, plan, VCS, cost, conventions                      |
+| `/yoo plan refactor auth middleware`          | Create a plan from the terminal                                                        |
+| `/yoo review "wrote verifySession"`           | Review current changes                                                                 |
+| `/yoo suggest "redis vs in-memory sessions?"` | Get alternative approaches                                                             |
+| `/yoo recommend`                              | Get a recommended next step                                                            |
+| `/yoo judge "auth refactor complete"`         | Final holistic review                                                                  |
+| `/yoo scan`                                   | Scan project conventions                                                               |
+| `/yoo-status`                                 | Detailed diagnostics: config, plan, VCS, conventions, session cost                     |
+| `/yoo-info`                                   | Alias for `/yoo-status`                                                                |
+| `/yoo-model`                                  | Interactively pick the base or per-tool model from configured providers                |
+| `/yoo-model <provider> [filter]`              | Pre-select provider and optionally filter the model list                               |
+| `/yoo-config`                                 | Show current `pi-heyyoo` settings                                                      |
+| `/yoo-config get <key>`                       | Read a dotted setting (e.g. `/yoo-config get secondary.thinking`)                      |
+| `/yoo-config set <key> <value>`               | Write a dotted setting (e.g. `/yoo-config set taskModels.review.id claude-sonnet-4-5`) |
+| `/yoo-config <provider.model>`                | Set the base secondary model directly (e.g. `/yoo-config openai.gpt-4o`)               |
+| `/yoo-test`                                   | Test connectivity to the base and all per-tool configured models                       |
+| `/yoo-backend <pi\|http>`                     | Switch secondary model backend (default: `pi`)                                         |
+| `/yoo-clear`                                  | Clear the active plan, session state, cost, memory, and conventions                    |
+| `/yoo-next`                                   | Recommend the next step based on the active plan                                       |
+| `/yoo-done`                                   | Mark the current plan step complete and recommend the next step                        |
+| `/yoo-logs`                                   | Show recent error/event log entries for this project                                   |
+| `/yoo-clear-logs`                             | Clear the yoo error/event log for this project                                         |
 
 ### Review command options
 
@@ -194,7 +205,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 
 ## How it works
 
-- **No child Pi process** — direct HTTP calls to the secondary model's API
+- **Default Pi backend** — spawns a child `pi` process; switch to direct HTTP with `/yoo-backend http`
 - **Automatic diff collection** — `yoo.review` auto-runs `git diff HEAD` (or `svn diff`)
 - **Adaptive context** — automatically includes full contents of small changed files, outlines for large ones, and respects the model's token budget
 - **Diff scope control** — limit reviews with `files`, `exclude`, `revision`, `since`, or `untracked`
