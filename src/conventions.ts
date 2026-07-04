@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { getConfigDirName, getProjectConfigPath } from "./pi-paths.js";
 import { logEvent } from "./logger.js";
 import type { Conventions, ScanResult } from "./types.js";
@@ -38,7 +38,11 @@ export function loadConventions(cwd: string): Conventions | null {
   if (!existsSync(path)) return null;
   try {
     const data = JSON.parse(readFileSync(path, "utf-8"));
-    return isValidConventions(data);
+    const conventions = isValidConventions(data);
+    if (!conventions) {
+      logEvent(cwd, "warn", "Invalid conventions file shape; ignoring", { path });
+    }
+    return conventions;
   } catch (err) {
     logEvent(cwd, "warn", "Failed to load conventions", { error: err instanceof Error ? err.message : String(err) });
     return null;
@@ -108,15 +112,17 @@ function listTrackedFiles(cwd: string): string[] {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
-      return output.split(/\r?\n/).filter((f) => {
+      const lines = output.split(/\r?\n/).filter((f) => {
         if (f.length === 0) return false;
         if (f.includes("node_modules/")) return false;
         const configDir = getConfigDirName();
         if (f.includes(`${configDir}/`)) return false;
         return true;
       });
+      if (lines.length === 0) throw new Error("empty git index");
+      return lines;
     } catch {
-      /* git command failed */
+      /* git command failed or empty index */
     }
   }
 
@@ -138,6 +144,7 @@ function scanDirectory(root: string, dir: string, limit: number): string[] {
   const entries = readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (files.length >= limit) break;
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
       if (!excluded.has(entry.name)) {
         files.push(...scanDirectory(root, join(dir, entry.name), limit - files.length));
@@ -146,6 +153,7 @@ function scanDirectory(root: string, dir: string, limit: number): string[] {
     }
     if (entry.isFile()) {
       const rel = relative(root, join(dir, entry.name)).split("\\").join("/");
+      if (EXCLUDED_FILE_PATTERNS.some((p) => p.test(rel))) continue;
       files.push(rel);
     }
   }
@@ -263,7 +271,8 @@ function inferStructure(files: string[]): string {
   if (files.some((f) => f.startsWith("app/"))) parts.push("app/");
   if (files.some((f) => f.startsWith("lib/"))) parts.push("lib/");
   if (files.some((f) => f.startsWith("packages/"))) parts.push("packages/");
-  if (files.some((f) => /\/(test|tests|spec|__tests__)\//.test(f) || /\.(test|spec)\./.test(f))) parts.push("tests/");
+  if (files.some((f) => /(^|\/)(test|tests|spec|__tests__)\//.test(f) || /\.(test|spec)\./.test(f)))
+    parts.push("tests/");
   if (files.some((f) => f.startsWith("public/"))) parts.push("public/");
   if (files.some((f) => f.startsWith("docs/"))) parts.push("docs/");
   return parts.length > 0 ? parts.join(", ") : "flat";
@@ -276,7 +285,19 @@ function inferPatterns(files: string[], cwd: string): string[] {
   if (files.some((f) => f.endsWith(".d.ts"))) patterns.push("uses TypeScript declaration files");
   if (existsSync(join(cwd, "AGENTS.md"))) patterns.push("has AGENTS.md");
   if (files.some((f) => f.includes(".github/"))) patterns.push("uses GitHub Actions/Workflows");
-  if (files.some((f) => f === "docker-compose.yml" || f === "Dockerfile")) patterns.push("uses Docker");
+  if (
+    files.some((f) =>
+      [
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "compose.yaml",
+        "compose.yml",
+        "Dockerfile",
+        "Containerfile",
+      ].includes(f),
+    )
+  )
+    patterns.push("uses Docker");
   if (files.some((f) => f === ".env.example" || f === ".env.local.example")) patterns.push("has env example files");
   if (files.some((f) => f === "pubspec.yaml")) patterns.push("Flutter project (pubspec.yaml)");
   if (files.some((f) => f === "pom.xml" || f === "build.gradle" || f === "build.gradle.kts"))
@@ -327,6 +348,12 @@ function inferTesting(files: string[], pkg: Record<string, unknown> | null): str
   )
     return "flutter test";
   if (files.some((f) => f.endsWith("Test.java") || f.endsWith("Tests.java"))) return "junit";
+  if (pkg?.scripts && typeof pkg.scripts === "object" && !Array.isArray(pkg.scripts)) {
+    const scripts = Object.values(pkg.scripts as Record<string, unknown>)
+      .map(String)
+      .join(" ");
+    if (scripts.includes("node --test") || scripts.includes("--test")) return "node:test";
+  }
   if (files.some((f) => /\.(test|spec)\./.test(f))) return "unknown test files";
   return undefined;
 }
@@ -386,6 +413,7 @@ function inferCi(files: string[]): string | undefined {
   if (files.some((f) => f === ".gitlab-ci.yml")) return "gitlab-ci";
   if (files.some((f) => f.startsWith(".circleci/"))) return "circleci";
   if (files.some((f) => f === "azure-pipelines.yml")) return "azure-pipelines";
+  if (files.some((f) => f === ".travis.yml")) return "travis";
   if (files.some((f) => f === "Jenkinsfile")) return "jenkins";
   return undefined;
 }
@@ -394,7 +422,7 @@ function inferPackageManager(cwd: string): string | undefined {
   if (existsSync(join(cwd, "pnpm-lock.yaml"))) return "pnpm";
   if (existsSync(join(cwd, "yarn.lock"))) return "yarn";
   if (existsSync(join(cwd, "package-lock.json"))) return "npm";
-  if (existsSync(join(cwd, "bun.lockb"))) return "bun";
+  if (existsSync(join(cwd, "bun.lock")) || existsSync(join(cwd, "bun.lockb"))) return "bun";
   if (existsSync(join(cwd, "Cargo.lock"))) return "cargo";
   if (existsSync(join(cwd, "poetry.lock"))) return "poetry";
   if (existsSync(join(cwd, "Pipfile.lock"))) return "pipenv";
@@ -402,14 +430,24 @@ function inferPackageManager(cwd: string): string | undefined {
   return undefined;
 }
 
+function collectExportPaths(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return Object.values(value).flatMap(collectExportPaths);
+  }
+  return [];
+}
+
+function normalizeEntryPoint(file: string): string {
+  return file.replace(/^\.\//, "");
+}
+
 function inferEntryPoints(files: string[], pkg: Record<string, unknown> | null): string[] {
-  const entryPoints: string[] = [];
+  const raw: string[] = [];
   if (pkg) {
-    if (typeof pkg.main === "string") entryPoints.push(pkg.main as string);
-    if (typeof pkg.module === "string") entryPoints.push(pkg.module as string);
-    if (typeof (pkg.exports as Record<string, unknown>)?.["."] === "string") {
-      entryPoints.push((pkg.exports as Record<string, unknown>)["."] as string);
-    }
+    if (typeof pkg.main === "string") raw.push(pkg.main as string);
+    if (typeof pkg.module === "string") raw.push(pkg.module as string);
+    raw.push(...collectExportPaths(pkg.exports));
   }
 
   const common = [
@@ -426,16 +464,27 @@ function inferEntryPoints(files: string[], pkg: Record<string, unknown> | null):
     "src/lib.rs",
   ];
   for (const f of common) {
-    if (files.includes(f)) entryPoints.push(f);
+    if (files.includes(f)) raw.push(f);
   }
 
-  return [...new Set(entryPoints)];
+  const excluded = getExcludedScanDirs();
+  const cwd = "."; // entry point values are relative to package root
+  const entryPoints = [...new Set(raw.map(normalizeEntryPoint))].filter((f) => {
+    if (isAbsolute(f)) return false;
+    const rel = relative(cwd, resolve(cwd, f)).split("\\").join("/");
+    if (rel.startsWith("..")) return false;
+    const firstSegment = rel.split("/")[0];
+    if (firstSegment && excluded.has(firstSegment)) return false;
+    return true;
+  });
+
+  return entryPoints;
 }
 
 function inferScripts(pkg: Record<string, unknown> | null): string[] {
   if (!pkg) return [];
   const scripts = pkg.scripts as Record<string, unknown> | undefined;
-  if (!scripts) return [];
+  if (!scripts || typeof scripts !== "object" || Array.isArray(scripts)) return [];
   return Object.entries(scripts).map(([k, v]) => `${k}: ${String(v)}`);
 }
 
@@ -472,6 +521,60 @@ function statSize(path: string): number {
   } catch {
     return 0;
   }
+}
+
+const DEEP_SCAN_SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|py|go|rs|java|kt|dart|rb|php|cs|cpp|c|h|hpp)$/i;
+const DEEP_SCAN_MAX_FILE_SIZE = 50_000;
+const DEEP_SCAN_MAX_LINES = 100;
+
+export function gatherDeepScanSamples(cwd: string, files: string[], maxFiles = 5): { file: string; content: string }[] {
+  const samples: { file: string; content: string }[] = [];
+  const seen = new Set<string>();
+
+  function tryAdd(file: string): boolean {
+    if (seen.has(file)) return false;
+    const content = readTextFile(join(cwd, file));
+    if (!content) return false;
+    const lines = content.split(/\r?\n/);
+    samples.push({ file, content: lines.slice(0, DEEP_SCAN_MAX_LINES).join("\n") });
+    seen.add(file);
+    return true;
+  }
+
+  const entryPoints = inferEntryPoints(files, readPackageJson(cwd));
+  for (const file of entryPoints) {
+    if (samples.length >= maxFiles) break;
+    tryAdd(file);
+  }
+
+  const testDirRegex = /(^|\/)((__)?tests?|spec|specs)\//;
+  const sourceFiles = files
+    .filter(
+      (f) =>
+        DEEP_SCAN_SOURCE_EXTENSIONS.test(f) &&
+        !f.endsWith(".d.ts") &&
+        !testDirRegex.test(f) &&
+        !/\.(test|spec)\./.test(f),
+    )
+    .map((f) => ({ file: f, size: statSize(join(cwd, f)) }))
+    .filter((x) => x.size > 0 && x.size < DEEP_SCAN_MAX_FILE_SIZE)
+    .sort((a, b) => b.size - a.size);
+  for (const { file } of sourceFiles) {
+    if (samples.length >= maxFiles) break;
+    tryAdd(file);
+  }
+
+  const testFiles = files
+    .filter((f) => /\.(test|spec)\./.test(f) && DEEP_SCAN_SOURCE_EXTENSIONS.test(f))
+    .map((f) => ({ file: f, size: statSize(join(cwd, f)) }))
+    .filter((x) => x.size > 0 && x.size < DEEP_SCAN_MAX_FILE_SIZE)
+    .sort((a, b) => b.size - a.size);
+  for (const { file } of testFiles) {
+    if (samples.length >= maxFiles) break;
+    tryAdd(file);
+  }
+
+  return samples;
 }
 
 export function clearConventions(cwd: string): void {

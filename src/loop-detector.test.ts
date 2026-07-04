@@ -16,7 +16,7 @@ describe("loop-detector", () => {
 
   it("detects repeated yoo.review without edits", () => {
     const state = createLoopDetectionState();
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 7; i++) {
       recordToolCall(state, makeEvent("yoo", { review: "check this" }));
     }
     const loop = checkLoop(state);
@@ -34,15 +34,15 @@ describe("loop-detector", () => {
     assert.equal(checkLoop(state), null);
   });
 
-  it("detects identical description repeated 3+ times", () => {
+  it("detects identical description repeated 7+ times", () => {
     const state = createLoopDetectionState();
     recordToolCall(state, makeEvent("read_file", { path: "src/a.ts" }));
-    recordToolCall(state, makeEvent("yoo", { plan: "implement feature" }));
-    recordToolCall(state, makeEvent("yoo", { plan: "implement feature" }));
-    recordToolCall(state, makeEvent("yoo", { plan: "implement feature" }));
+    for (let i = 0; i < 7; i++) {
+      recordToolCall(state, makeEvent("yoo", { plan: "implement feature" }));
+    }
     const loop = checkLoop(state);
     assert.ok(loop);
-    assert.match(loop!.message, /repeating the same yoo call/);
+    assert.match(loop!.message, /LOOP DETECTED/);
   });
 
   it("rate-limits repeated steers", () => {

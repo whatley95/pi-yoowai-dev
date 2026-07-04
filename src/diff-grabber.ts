@@ -262,7 +262,7 @@ function buildGitPathArgs(files?: string[], exclude?: string[]): string[] | unde
 export function applyExclude(diff: string, exclude?: string[]): string {
   if (!exclude || exclude.length === 0) return diff;
   const patterns = exclude.map((e) => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const regex = new RegExp(`^(Index: |--- )(${patterns.join("|")})`, "m");
+  const regex = new RegExp(`^(Index: |--- )(${patterns.join("|")})(?:\\s|$)`, "m");
   const blocks = diff.split(/^(?=Index: )/m);
   return blocks.filter((b) => !regex.test(b)).join("");
 }
@@ -349,6 +349,31 @@ function processDiff(diff: string, vcs: VcsType, maxDiffChars: number): DiffResu
   };
 }
 
+function unquoteGitPath(path: string): string {
+  // git diff --git with core.quotePath outputs C-style quoted paths.
+  let out = path;
+  if (out.startsWith('"') && out.endsWith('"')) {
+    out = out.slice(1, -1);
+  }
+  return out
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\")
+    .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
+}
+
+function parseGitDiffHeader(line: string): string | undefined {
+  // Combined diff headers from merge commits.
+  const combined = /^diff --cc (.+?)$/.exec(line);
+  if (combined) return combined[1].trim();
+  // Quoted paths (spaces, non-ASCII).
+  const quoted = /^diff --git "a\/(.+?)" "b\/(.+?)"$/.exec(line);
+  if (quoted) return unquoteGitPath(quoted[2]);
+  // Standard unquoted paths.
+  const plain = /^diff --git a\/(.+?) b\/(.+?)$/.exec(line);
+  if (plain) return plain[2];
+  return undefined;
+}
+
 export function extractChangedFiles(diff: string, vcs: VcsType): string[] {
   const files = new Set<string>();
   if (vcs === "svn") {
@@ -360,12 +385,44 @@ export function extractChangedFiles(diff: string, vcs: VcsType): string[] {
     return [...files];
   }
 
-  const regex = /^diff --git a\/(.+?) b\/(.+?)$/gm;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(diff)) !== null) {
-    files.add(match[2]);
+  const lines = diff.split(/\r?\n/);
+  for (const line of lines) {
+    const file = parseGitDiffHeader(line);
+    if (file) files.add(file);
   }
   return [...files];
+}
+
+export function splitDiffByFile(diff: string, vcs?: VcsType): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!diff.trim()) return result;
+  const effectiveVcs = vcs ?? "git";
+
+  if (effectiveVcs === "svn") {
+    const blocks = diff.split(/^(?=Index: )/m);
+    for (const block of blocks) {
+      const match = block.match(/^Index:\s*(.+)$/m);
+      if (match) result[match[1].trim()] = block;
+    }
+    return result;
+  }
+
+  const indices: { file: string; index: number }[] = [];
+  const lines = diff.split(/\r?\n/);
+  let cursor = 0;
+  for (const line of lines) {
+    const file = parseGitDiffHeader(line);
+    if (file) {
+      indices.push({ file, index: cursor });
+    }
+    cursor += line.length + 1; // +1 for the newline we split on
+  }
+  for (let i = 0; i < indices.length; i++) {
+    const start = indices[i].index;
+    const end = i < indices.length - 1 ? indices[i + 1].index : diff.length;
+    result[indices[i].file] = diff.slice(start, end);
+  }
+  return result;
 }
 
 function detectVcs(cwd: string): VcsType {

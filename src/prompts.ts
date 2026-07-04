@@ -19,7 +19,7 @@ import {
 
 const PAIR_PROGRAMMER_PERSONA = `You are a senior pair programmer sitting next to the developer. You are collaborative, direct, and focused on shipping correct, maintainable code. You explain your reasoning briefly but stay actionable.`;
 
-export function buildPlanPrompt(task: string, conventions?: string): { system: string; user: string } {
+function buildPlanPromptImpl(task: string, conventions?: string): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
 
   return {
@@ -57,13 +57,56 @@ const REVIEW_RUBRIC = `Review rubric — check ALL of the following categories:
 
 For each issue found, provide a concrete, actionable fix suggestion. Do NOT suggest fixes that you cannot derive from the code shown.`;
 
+const MAX_CACHED_PROMPT_SIZE = 50_000;
+const promptCacheClearers: Array<() => void> = [];
+
+export function clearPromptCache(): void {
+  for (const clear of promptCacheClearers) {
+    clear();
+  }
+}
+
+function memoizePromptBuilder<TArgs extends unknown[]>(
+  fn: (...args: TArgs) => { system: string; user: string },
+  maxEntries = 50,
+): (...args: TArgs) => { system: string; user: string } {
+  const cache = new Map<string, { system: string; user: string }>();
+  promptCacheClearers.push(() => cache.clear());
+  return (...args: TArgs) => {
+    let key: string;
+    try {
+      key = JSON.stringify(args);
+    } catch {
+      // Non-serializable args (circular refs, BigInt, etc.) bypass the cache.
+      const result = fn(...args);
+      return { system: result.system, user: result.user };
+    }
+    const hit = cache.get(key);
+    if (hit) {
+      cache.delete(key);
+      cache.set(key, hit);
+      return { system: hit.system, user: hit.user };
+    }
+    const result = fn(...args);
+    const resultSize = key.length + result.system.length + result.user.length;
+    if (resultSize <= MAX_CACHED_PROMPT_SIZE) {
+      while (cache.size >= maxEntries) {
+        const oldest = cache.keys().next().value;
+        if (typeof oldest === "string") cache.delete(oldest);
+      }
+      cache.set(key, result);
+    }
+    return { system: result.system, user: result.user };
+  };
+}
+
 export interface FileContentContext {
   file: string;
   content: string;
   mode: "full" | "outline";
 }
 
-export function buildAdaptiveReviewPrompt(
+function buildAdaptiveReviewPromptImpl(
   description: string,
   diff: string,
   fileContents: FileContentContext[],
@@ -154,7 +197,7 @@ Rules:
   };
 }
 
-export function buildScanPrompt(): { system: string; user: string } {
+function buildScanPromptImpl(): { system: string; user: string } {
   return {
     system: `${PAIR_PROGRAMMER_PERSONA}
 
@@ -183,7 +226,7 @@ Omit optional fields you cannot infer. Be concise and evidence-based. Do not inc
   };
 }
 
-export function buildSuggestPrompt(question: string, conventions?: string): { system: string; user: string } {
+function buildSuggestPromptImpl(question: string, conventions?: string): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
 
   return {
@@ -209,7 +252,7 @@ Rules:
   };
 }
 
-export function buildRecommendPrompt(
+function buildRecommendPromptImpl(
   situation: string,
   planTodo?: string[],
   conventions?: string,
@@ -243,7 +286,7 @@ Rules:
   };
 }
 
-export function buildJudgePrompt(
+function buildJudgePromptImpl(
   description: string,
   planTodo?: string[],
   acceptanceCriteria?: string[],
@@ -301,6 +344,16 @@ Rules:
   };
 }
 
+export const buildPlanPrompt = memoizePromptBuilder(buildPlanPromptImpl);
+// Review prompts include large, highly-dynamic diffs and file contents, so caching them
+// adds memory pressure and key-serialization cost for near-zero hit rates.
+export const buildAdaptiveReviewPrompt = buildAdaptiveReviewPromptImpl;
+const SCAN_PROMPT = buildScanPromptImpl();
+export const buildScanPrompt = () => ({ system: SCAN_PROMPT.system, user: SCAN_PROMPT.user });
+export const buildSuggestPrompt = memoizePromptBuilder(buildSuggestPromptImpl);
+export const buildRecommendPrompt = memoizePromptBuilder(buildRecommendPromptImpl);
+export const buildJudgePrompt = memoizePromptBuilder(buildJudgePromptImpl);
+
 export function parseJsonResponse<T>(text: string): T | null {
   // Strip BOM and normalize line endings.
   const cleaned = text.replace(/^\uFEFF/, "").trim();
@@ -323,12 +376,14 @@ export function parseJsonResponse<T>(text: string): T | null {
     }
   }
 
-  // Try inline backtick fences.
+  // Try inline backtick fences, but only for content that looks like JSON.
   const inlineRegex = /`([\s\S]*?)`/g;
   let inlineMatch: RegExpExecArray | null;
   while ((inlineMatch = inlineRegex.exec(cleaned)) !== null) {
+    const trimmed = inlineMatch[1].trim();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) continue;
     try {
-      return JSON.parse(inlineMatch[1].trim()) as T;
+      return JSON.parse(trimmed) as T;
     } catch {
       /* continue */
     }

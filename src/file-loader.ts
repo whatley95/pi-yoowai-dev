@@ -30,14 +30,17 @@ export interface LoadFileContentsOptions {
   fullFileThresholdLines: number;
 }
 
+const MAX_REVIEW_FILES = 200;
+
 export function loadFileContentsForReview(options: LoadFileContentsOptions): {
   entries: FileContentEntry[];
   dropped: string[];
   totalTokens: number;
 } {
   const { cwd, changedFiles, budget, strategy, fullFileThresholdLines } = options;
-  const reviewable = changedFiles.filter(isReviewableFile);
-  const dropped: string[] = changedFiles.filter((f) => !reviewable.includes(f));
+  const uniqueFiles = Array.from(new Set(changedFiles));
+  const reviewable = uniqueFiles.filter(isReviewableFile);
+  const dropped: string[] = uniqueFiles.filter((f) => !reviewable.includes(f));
 
   if (strategy === "diff-only") {
     return { entries: [], dropped, totalTokens: 0 };
@@ -56,7 +59,7 @@ export function loadFileContentsForReview(options: LoadFileContentsOptions): {
       dropped.push(file);
       continue;
     }
-    const lineCount = content.split(/\r?\n/).length;
+    const lineCount = content.replace(/\r?\n$/, "").split(/\r?\n/).length;
     const tokenEstimate = estimateTokens(content);
     const preferFull = strategy === "full-files" || lineCount <= fullFileThresholdLines;
     loaded.push({ file, content, mode: preferFull ? "full" : "outline", lineCount, tokenEstimate, preferFull });
@@ -74,6 +77,28 @@ export function loadFileContentsForReview(options: LoadFileContentsOptions): {
   const cap = Math.min(budget.hardInputCap ?? Infinity, budget.availableInputTokens);
 
   for (const item of loaded) {
+    if (entries.length >= MAX_REVIEW_FILES) {
+      dropped.push(item.file);
+      continue;
+    }
+
+    // In full-files mode, do not silently fall back to outlines.
+    if (strategy === "full-files") {
+      if (totalTokens + item.tokenEstimate <= cap) {
+        entries.push({
+          file: item.file,
+          content: item.content,
+          mode: "full",
+          lineCount: item.lineCount,
+          tokenEstimate: item.tokenEstimate,
+        });
+        totalTokens += item.tokenEstimate;
+      } else {
+        dropped.push(item.file);
+      }
+      continue;
+    }
+
     // Full files within budget; outlines for large files if budget allows.
     if (item.preferFull && totalTokens + item.tokenEstimate <= cap) {
       entries.push({
@@ -87,7 +112,7 @@ export function loadFileContentsForReview(options: LoadFileContentsOptions): {
     } else if (!item.preferFull) {
       const outline = generateOutline(item.content);
       const outlineTokens = estimateTokens(outline);
-      if (totalTokens + outlineTokens <= cap) {
+      if (outline.trim().length > 0 && totalTokens + outlineTokens <= cap) {
         entries.push({
           file: item.file,
           content: outline,
@@ -103,7 +128,7 @@ export function loadFileContentsForReview(options: LoadFileContentsOptions): {
       // Full file doesn't fit; try outline.
       const outline = generateOutline(item.content);
       const outlineTokens = estimateTokens(outline);
-      if (totalTokens + outlineTokens <= cap) {
+      if (outline.trim().length > 0 && totalTokens + outlineTokens <= cap) {
         entries.push({
           file: item.file,
           content: outline,

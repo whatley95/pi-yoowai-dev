@@ -1,21 +1,29 @@
+export type YooAction = "plan" | "review" | "suggest" | "recommend" | "judge" | "scan";
+
+export interface SecondaryModelConfig {
+  provider: string;
+  id: string;
+  thinking?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  /** Backend to use for secondary model calls. "pi" spawns the pi CLI; "http" uses direct provider HTTP. */
+  backend?: "pi" | "http";
+  /** Custom base URL for any OpenAI-compatible or Anthropic-compatible provider. */
+  baseUrl?: string;
+  /** Inline API key. Prefer auth.json or env vars; this is a fallback. */
+  apiKey?: string;
+  /** API style when using a custom baseUrl. Defaults to openai-compatible. */
+  style?: "openai-compatible" | "anthropic";
+  /** Custom auth header name when using baseUrl. Defaults to Authorization. */
+  authHeader?: string;
+  /** Custom auth prefix when using baseUrl. Defaults to "Bearer ". */
+  authPrefix?: string;
+}
+
 export interface HeyyooConfig {
-  secondary: {
-    provider: string;
-    id: string;
-    thinking?: string;
-    contextWindow?: number;
-    maxOutputTokens?: number;
-    /** Custom base URL for any OpenAI-compatible or Anthropic-compatible provider. */
-    baseUrl?: string;
-    /** Inline API key. Prefer auth.json or env vars; this is a fallback. */
-    apiKey?: string;
-    /** API style when using a custom baseUrl. Defaults to openai-compatible. */
-    style?: "openai-compatible" | "anthropic";
-    /** Custom auth header name when using baseUrl. Defaults to Authorization. */
-    authHeader?: string;
-    /** Custom auth prefix when using baseUrl. Defaults to "Bearer ". */
-    authPrefix?: string;
-  };
+  secondary: SecondaryModelConfig;
+  /** Per-task model overrides. Any omitted field falls back to `secondary`. */
+  taskModels?: Partial<Record<YooAction, Partial<SecondaryModelConfig>>>;
   autoJudge?: boolean;
   preReviewCommands?: string[];
   costBudgetUsd?: number;
@@ -24,6 +32,10 @@ export interface HeyyooConfig {
   reviewMaxInputTokens?: number;
   reviewStrategy?: "auto" | "diff-only" | "full-files";
   verifyByDefault?: boolean;
+  /** Run a separate review call per changed file in parallel. Boolean enables default concurrency; number sets max concurrency. */
+  parallelReview?: boolean | number;
+  /** Run a deeper project scan by reading representative source files. Boolean enables default sampling; number sets max files to read. */
+  deepScan?: boolean | number;
   /** Per-model token-budget overrides. Key is the model id (e.g. "qwen3.7-max"). */
   modelInfo?: Record<string, { contextWindow?: number; maxOutputTokens?: number }>;
 }
@@ -86,8 +98,6 @@ export interface HeyyooSessionState {
   reviewedSteps: boolean[];
 }
 
-export type YooAction = "plan" | "review" | "suggest" | "recommend" | "judge" | "scan";
-
 export interface YooToolParams {
   plan?: string;
   review?: string;
@@ -138,6 +148,21 @@ export interface ProviderApiInfo {
   authHeader: string;
   authPrefix: string;
   queryAuthKey?: string;
+}
+
+export interface CallSecondaryModelOptions {
+  signal?: AbortSignal;
+  thinking?: string;
+  cwd?: string;
+  /** Session manager to inherit a sanitized snapshot of the parent conversation. */
+  sessionManager?: {
+    getHeader(): unknown;
+    getBranch(): unknown[];
+  };
+  /** File paths to prioritize when selecting inherited session context (e.g. changed files for a review). */
+  relevantPaths?: string[];
+  /** Yoo action to resolve a per-task model override from settings. */
+  task?: YooAction;
 }
 
 export interface MemoryEntry {

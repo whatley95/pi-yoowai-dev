@@ -1,5 +1,5 @@
 import { resolveModelInfo } from "./model-registry.js";
-import type { HeyyooConfig } from "./types.js";
+import type { HeyyooConfig, SecondaryModelConfig } from "./types.js";
 
 export interface ReviewBudget {
   contextWindow: number;
@@ -26,13 +26,15 @@ export function calculateReviewBudget(
     description: string;
     memoryContext: string;
   },
+  modelConfig?: Partial<Pick<SecondaryModelConfig, "contextWindow" | "maxOutputTokens" | "thinking">>,
 ): ReviewBudget {
+  const override = modelConfig ?? config.secondary;
   const info = resolveModelInfo(provider, model, {
-    contextWindow: config.secondary.contextWindow,
-    maxOutputTokens: config.secondary.maxOutputTokens,
+    contextWindow: override.contextWindow,
+    maxOutputTokens: override.maxOutputTokens,
   });
 
-  const reservedOutputTokens = resolveOutputTokens(info.maxOutputTokens, config.secondary.thinking);
+  const reservedOutputTokens = resolveOutputTokens(info.maxOutputTokens, override.thinking);
   const safetyMarginTokens = Math.ceil(info.contextWindow * 0.1);
   const fixedTokens =
     estimateTokens(fixedPromptParts.systemPrompt) +

@@ -39,15 +39,15 @@ export function recordToolCall(state: LoopDetectionState, event: unknown): void 
 
 export function checkLoop(state: LoopDetectionState): { looping: boolean; message: string } | null {
   const calls = state.recentCalls;
-  if (calls.length < 4) return null;
+  if (calls.length < 7) return null;
 
-  // Pattern 1: yoo.* called 3+ times in a row without other tools doing real work
-  const recentYoo = calls.slice(-5);
+  // Pattern 1: yoo.* called 7+ times in a row without other tools doing real work
+  const recentYoo = calls.slice(-7);
   const yooCalls = recentYoo.filter((c) => c.toolName === "yoo");
   const nonYooCalls = recentYoo.filter((c) => c.toolName !== "yoo");
   const realWorkCalls = nonYooCalls.filter((c) => !isReadOnlyTool(c.toolName));
 
-  if (yooCalls.length >= 3 && realWorkCalls.length === 0) {
+  if (yooCalls.length >= 7 && realWorkCalls.length === 0) {
     return {
       looping: true,
       message:
@@ -59,7 +59,7 @@ export function checkLoop(state: LoopDetectionState): { looping: boolean; messag
   const last = calls[calls.length - 1];
   if (last.toolName === "yoo") {
     const sameDescriptionCount = countIdenticalDescriptions(calls, last);
-    if (sameDescriptionCount >= 3) {
+    if (sameDescriptionCount >= 7) {
       return {
         looping: true,
         message:

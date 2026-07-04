@@ -78,6 +78,21 @@ export function resetCost(cwd: string): void {
   saveCost(cwd, { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, updatedAt: new Date().toISOString() });
 }
 
+const reservedUsd = new Map<string, number>();
+
+export function reserveCost(cwd: string, amountUsd: number): void {
+  reservedUsd.set(cwd, (reservedUsd.get(cwd) ?? 0) + amountUsd);
+}
+
+export function releaseCost(cwd: string, amountUsd: number): void {
+  const current = reservedUsd.get(cwd) ?? 0;
+  reservedUsd.set(cwd, Math.max(0, current - amountUsd));
+}
+
+export function getReservedCost(cwd: string): number {
+  return reservedUsd.get(cwd) ?? 0;
+}
+
 export function formatCost(costUsd: number): string {
   if (costUsd < 0.001) return `${(costUsd * 100).toFixed(2)}¢`;
   return `$${costUsd.toFixed(4)}`;

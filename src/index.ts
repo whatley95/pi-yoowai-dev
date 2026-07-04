@@ -3,9 +3,9 @@ import { Type } from "@sinclair/typebox";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "./pi-paths.js";
-import { loadHeyyooConfig } from "./config.js";
-import { callSecondaryModel, setPiSessionId, clearPiSessionId } from "./secondary-model.js";
-import { getDiff, getVcsInfo } from "./diff-grabber.js";
+import { loadHeyyooConfig, resolveTaskModel } from "./config.js";
+import { callSecondaryModel, setPiSessionId, clearPiSessionId, estimateCost } from "./secondary-model.js";
+import { getDiff, getVcsInfo, splitDiffByFile } from "./diff-grabber.js";
 
 const { version: VERSION, homepage: HOMEPAGE = "https://whatley.xyz" } = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
@@ -17,6 +17,7 @@ import {
   buildRecommendPrompt,
   buildJudgePrompt,
   buildScanPrompt,
+  clearPromptCache,
   parseJsonResponse,
   validatePlanResult,
   validateReviewResult,
@@ -30,18 +31,21 @@ import {
   getRecommendValidationErrors,
   getJudgeValidationErrors,
 } from "./prompts.js";
-import { calculateReviewBudget, estimateTokens } from "./token-budget.js";
-import { loadFileContentsForReview, isReviewableFile } from "./file-loader.js";
+import { calculateReviewBudget, estimateTokens, type ReviewBudget } from "./token-budget.js";
+import { resolveModelInfo } from "./model-registry.js";
+import { loadFileContentsForReview, isReviewableFile, type FileContentEntry } from "./file-loader.js";
 import { renderCall, renderResult } from "./render.js";
 import { loadState, saveState, clearState } from "./plan-store.js";
 import type {
   YooToolParams,
   YooToolResult,
-  HeyyooConfig,
   HeyyooSessionState,
   PlanResult,
   YooAction,
   UsageCost,
+  SecondaryModelConfig,
+  ReviewResult,
+  ReviewVerdict,
 } from "./types.js";
 import {
   createLoopDetectionState,
@@ -50,7 +54,7 @@ import {
   shouldSendSteer,
   type LoopDetectionState,
 } from "./loop-detector.js";
-import { recordCost, getSessionCost, formatCost, resetCost } from "./cost-tracker.js";
+import { recordCost, getSessionCost, formatCost, resetCost, reserveCost, releaseCost } from "./cost-tracker.js";
 import { recordIssues, getPastIssuesForFiles, clearMemory } from "./review-memory.js";
 import {
   loadConventions,
@@ -61,6 +65,7 @@ import {
   mergeConventions,
   filterSourceFiles,
   formatConfigFiles,
+  gatherDeepScanSamples,
 } from "./conventions.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "./pre-review.js";
 import { logEvent, readRecentLogs, clearLogs } from "./logger.js";
@@ -68,16 +73,17 @@ import { createProgressReporter, clearYooStatus, type ProgressReporter } from ".
 
 const STAGES = {
   plan: 3,
-  review: 7,
+  review: 10,
   suggest: 3,
   recommend: 3,
   judge: 3,
   scan: 4,
 } as const;
 
-function secondaryModelLabel(config: HeyyooConfig): string {
-  const { provider, id } = config.secondary;
-  return provider && id ? `${provider}:${id}` : "secondary model";
+function secondaryModelLabel(secondary: SecondaryModelConfig): string {
+  const { provider, id, backend } = secondary;
+  const label = provider && id ? `${provider}:${id}` : "secondary model";
+  return backend ? `${label} (${backend})` : label;
 }
 
 const sessionStates = new Map<string, HeyyooSessionState>();
@@ -196,9 +202,11 @@ async function executeYooPlan(
   task: string,
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
+  sessionManager?: ExtensionContext["sessionManager"],
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
-  if (!config.secondary.provider || !config.secondary.id) {
+  const modelConfig = resolveTaskModel(config, "plan");
+  if (!modelConfig.provider || !modelConfig.id) {
     return { action: "plan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
@@ -206,17 +214,15 @@ async function executeYooPlan(
   const conventions = loadConventions(cwd);
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
-  progress(2, STAGES.plan, `Calling ${secondaryModelLabel(config)}…`);
+  progress(2, STAGES.plan, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const { system, user } = buildPlanPrompt(task, conventionsText);
-  const { content: raw, usage } = await callSecondaryModel(
-    config.secondary.provider,
-    config.secondary.id,
-    system,
-    user,
+  const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,
-    config.secondary.thinking,
+    thinking: modelConfig.thinking,
     cwd,
-  );
+    sessionManager,
+    task: "plan",
+  });
 
   progress(3, STAGES.plan, "Parsing plan…");
   const parsed = parseJsonResponse(raw);
@@ -252,7 +258,8 @@ async function executeYooReview(
   progress: ProgressReporter,
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
-  if (!config.secondary.provider || !config.secondary.id) {
+  const modelConfig = resolveTaskModel(config, "review");
+  if (!modelConfig.provider || !modelConfig.id) {
     return { action: "review", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
@@ -275,14 +282,20 @@ async function executeYooReview(
   const memoryContext = getPastIssuesForFiles(cwd, changedFiles);
 
   progress(3, STAGES.review, "Calculating token budget…");
-  const baseBudget = calculateReviewBudget(config.secondary.provider, config.secondary.id, config, {
-    systemPrompt: "", // estimated separately below to avoid building prompt twice
-    sessionContext,
-    conventionsText,
-    preReviewOutput: "",
-    description,
-    memoryContext,
-  });
+  const baseBudget = calculateReviewBudget(
+    modelConfig.provider,
+    modelConfig.id,
+    config,
+    {
+      systemPrompt: "", // used to size pre-review command output truncation below
+      sessionContext,
+      conventionsText,
+      preReviewOutput: "",
+      description,
+      memoryContext,
+    },
+    modelConfig,
+  );
 
   let preReviewOutput = "";
   if (config.preReviewCommands && config.preReviewCommands.length > 0) {
@@ -290,7 +303,9 @@ async function executeYooReview(
     const results = runPreReviewCommands(cwd, config.preReviewCommands);
     preReviewOutput = formatPreReviewOutput(results);
     const preReviewChars = baseBudget.availableInputTokens * 4;
-    if (preReviewOutput.length > preReviewChars) {
+    if (preReviewChars <= 0) {
+      preReviewOutput = "";
+    } else if (preReviewOutput.length > preReviewChars) {
       preReviewOutput = preReviewOutput.slice(0, preReviewChars) + "\n… (truncated to token budget)";
     }
   } else {
@@ -300,121 +315,216 @@ async function executeYooReview(
   const strategy = config.reviewStrategy ?? "auto";
   const fullFileThresholdLines = config.reviewFullFileThresholdLines ?? 300;
   progress(5, STAGES.review, "Calculating token budget with pre-review output…");
-  const budgetWithPreReview = calculateReviewBudget(config.secondary.provider, config.secondary.id, config, {
-    systemPrompt: "",
-    sessionContext,
-    conventionsText,
-    preReviewOutput,
-    description,
-    memoryContext,
-  });
-  progress(6, STAGES.review, "Loading changed file contents…");
-  const fileResult =
-    strategy === "diff-only"
-      ? { entries: [], dropped: [], totalTokens: 0 }
-      : loadFileContentsForReview({
-          cwd,
-          changedFiles,
-          budget: budgetWithPreReview,
-          strategy,
-          fullFileThresholdLines,
-        });
-
-  // Diff gets whatever budget remains after fixed parts and file contents.
-  const systemPromptEstimate = 1000; // approximate; safety margin absorbs error
-  const remainingForDiff = Math.max(
-    0,
-    budgetWithPreReview.availableInputTokens - fileResult.totalTokens - systemPromptEstimate,
-  );
-  const diffTokens = estimateTokens(diff);
-  const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
-  const diffTruncated = truncated || finalDiff !== diff;
-
-  // Surface context limitations so the user knows the review was scoped.
-  const droppedForBudget = fileResult.dropped.filter((f) => isReviewableFile(f));
-
-  progress(7, STAGES.review, "Building review prompt…");
-  const { system, user } = buildAdaptiveReviewPrompt(
-    description,
-    finalDiff,
-    fileResult.entries.map((e) => ({
-      file: e.file,
-      content: e.content,
-      mode: e.mode,
-    })),
+  const budgetWithPreReview = calculateReviewBudget(
+    modelConfig.provider,
+    modelConfig.id,
+    config,
     {
-      vcs,
-      criteria: state.plan?.acceptanceCriteria?.join("\n"),
+      systemPrompt: "",
       sessionContext,
       conventionsText,
       preReviewOutput,
+      description,
       memoryContext,
-      truncated: diffTruncated,
-      droppedFiles: droppedForBudget,
-      budgetNote: `Context window: ${baseBudget.contextWindow.toLocaleString()} tokens. Reserved output: ${baseBudget.reservedOutputTokens.toLocaleString()}. Available for context: ${baseBudget.availableInputTokens.toLocaleString()}.`,
     },
+    modelConfig,
   );
+  progress(6, STAGES.review, "Loading changed file contents…");
+  const fileDiffs = splitDiffByFile(diff, vcs);
 
-  progress(8, STAGES.review, `Calling ${secondaryModelLabel(config)}…`);
-  const { content: raw, usage } = await callSecondaryModel(
-    config.secondary.provider,
-    config.secondary.id,
-    system,
-    user,
-    signal,
-    capReviewThinking(config.secondary.thinking),
-    cwd,
-  );
+  const reviewableFiles = changedFiles.filter(isReviewableFile);
+  const filesWithDiff = reviewableFiles.filter((file) => fileDiffs[file] || !truncated);
+  const skippedDueToTruncation = reviewableFiles.filter((file) => !fileDiffs[file] && truncated);
+  const shouldParallelize = Boolean(config.parallelReview) && filesWithDiff.length > 1 && strategy !== "diff-only";
+  const maxConcurrency =
+    typeof config.parallelReview === "number" && config.parallelReview > 0 ? config.parallelReview : 3;
 
-  progress(9, STAGES.review, "Parsing review…");
-  const parsed = parseJsonResponse(raw);
-  let review = validateReviewResult(parsed);
-  let cost = recordCostWithBudget(cwd, usage);
+  let review: ReviewResult;
+  let cost: UsageCost | undefined;
+  let finalDiffTruncated: boolean;
+  let finalDroppedFiles: string[];
 
-  if (!review) {
-    logEvent(cwd, "warn", "Failed to parse review from secondary model response, retrying with reasoning off", {
-      raw: raw.slice(0, 2000),
-      parsed: parsed === null ? null : typeof parsed,
-      parseError: getJsonParseError(raw),
-      validationErrors: parsed ? getReviewValidationErrors(parsed) : [],
-    });
-    progress(9, STAGES.review, "Parsing failed, retrying with reasoning off…");
-    const { content: rawRetry, usage: usageRetry } = await callSecondaryModel(
-      config.secondary.provider,
-      config.secondary.id,
-      system,
-      `${user}\n\nCRITICAL: Your previous response could not be parsed. Return ONLY valid JSON matching the required structure, with no markdown fences, no explanations, and no extra text.`,
-      signal,
-      "off",
-      cwd,
-    );
-    const parsedRetry = parseJsonResponse(rawRetry);
-    const reviewRetry = validateReviewResult(parsedRetry);
-    if (reviewRetry) {
-      review = reviewRetry;
-      cost = mergeUsageCost(cost, recordCostWithBudget(cwd, usageRetry));
-    } else {
-      logEvent(cwd, "warn", "Failed to parse review from secondary model response after retry", {
-        raw: rawRetry.slice(0, 2000),
-        parsed: parsedRetry === null ? null : typeof parsedRetry,
-        parseError: getJsonParseError(rawRetry),
-        validationErrors: parsedRetry ? getReviewValidationErrors(parsedRetry) : [],
+  if (shouldParallelize) {
+    progress(7, STAGES.review, `Reviewing ${filesWithDiff.length} files in parallel…`);
+
+    const sharedContextEstimate = [sessionContext, conventionsText, preReviewOutput, description].join("\n");
+    const outputEstimate =
+      modelConfig.thinking && modelConfig.thinking.toLowerCase() !== "off"
+        ? (modelConfig.maxOutputTokens ?? 8192)
+        : 2048;
+
+    interface FilePrep {
+      file: string;
+      fileMemoryContext: string;
+      fileBudget: ReviewBudget;
+      fileResult: ReturnType<typeof loadFileContentsForReview>;
+      droppedForBudget: string[];
+    }
+    const preps: FilePrep[] = [];
+    for (const file of filesWithDiff) {
+      const fileMemoryContext = getPastIssuesForFiles(cwd, [file]);
+      const fileBudget = calculateReviewBudget(
+        modelConfig.provider,
+        modelConfig.id,
+        config,
+        {
+          systemPrompt: "",
+          sessionContext,
+          conventionsText,
+          preReviewOutput,
+          description,
+          memoryContext: fileMemoryContext,
+        },
+        modelConfig,
+      );
+      const fileResult = loadFileContentsForReview({
+        cwd,
+        changedFiles: [file],
+        budget: fileBudget,
+        strategy,
+        fullFileThresholdLines,
       });
+      const droppedForBudget = fileResult.dropped.filter((f) => isReviewableFile(f));
+      preps.push({ file, fileMemoryContext, fileBudget, fileResult, droppedForBudget });
+    }
+
+    let projectedCost = 0;
+    for (const p of preps) {
+      const contentTokens = p.fileResult.entries.reduce((sum, e) => sum + e.tokenEstimate, 0);
+      const diffTokens = estimateTokens(fileDiffs[p.file] ?? "");
+      const inputEstimate =
+        1000 + estimateTokens(sharedContextEstimate) + contentTokens + diffTokens + estimateTokens(p.fileMemoryContext);
+      projectedCost += estimateCost(modelConfig.provider, modelConfig.id, inputEstimate, outputEstimate);
+    }
+    if (config.costBudgetUsd !== undefined && config.costBudgetUsd >= 0) {
+      const sessionCost = getSessionCost(cwd).costUsd;
+      if (sessionCost + projectedCost > config.costBudgetUsd) {
+        return {
+          action: "review",
+          error: `Parallel review would exceed the configured cost budget (${formatCost(config.costBudgetUsd)}).`,
+        };
+      }
+    }
+    reserveCost(cwd, projectedCost);
+
+    const tasks = preps.map((p) => async () => {
+      const result = await runReviewBatch({
+        cwd,
+        description,
+        files: p.fileResult.entries,
+        diff: fileDiffs[p.file] ?? "",
+        vcs,
+        criteria: state.plan?.acceptanceCriteria?.join("\n"),
+        sessionContext,
+        conventionsText,
+        preReviewOutput,
+        memoryContext: p.fileMemoryContext,
+        truncated,
+        droppedFiles: p.droppedForBudget,
+        budget: p.fileBudget,
+        modelConfig,
+        signal,
+        sessionManager: ctx.sessionManager,
+        relevantPaths: [p.file],
+      });
+      return { review: result.review, usage: result.usage, dropped: p.fileResult.dropped };
+    });
+
+    let outcomes: ConcurrencyOutcome<{ review: ReviewResult; usage: UsageCost; dropped: string[] }>[];
+    try {
+      outcomes = await runWithConcurrencyLimit(tasks, maxConcurrency, signal);
+    } finally {
+      releaseCost(cwd, projectedCost);
+    }
+
+    const successes: { review: ReviewResult; usage: UsageCost; dropped: string[] }[] = [];
+    const failures: string[] = [];
+    for (const outcome of outcomes) {
+      if (outcome.ok) {
+        successes.push(outcome.value);
+      } else {
+        failures.push(outcome.error instanceof Error ? outcome.error.message : String(outcome.error));
+      }
+    }
+
+    if (successes.length === 0) {
+      return { action: "review", error: failures.join("; ") };
+    }
+
+    review = mergeReviewResults(successes.map((s) => s.review));
+    for (const { usage } of successes) {
+      const recorded = recordCostWithBudget(cwd, usage);
+      cost = cost ? mergeUsageCost(cost, recorded) : recorded;
+    }
+    finalDroppedFiles = Array.from(new Set(successes.flatMap((s) => s.dropped).concat(skippedDueToTruncation)));
+    if (finalDroppedFiles.length > 0) review.droppedFiles = finalDroppedFiles;
+    finalDiffTruncated = truncated || successes.some((s) => s.review.truncated);
+
+    if (failures.length > 0) {
+      review.suggestions.unshift(`Review failed for ${failures.length} file(s): ${failures.join("; ")}`);
+      review.consensus = false;
+    }
+  } else {
+    const fileResult =
+      strategy === "diff-only"
+        ? { entries: [] as FileContentEntry[], dropped: [] as string[], totalTokens: 0 }
+        : loadFileContentsForReview({
+            cwd,
+            changedFiles,
+            budget: budgetWithPreReview,
+            strategy,
+            fullFileThresholdLines,
+          });
+
+    const systemPromptEstimate = 1000;
+    const remainingForDiff = Math.max(
+      0,
+      budgetWithPreReview.availableInputTokens - fileResult.totalTokens - systemPromptEstimate,
+    );
+    const diffTokens = estimateTokens(diff);
+    const finalDiff =
+      diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
+    finalDiffTruncated = truncated || finalDiff !== diff;
+    finalDroppedFiles = [...fileResult.dropped, ...skippedDueToTruncation];
+
+    progress(7, STAGES.review, "Building review prompt…");
+    let result: { review: ReviewResult; usage: UsageCost };
+    try {
+      result = await runReviewBatch({
+        cwd,
+        description,
+        files: fileResult.entries,
+        diff: finalDiff,
+        vcs,
+        criteria: state.plan?.acceptanceCriteria?.join("\n"),
+        sessionContext,
+        conventionsText,
+        preReviewOutput,
+        memoryContext,
+        truncated: finalDiffTruncated,
+        droppedFiles: finalDroppedFiles,
+        budget: budgetWithPreReview,
+        modelConfig,
+        signal,
+        sessionManager: ctx.sessionManager,
+        relevantPaths: Array.from(new Set([...(options.files ?? []), ...changedFiles])),
+      });
+    } catch (err) {
       return {
         action: "review",
-        error: "Failed to parse review from secondary model response.",
-        review: { verdict: "needs-work", issues: [], suggestions: [], consensus: false },
-        cost,
+        error: err instanceof Error ? err.message : String(err),
       };
     }
+    review = result.review;
+    cost = recordCostWithBudget(cwd, result.usage);
   }
 
-  progress(10, STAGES.review, "Recording issues…");
+  progress(8, STAGES.review, "Review response received");
   recordIssues(cwd, review.issues);
 
-  if (diffTruncated) review.truncated = true;
-  if (droppedForBudget.length > 0) review.droppedFiles = droppedForBudget;
-  if (diffTruncated || droppedForBudget.length > 0) {
+  if (finalDiffTruncated) review.truncated = true;
+  if (finalDroppedFiles.length > 0) review.droppedFiles = finalDroppedFiles;
+  if (finalDiffTruncated || finalDroppedFiles.length > 0) {
     review.suggestions.push(
       "The change is large and some context was omitted. If the review missed something, scope it with --files or increase reviewMaxInputTokens.",
     );
@@ -438,6 +548,7 @@ async function executeYooReview(
         `All ${planProgress.total} plan steps completed.`,
         signal,
         judgeProgress,
+        ctx.sessionManager,
       );
       if (judgeResult.judge) {
         review.autoJudged = true;
@@ -468,9 +579,11 @@ async function executeYooSuggest(
   question: string,
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
+  sessionManager?: ExtensionContext["sessionManager"],
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
-  if (!config.secondary.provider || !config.secondary.id) {
+  const modelConfig = resolveTaskModel(config, "suggest");
+  if (!modelConfig.provider || !modelConfig.id) {
     return { action: "suggest", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
@@ -479,16 +592,14 @@ async function executeYooSuggest(
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
   const { system, user } = buildSuggestPrompt(question, conventionsText);
-  progress(2, STAGES.suggest, `Calling ${secondaryModelLabel(config)}…`);
-  const { content: raw, usage } = await callSecondaryModel(
-    config.secondary.provider,
-    config.secondary.id,
-    system,
-    user,
+  progress(2, STAGES.suggest, `Calling ${secondaryModelLabel(modelConfig)}…`);
+  const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,
-    config.secondary.thinking,
+    thinking: modelConfig.thinking,
     cwd,
-  );
+    sessionManager,
+    task: "suggest",
+  });
 
   progress(3, STAGES.suggest, "Parsing suggestions…");
   const parsed = parseJsonResponse(raw);
@@ -516,9 +627,11 @@ async function executeYooRecommend(
   situation: string,
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
+  sessionManager?: ExtensionContext["sessionManager"],
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
-  if (!config.secondary.provider || !config.secondary.id) {
+  const modelConfig = resolveTaskModel(config, "recommend");
+  if (!modelConfig.provider || !modelConfig.id) {
     return { action: "recommend", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
@@ -529,16 +642,14 @@ async function executeYooRecommend(
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
   const { system, user } = buildRecommendPrompt(situation, state.plan?.todo, conventionsText);
-  progress(2, STAGES.recommend, `Calling ${secondaryModelLabel(config)}…`);
-  const { content: raw, usage } = await callSecondaryModel(
-    config.secondary.provider,
-    config.secondary.id,
-    system,
-    user,
+  progress(2, STAGES.recommend, `Calling ${secondaryModelLabel(modelConfig)}…`);
+  const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,
-    config.secondary.thinking,
+    thinking: modelConfig.thinking,
     cwd,
-  );
+    sessionManager,
+    task: "recommend",
+  });
 
   progress(3, STAGES.recommend, "Parsing recommendation…");
   const parsed = parseJsonResponse(raw);
@@ -568,9 +679,11 @@ async function executeYooJudge(
   description: string,
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
+  sessionManager?: ExtensionContext["sessionManager"],
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
-  if (!config.secondary.provider || !config.secondary.id) {
+  const modelConfig = resolveTaskModel(config, "judge");
+  if (!modelConfig.provider || !modelConfig.id) {
     return { action: "judge", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
@@ -592,16 +705,14 @@ async function executeYooJudge(
     memoryContext,
   );
 
-  progress(2, STAGES.judge, `Calling ${secondaryModelLabel(config)}…`);
-  const { content: raw, usage } = await callSecondaryModel(
-    config.secondary.provider,
-    config.secondary.id,
-    system,
-    user,
+  progress(2, STAGES.judge, `Calling ${secondaryModelLabel(modelConfig)}…`);
+  const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,
-    config.secondary.thinking,
+    thinking: modelConfig.thinking,
     cwd,
-  );
+    sessionManager,
+    task: "judge",
+  });
 
   progress(3, STAGES.judge, "Parsing judgment…");
   const parsed = parseJsonResponse(raw);
@@ -617,13 +728,11 @@ async function executeYooJudge(
     });
     progress(3, STAGES.judge, "Parsing failed, retrying with reasoning off…");
     const { content: rawRetry, usage: usageRetry } = await callSecondaryModel(
-      config.secondary.provider,
-      config.secondary.id,
+      modelConfig.provider,
+      modelConfig.id,
       system,
       `${user}\n\nCRITICAL: Your previous response could not be parsed. Return ONLY valid JSON matching the required structure, with no markdown fences, no explanations, and no extra text.`,
-      signal,
-      "off",
-      cwd,
+      { signal, thinking: "off", cwd, sessionManager, task: "judge" },
     );
     const parsedRetry = parseJsonResponse(rawRetry);
     const judgeRetry = validateJudgeResult(parsedRetry);
@@ -652,9 +761,12 @@ async function executeYooScan(
   cwd: string,
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
+  sessionManager?: ExtensionContext["sessionManager"],
+  deepOverride?: boolean | number,
 ): Promise<YooToolResult> {
   const config = loadHeyyooConfig(cwd);
-  if (!config.secondary.provider || !config.secondary.id) {
+  const modelConfig = resolveTaskModel(config, "scan");
+  if (!modelConfig.provider || !modelConfig.id) {
     return { action: "scan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
 
@@ -662,17 +774,58 @@ async function executeYooScan(
   const localScan = scanProjectConventions(cwd);
 
   const { system, user } = buildScanPrompt();
-  const filesForPrompt = filterSourceFiles(localScan.files).slice(0, 200);
   const configFilesText = formatConfigFiles(cwd);
-  progress(2, STAGES.scan, `Calling ${secondaryModelLabel(config)}…`);
+
+  const deepScanEnabled = deepOverride ?? config.deepScan;
+  const deepScanSamples = deepScanEnabled
+    ? gatherDeepScanSamples(cwd, localScan.files, typeof deepScanEnabled === "number" ? deepScanEnabled : 5)
+    : [];
+
+  // Cap the scan prompt to the model's context window minus output headroom.
+  const modelInfo = resolveModelInfo(modelConfig.provider, modelConfig.id, {
+    contextWindow: modelConfig.contextWindow,
+    maxOutputTokens: modelConfig.maxOutputTokens,
+  });
+  const reservedOutputTokens =
+    modelConfig.thinking && modelConfig.thinking.toLowerCase() !== "off"
+      ? Math.min(modelInfo.maxOutputTokens, 8192)
+      : Math.min(modelInfo.maxOutputTokens, 2048);
+  const safetyMarginTokens = Math.ceil(modelInfo.contextWindow * 0.1);
+  const maxPromptTokens = modelInfo.contextWindow - reservedOutputTokens - safetyMarginTokens;
+
+  let filesForPrompt = filterSourceFiles(localScan.files).slice(0, 200);
+  let trimmedSamples = deepScanSamples;
+  function buildScanUserPrompt(samples: typeof deepScanSamples): string {
+    const samplesText =
+      samples.length > 0
+        ? `\n\n<code_samples>\n${samples.map((s) => `--- ${s.file} ---\n${s.content}`).join("\n\n")}\n</code_samples>`
+        : "";
+    return `${user}\n\nFiles:\n${filesForPrompt.join("\n")}${configFilesText}${samplesText}`;
+  }
+  while (true) {
+    const promptText = buildScanUserPrompt(trimmedSamples);
+    const totalTokens = estimateTokens(system) + estimateTokens(promptText);
+    if (totalTokens <= maxPromptTokens || (filesForPrompt.length <= 50 && trimmedSamples.length === 0)) break;
+    if (trimmedSamples.length > 0) {
+      trimmedSamples = trimmedSamples.slice(0, Math.max(0, trimmedSamples.length - 1));
+    } else if (filesForPrompt.length > 50) {
+      filesForPrompt = filesForPrompt.slice(0, Math.max(50, Math.floor(filesForPrompt.length * 0.8)));
+    } else {
+      break;
+    }
+  }
+  const deepScanText =
+    trimmedSamples.length > 0
+      ? `\n\n<code_samples>\n${trimmedSamples.map((s) => `--- ${s.file} ---\n${s.content}`).join("\n\n")}\n</code_samples>`
+      : "";
+
+  progress(2, STAGES.scan, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const { content: raw, usage } = await callSecondaryModel(
-    config.secondary.provider,
-    config.secondary.id,
+    modelConfig.provider,
+    modelConfig.id,
     system,
-    `${user}\n\nFiles:\n${filesForPrompt.join("\n")}${configFilesText}`,
-    signal,
-    config.secondary.thinking,
-    cwd,
+    `${user}\n\nFiles:\n${filesForPrompt.join("\n")}${configFilesText}${deepScanText}`,
+    { signal, thinking: modelConfig.thinking, cwd, sessionManager, task: "scan" },
   );
 
   progress(3, STAGES.scan, "Merging conventions…");
@@ -700,7 +853,8 @@ function mergeUsageCost(a: UsageCost, b: UsageCost): UsageCost {
     estimatedInputTokens: a.estimatedInputTokens + b.estimatedInputTokens,
     estimatedOutputTokens: a.estimatedOutputTokens + b.estimatedOutputTokens,
     estimatedCostUsd: a.estimatedCostUsd + b.estimatedCostUsd,
-    sessionCostUsd: b.sessionCostUsd,
+    // Both sessionCostUsd values are cumulative totals; keep the latest.
+    sessionCostUsd: Math.max(a.sessionCostUsd, b.sessionCostUsd),
   };
 }
 
@@ -718,6 +872,172 @@ function capReviewThinking(configured?: string): string {
   const lowered = configured.toLowerCase();
   if (lowered === "high" || lowered === "xhigh") return "medium";
   return configured;
+}
+
+type ConcurrencyOutcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+async function runWithConcurrencyLimit<T>(
+  tasks: Array<() => Promise<T>>,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<ConcurrencyOutcome<T>[]> {
+  const results: ConcurrencyOutcome<T>[] = new Array(tasks.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      if (signal?.aborted) return;
+      const i = nextIndex++;
+      try {
+        results[i] = { ok: true, value: await tasks[i]() };
+      } catch (err) {
+        results[i] = { ok: false, error: err };
+      }
+    }
+  }
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < Math.min(limit, tasks.length); i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
+}
+
+function mergeReviewResults(results: ReviewResult[]): ReviewResult {
+  let verdict: ReviewVerdict = "pass";
+  for (const r of results) {
+    if (r.verdict === "blocked") {
+      verdict = "blocked";
+      break;
+    }
+    if (r.verdict === "needs-work") {
+      verdict = "needs-work";
+    }
+  }
+  const issues = results.flatMap((r) => r.issues);
+  const suggestions = Array.from(new Set(results.flatMap((r) => r.suggestions)));
+  const droppedFiles = Array.from(new Set(results.flatMap((r) => r.droppedFiles ?? [])));
+  const truncated = results.some((r) => r.truncated);
+  return {
+    verdict,
+    issues,
+    suggestions,
+    consensus: verdict === "pass" && issues.length === 0,
+    truncated,
+    droppedFiles,
+  };
+}
+
+interface ReviewBatchInput {
+  cwd: string;
+  description: string;
+  files: FileContentEntry[];
+  diff: string;
+  vcs?: string;
+  criteria?: string;
+  sessionContext: string;
+  conventionsText: string;
+  preReviewOutput: string;
+  memoryContext: string;
+  truncated: boolean;
+  droppedFiles: string[];
+  budget: ReviewBudget;
+  modelConfig: SecondaryModelConfig;
+  signal?: AbortSignal;
+  sessionManager?: ExtensionContext["sessionManager"];
+  relevantPaths: string[];
+}
+
+async function runReviewBatch(input: ReviewBatchInput): Promise<{ review: ReviewResult; usage: UsageCost }> {
+  const {
+    cwd,
+    description,
+    files,
+    diff,
+    vcs,
+    criteria,
+    sessionContext,
+    conventionsText,
+    preReviewOutput,
+    memoryContext,
+    truncated,
+    droppedFiles,
+    budget,
+    modelConfig,
+    signal,
+    sessionManager,
+    relevantPaths,
+  } = input;
+
+  const systemPromptEstimate = 1000;
+  const remainingForDiff = Math.max(
+    0,
+    budget.availableInputTokens - files.reduce((sum, f) => sum + f.tokenEstimate, 0) - systemPromptEstimate,
+  );
+  const diffTokens = estimateTokens(diff);
+  const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
+  const diffTruncated = truncated || finalDiff !== diff;
+
+  const { system, user } = buildAdaptiveReviewPrompt(
+    description,
+    finalDiff,
+    files.map((f) => ({ file: f.file, content: f.content, mode: f.mode })),
+    {
+      vcs,
+      criteria,
+      sessionContext,
+      conventionsText,
+      preReviewOutput,
+      memoryContext,
+      truncated: diffTruncated,
+      droppedFiles,
+      budgetNote: `Context window: ${budget.contextWindow.toLocaleString()} tokens. Reserved output: ${budget.reservedOutputTokens.toLocaleString()}. Available for context: ${budget.availableInputTokens.toLocaleString()}.`,
+    },
+  );
+
+  const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
+    signal,
+    thinking: capReviewThinking(modelConfig.thinking),
+    cwd,
+    sessionManager,
+    relevantPaths,
+    task: "review",
+  });
+
+  const parsed = parseJsonResponse(raw);
+  let review = validateReviewResult(parsed);
+  let usageOut = usage;
+
+  if (!review) {
+    logEvent(cwd, "warn", "Failed to parse review from secondary model response, retrying with reasoning off", {
+      raw: raw.slice(0, 2000),
+      parsed: parsed === null ? null : typeof parsed,
+      parseError: getJsonParseError(raw),
+      validationErrors: parsed ? getReviewValidationErrors(parsed) : [],
+    });
+    const { content: rawRetry, usage: usageRetry } = await callSecondaryModel(
+      modelConfig.provider,
+      modelConfig.id,
+      system,
+      `${user}\n\nCRITICAL: Your previous response could not be parsed. Return ONLY valid JSON matching the required structure, with no markdown fences, no explanations, and no extra text.`,
+      { signal, thinking: "off", cwd, sessionManager, relevantPaths, task: "review" },
+    );
+    const parsedRetry = parseJsonResponse(rawRetry);
+    const reviewRetry = validateReviewResult(parsedRetry);
+    if (reviewRetry) {
+      review = reviewRetry;
+      usageOut = mergeUsageCost(usageOut, usageRetry);
+    } else {
+      logEvent(cwd, "warn", "Failed to parse review from secondary model response after retry", {
+        raw: rawRetry.slice(0, 2000),
+        parsed: parsedRetry === null ? null : typeof parsedRetry,
+        parseError: getJsonParseError(rawRetry),
+        validationErrors: parsedRetry ? getReviewValidationErrors(parsedRetry) : [],
+      });
+      throw new Error("Failed to parse review from secondary model response.");
+    }
+  }
+
+  return { review, usage: usageOut };
 }
 
 interface ValidatedParams {
@@ -1023,7 +1343,7 @@ export default function (pi: ExtensionAPI) {
 
       try {
         if (p.plan) {
-          result = await executeYooPlan(ctx.cwd, p.plan, signal, progress);
+          result = await executeYooPlan(ctx.cwd, p.plan, signal, progress, ctx.sessionManager);
         } else if (p.review) {
           result = await executeYooReview(
             ctx.cwd,
@@ -1041,13 +1361,13 @@ export default function (pi: ExtensionAPI) {
             progress,
           );
         } else if (p.suggest) {
-          result = await executeYooSuggest(ctx.cwd, p.suggest, signal, progress);
+          result = await executeYooSuggest(ctx.cwd, p.suggest, signal, progress, ctx.sessionManager);
         } else if (p.recommend) {
-          result = await executeYooRecommend(ctx.cwd, p.recommend, signal, progress);
+          result = await executeYooRecommend(ctx.cwd, p.recommend, signal, progress, ctx.sessionManager);
         } else if (p.judge) {
-          result = await executeYooJudge(ctx.cwd, p.judge, signal, progress);
+          result = await executeYooJudge(ctx.cwd, p.judge, signal, progress, ctx.sessionManager);
         } else {
-          result = await executeYooScan(ctx.cwd, signal, progress);
+          result = await executeYooScan(ctx.cwd, signal, progress, ctx.sessionManager);
         }
       } catch (err) {
         logEvent(ctx.cwd, "error", `yoo tool ${action} failed`, {
@@ -1121,7 +1441,7 @@ export default function (pi: ExtensionAPI) {
               ctx.ui.notify("Usage: /yoo plan <task description>", "warn");
               return;
             }
-            result = await executeYooPlan(ctx.cwd, restText, signal, notifyProgress);
+            result = await executeYooPlan(ctx.cwd, restText, signal, notifyProgress, ctx.sessionManager);
             break;
           case "review": {
             const { description, options: reviewOptions } = parseReviewCommandArgs(restText);
@@ -1133,16 +1453,22 @@ export default function (pi: ExtensionAPI) {
               ctx.ui.notify("Usage: /yoo suggest <question>", "warn");
               return;
             }
-            result = await executeYooSuggest(ctx.cwd, restText, signal, notifyProgress);
+            result = await executeYooSuggest(ctx.cwd, restText, signal, notifyProgress, ctx.sessionManager);
             break;
           case "recommend":
-            result = await executeYooRecommend(ctx.cwd, restText || "what next", signal, notifyProgress);
+            result = await executeYooRecommend(
+              ctx.cwd,
+              restText || "what next",
+              signal,
+              notifyProgress,
+              ctx.sessionManager,
+            );
             break;
           case "judge":
-            result = await executeYooJudge(ctx.cwd, restText || "all done", signal, notifyProgress);
+            result = await executeYooJudge(ctx.cwd, restText || "all done", signal, notifyProgress, ctx.sessionManager);
             break;
           case "scan":
-            result = await executeYooScan(ctx.cwd, signal, notifyProgress);
+            result = await executeYooScan(ctx.cwd, signal, notifyProgress, ctx.sessionManager);
             break;
         }
       } catch (err) {
@@ -1306,14 +1632,17 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("yoo-clear", {
-    description: "Clear the active yoo plan, state, cost, memory, and conventions",
+    description: "Clear the active yoo plan, state, cost, memory, conventions, loop history, and inherited session",
     handler: async (_args, ctx) => {
       sessionStates.delete(ctx.cwd);
+      loopStates.delete(ctx.cwd);
+      clearPiSessionId(ctx.cwd);
       clearState(ctx.cwd);
       resetCost(ctx.cwd);
       clearMemory(ctx.cwd);
       clearConventions(ctx.cwd);
-      ctx.ui.notify("yoo plan, state, cost, memory, and conventions cleared.", "info");
+      clearPromptCache();
+      ctx.ui.notify("yoo plan, state, cost, memory, conventions, loop history, and inherited session cleared.", "info");
     },
   });
 
@@ -1331,7 +1660,7 @@ export default function (pi: ExtensionAPI) {
         progress(stage, total, message);
         ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
       };
-      const result = await executeYooRecommend(ctx.cwd, situation, signal, notifyProgress);
+      const result = await executeYooRecommend(ctx.cwd, situation, signal, notifyProgress, ctx.sessionManager);
       clearYooStatus(ctx);
       const text = formatResultText(result);
       ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
@@ -1360,7 +1689,7 @@ export default function (pi: ExtensionAPI) {
         progress(stage, total, message);
         ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
       };
-      const result = await executeYooRecommend(ctx.cwd, situation, signal, notifyProgress);
+      const result = await executeYooRecommend(ctx.cwd, situation, signal, notifyProgress, ctx.sessionManager);
       clearYooStatus(ctx);
       const text = formatResultText(result);
       ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
@@ -1388,61 +1717,121 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("yoo-test", {
-    description: "Test connectivity to the configured secondary model",
-    handler: async (_args, ctx) => {
+    description:
+      "Test connectivity to configured secondary models. Optional: /yoo-test <plan|review|suggest|recommend|judge|scan>",
+    handler: async (args, ctx) => {
       const config = loadHeyyooConfig(ctx.cwd);
-      if (!config.secondary.provider || !config.secondary.id) {
+      const requestedTask = args.trim().toLowerCase();
+      const task = YOO_ACTIONS.find((action) => action === requestedTask);
+      if (requestedTask && !task) {
+        ctx.ui.notify(`Unknown yoo task "${requestedTask}". Use one of: ${YOO_ACTIONS.join(", ")}.`, "warn");
+        return;
+      }
+
+      const tests: { task?: YooAction; model: SecondaryModelConfig; label: string }[] = [];
+      if (task) {
+        const model = resolveTaskModel(config, task);
+        tests.push({ task, model, label: secondaryModelLabel(model) });
+      } else {
+        if (config.secondary.provider && config.secondary.id) {
+          tests.push({ model: config.secondary, label: secondaryModelLabel(config.secondary) });
+        }
+        const defaultKey = `${config.secondary.provider}:${config.secondary.id}:${config.secondary.backend ?? "pi"}:${config.secondary.baseUrl ?? ""}`;
+        for (const action of YOO_ACTIONS) {
+          const override = config.taskModels?.[action];
+          if (!override?.provider && !override?.id) continue;
+          const model = resolveTaskModel(config, action);
+          const key = `${model.provider}:${model.id}:${model.backend ?? "pi"}:${model.baseUrl ?? ""}`;
+          if (key === defaultKey) continue;
+          tests.push({ task: action, model, label: secondaryModelLabel(model) });
+        }
+      }
+
+      if (tests.length === 0) {
         ctx.ui.notify("No secondary model configured. Run /yoo-config or /yoo-model first.", "warn");
         return;
       }
 
-      const label = secondaryModelLabel(config);
       const progress = createProgressReporter("scan", ctx);
       const notifyProgress: ProgressReporter = (stage, total, message) => {
         progress(stage, total, message);
         ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
       };
 
-      notifyProgress(1, 3, `Testing ${label}…`);
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30_000);
-
-      try {
-        const { content, usage } = await callSecondaryModel(
-          config.secondary.provider,
-          config.secondary.id,
-          "You are a helpful assistant. Reply with exactly: yoo connection OK",
-          "Test connection. Reply with exactly: yoo connection OK",
-          controller.signal,
-          config.secondary.thinking,
-          ctx.cwd,
-        );
-        clearTimeout(timeout);
-        notifyProgress(2, 3, "Got response from secondary model");
-        const response = content.trim();
-        const costText = usage
-          ? ` (${formatTokenCount(usage.estimatedInputTokens)} in · ${formatTokenCount(usage.estimatedOutputTokens)} out · ${formatCost(usage.estimatedCostUsd)})`
-          : "";
-        if (response.toLowerCase().includes("yoo connection ok") || response.toLowerCase().includes("connection ok")) {
-          notifyProgress(3, 3, "Connection verified");
-          ctx.ui.notify(`yoo-test OK: ${label} is reachable${costText}`, "info");
-        } else {
-          notifyProgress(3, 3, "Unexpected response");
-          ctx.ui.notify(`yoo-test warning: ${label} replied but content was unexpected: "${response.slice(0, 100)}"${costText}`, "warn");
-        }
-      } catch (err) {
-        clearTimeout(timeout);
-        const message = err instanceof Error ? err.message : String(err);
-        logEvent(ctx.cwd, "error", "yoo-test failed", {
-          provider: config.secondary.provider,
-          model: config.secondary.id,
-          error: message,
-        });
-        notifyProgress(3, 3, "Connection failed");
-        ctx.ui.notify(`yoo-test failed for ${label}: ${message}`, "error");
-      } finally {
-        clearYooStatus(ctx);
+      const runnableTests = tests.filter((t) => t.model.provider && t.model.id);
+      if (runnableTests.length === 0) {
+        ctx.ui.notify("No configured model has both a provider and model id.", "warn");
+        return;
       }
+
+      let failures = 0;
+      const totalStages = runnableTests.length * 3;
+
+      for (let i = 0; i < runnableTests.length; i++) {
+        const { task: testTask, model, label } = runnableTests[i];
+        const taskSuffix = testTask ? ` (${testTask})` : "";
+        const baseStage = i * 3;
+
+        notifyProgress(baseStage + 1, totalStages, `Testing ${label}${taskSuffix}…`);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30_000);
+
+        try {
+          const { content, usage } = await callSecondaryModel(
+            model.provider,
+            model.id,
+            "You are a helpful assistant. Reply with exactly: yoo connection OK",
+            "Test connection. Reply with exactly: yoo connection OK",
+            {
+              signal: controller.signal,
+              thinking: model.thinking,
+              cwd: ctx.cwd,
+              sessionManager: ctx.sessionManager,
+              task: testTask,
+            },
+          );
+          clearTimeout(timeout);
+          notifyProgress(baseStage + 2, totalStages, `Got response from ${label}${taskSuffix}`);
+          const response = content.trim();
+          const costText = usage
+            ? ` (${formatTokenCount(usage.estimatedInputTokens)} in · ${formatTokenCount(usage.estimatedOutputTokens)} out · ${formatCost(usage.estimatedCostUsd)})`
+            : "";
+          if (
+            response.toLowerCase().includes("yoo connection ok") ||
+            response.toLowerCase().includes("connection ok")
+          ) {
+            notifyProgress(baseStage + 3, totalStages, `${label}${taskSuffix} OK`);
+            ctx.ui.notify(`yoo-test OK: ${label}${taskSuffix} is reachable${costText}`, "info");
+          } else {
+            failures++;
+            notifyProgress(baseStage + 3, totalStages, `${label}${taskSuffix} unexpected response`);
+            ctx.ui.notify(
+              `yoo-test warning: ${label}${taskSuffix} replied but content was unexpected: "${response.slice(0, 100)}"${costText}`,
+              "warn",
+            );
+          }
+        } catch (err) {
+          failures++;
+          clearTimeout(timeout);
+          const message = err instanceof Error ? err.message : String(err);
+          logEvent(ctx.cwd, "error", "yoo-test failed", {
+            provider: model.provider,
+            model: model.id,
+            error: message,
+          });
+          notifyProgress(baseStage + 3, totalStages, `${label}${taskSuffix} connection failed`);
+          ctx.ui.notify(`yoo-test failed for ${label}${taskSuffix}: ${message}`, "error");
+        }
+      }
+
+      if (failures === 0) {
+        notifyProgress(totalStages, totalStages, "All connections verified");
+        ctx.ui.notify("yoo-test complete: all configured models are reachable.", "info");
+      } else {
+        notifyProgress(totalStages, totalStages, `${failures} connection(s) failed`);
+        ctx.ui.notify(`yoo-test complete: ${failures} of ${tests.length} model(s) failed.`, "error");
+      }
+      clearYooStatus(ctx);
     },
   });
 
@@ -1458,7 +1847,7 @@ export default function (pi: ExtensionAPI) {
 
       let result: YooToolResult;
       try {
-        result = await executeYooScan(ctx.cwd, signal, notifyProgress);
+        result = await executeYooScan(ctx.cwd, signal, notifyProgress, ctx.sessionManager);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         logEvent(ctx.cwd, "error", "yoo-scan command failed", { error: message });
@@ -1470,6 +1859,71 @@ export default function (pi: ExtensionAPI) {
 
       const text = formatResultText(result);
       ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
+    },
+  });
+
+  pi.registerCommand("yoo-scan-deep", {
+    description: "Run /yoo scan with deep source-file sampling enabled",
+    handler: async (_args, ctx) => {
+      const signal = undefined;
+      const progress = createProgressReporter("scan", ctx);
+      const notifyProgress: ProgressReporter = (stage, total, message) => {
+        progress(stage, total, message);
+        ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
+      };
+
+      let result: YooToolResult;
+      try {
+        result = await executeYooScan(ctx.cwd, signal, notifyProgress, ctx.sessionManager, true);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logEvent(ctx.cwd, "error", "yoo-scan-deep command failed", { error: message });
+        ctx.ui.notify(`yoo-scan-deep error: ${message}`, "error");
+        return;
+      } finally {
+        clearYooStatus(ctx);
+      }
+
+      const text = formatResultText(result);
+      ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
+    },
+  });
+
+  pi.registerCommand("yoo-backend", {
+    description: "Switch secondary model backend between pi (default) and http (legacy)",
+    handler: async (args, ctx) => {
+      const config = loadHeyyooConfig(ctx.cwd);
+      const current = config.secondary.backend ?? "pi";
+      const requested = args.trim().toLowerCase();
+      const next: "pi" | "http" =
+        requested === "pi" ? "pi" : requested === "http" ? "http" : current === "pi" ? "http" : "pi";
+
+      const settingsPath = join(getAgentDir(), "settings.json");
+      let settings: Record<string, unknown> = {};
+      if (existsSync(settingsPath)) {
+        try {
+          settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+        } catch (err) {
+          logEvent(ctx.cwd, "error", "Failed to read settings for yoo-backend", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          ctx.ui.notify("Failed to read settings.json.", "error");
+          return;
+        }
+      }
+
+      if (!settings["pi-heyyoo"] || typeof settings["pi-heyyoo"] !== "object") {
+        settings["pi-heyyoo"] = {};
+      }
+      const yooSettings = settings["pi-heyyoo"] as Record<string, unknown>;
+      if (!yooSettings.secondary || typeof yooSettings.secondary !== "object") {
+        yooSettings.secondary = {};
+      }
+      const secondary = yooSettings.secondary as Record<string, unknown>;
+      secondary.backend = next;
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+
+      ctx.ui.notify(`yoo secondary backend switched to ${next}. /reload to apply.`, "info");
     },
   });
 }
@@ -1490,6 +1944,7 @@ async function showYooStatus(ctx: ExtensionContext): Promise<void> {
       ? `  Secondary model: ${config.secondary.provider}:${config.secondary.id}`
       : "  Secondary model: not configured",
     `  Thinking level: ${config.secondary.thinking ?? "off"}`,
+    `  Backend: ${config.secondary.backend ?? "pi"}`,
     `  Auto-judge: ${config.autoJudge ? "enabled" : "disabled"}`,
     config.preReviewCommands && config.preReviewCommands.length > 0
       ? `  Pre-review commands: ${config.preReviewCommands.join(", ")}`
@@ -1639,7 +2094,7 @@ function formatResultText(result: YooToolResult): string {
       if (result.review.autoJudged) {
         lines.push("**Auto-judge:** Last step done — final review was run automatically.");
       }
-    } else if (result.review.verdict === "needs-work") {
+    } else if (result.review.verdict === "needs-work" || result.review.verdict === "blocked") {
       lines.push("**Action:** Fix the issues above and call `yoo.review` again.");
       if (result.review.escalated) {
         lines.push(

@@ -1,6 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseJsonResponse, validateReviewResult, validateJudgeResult, validateConventionsResult } from "./prompts.js";
+import {
+  parseJsonResponse,
+  validateReviewResult,
+  validateJudgeResult,
+  validateConventionsResult,
+  buildPlanPrompt,
+  buildAdaptiveReviewPrompt,
+  buildScanPrompt,
+} from "./prompts.js";
 
 describe("parseJsonResponse", () => {
   it("parses plain JSON", () => {
@@ -162,6 +170,44 @@ describe("validateJudgeResult", () => {
     });
     assert.ok(result);
     assert.equal(result!.issues.length, 0);
+  });
+});
+
+describe("prompt caching", () => {
+  it("returns equal prompts for identical args", () => {
+    const a = buildPlanPrompt("task", "conventions");
+    const b = buildPlanPrompt("task", "conventions");
+    assert.equal(a.system, b.system);
+    assert.equal(a.user, b.user);
+  });
+
+  it("returns distinct objects so mutations do not affect the cache", () => {
+    const a = buildPlanPrompt("task", "conventions");
+    a.system = "mutated";
+    const b = buildPlanPrompt("task", "conventions");
+    assert.notEqual(a.system, b.system);
+    assert.ok(b.system.includes("pair programmer"));
+  });
+
+  it("returns different prompts for different args", () => {
+    const a = buildPlanPrompt("task a", "conventions");
+    const b = buildPlanPrompt("task b", "conventions");
+    assert.notEqual(a.user, b.user);
+  });
+
+  it("caches review prompts with file contents", () => {
+    const files = [{ file: "src/a.ts", content: "const x = 1;", mode: "full" as const }];
+    const a = buildAdaptiveReviewPrompt("desc", "diff", files, {});
+    const b = buildAdaptiveReviewPrompt("desc", "diff", files, {});
+    assert.equal(a.user, b.user);
+    assert.notStrictEqual(a, b);
+  });
+
+  it("caches static scan prompts", () => {
+    const a = buildScanPrompt();
+    const b = buildScanPrompt();
+    assert.equal(a.system, b.system);
+    assert.notStrictEqual(a, b);
   });
 });
 

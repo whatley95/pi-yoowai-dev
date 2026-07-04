@@ -1,9 +1,13 @@
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveApiKey } from "./auth-reader.js";
-import { loadHeyyooConfig } from "./config.js";
-import { formatCost, getSessionCost } from "./cost-tracker.js";
+import { loadHeyyooConfig, resolveTaskModel } from "./config.js";
+import { formatCost, getSessionCost, getReservedCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveModelInfo } from "./model-registry.js";
-import type { ProviderApiInfo, UsageCost } from "./types.js";
+import type { ProviderApiInfo, UsageCost, CallSecondaryModelOptions, SecondaryModelConfig } from "./types.js";
 
 const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
   "opencode-go": {
@@ -90,11 +94,7 @@ export function getProviderApiInfo(provider: string): ProviderApiInfo | undefine
   return PROVIDER_API_MAP[provider.toLowerCase()];
 }
 
-function resolveProviderApiInfo(
-  provider: string,
-  config?: import("./types.js").HeyyooConfig,
-): ProviderApiInfo | undefined {
-  const secondary = config?.secondary;
+function resolveProviderApiInfo(provider: string, secondary?: SecondaryModelConfig): ProviderApiInfo | undefined {
   if (secondary?.baseUrl) {
     const style = secondary.style ?? "openai-compatible";
     if (style !== "openai-compatible" && style !== "anthropic") {
@@ -103,7 +103,7 @@ function resolveProviderApiInfo(
     return {
       style,
       baseUrl: secondary.baseUrl.replace(/\/$/, ""),
-      authHeader: secondary.authHeader || (style === "anthropic" ? "x-api-key" : "Authorization"),
+      authHeader: secondary.authHeader ?? (style === "anthropic" ? "x-api-key" : "Authorization"),
       authPrefix: secondary.authPrefix ?? (style === "anthropic" ? "" : "Bearer "),
     };
   }
@@ -125,29 +125,17 @@ export async function callSecondaryModel(
   model: string,
   systemPrompt: string,
   userPrompt: string,
-  signal?: AbortSignal,
-  thinking?: string,
-  cwd?: string,
+  options: CallSecondaryModelOptions = {},
 ): Promise<{ content: string; usage: UsageCost }> {
-  provider = provider.toLowerCase();
+  const { signal, thinking: optionsThinking, cwd, sessionManager, relevantPaths, task } = options;
   const config = cwd ? loadHeyyooConfig(cwd) : undefined;
-  const apiInfo = resolveProviderApiInfo(provider, config);
-  if (!apiInfo) {
-    throw new Error(
-      `Unknown provider: ${provider}. Supported providers: ${Object.keys(PROVIDER_API_MAP).join(", ")}. ` +
-        `Or set pi-heyyoo.secondary.baseUrl to use any OpenAI-compatible or Anthropic-compatible endpoint.`,
-    );
-  }
+  const effectiveSecondary = config && task ? resolveTaskModel(config, task) : config?.secondary;
+  provider = (effectiveSecondary?.provider || provider).toLowerCase();
+  model = effectiveSecondary?.id || model;
+  const thinking = optionsThinking ?? effectiveSecondary?.thinking;
+  const backend = effectiveSecondary?.backend ?? "pi";
 
-  const apiKey = resolveApiKey(provider, config?.secondary.apiKey);
-  if (!apiKey) {
-    throw new Error(
-      `No API key found for provider "${provider}". Set the appropriate environment variable, configure auth.json, ` +
-        `or set pi-heyyoo.secondary.apiKey.`,
-    );
-  }
-
-  const modelInfoOverride = buildModelInfoOverride(config, model);
+  const modelInfoOverride = buildModelInfoOverride(effectiveSecondary, config?.modelInfo, model);
   const thinkingEnabledForBudget = Boolean(thinking) && thinking?.toLowerCase() !== "off";
   const modelInfoForBudget = cwd ? resolveModelInfo(provider, model, modelInfoOverride) : undefined;
 
@@ -157,7 +145,7 @@ export async function callSecondaryModel(
       const estimatedInputTokens = estimateTokens(systemPrompt + userPrompt);
       const estimatedOutputTokens = thinkingEnabledForBudget ? (modelInfoForBudget?.maxOutputTokens ?? 8192) : 2048;
       const projectedCost = estimateCost(provider, model, estimatedInputTokens, estimatedOutputTokens);
-      const sessionCost = getSessionCost(cwd).costUsd;
+      const sessionCost = getSessionCost(cwd).costUsd + getReservedCost(cwd);
       if (sessionCost + projectedCost > budgetUsd) {
         throw new Error(
           `yoo call would exceed cost budget: projected ${formatCost(sessionCost + projectedCost)} / ${formatCost(budgetUsd)}. ` +
@@ -167,9 +155,35 @@ export async function callSecondaryModel(
     }
   }
 
-  const sessionId = cwd ? piSessionIds.get(cwd) : undefined;
-
   try {
+    if (backend === "pi") {
+      return await callPiBackend(provider, model, systemPrompt, userPrompt, {
+        signal,
+        thinking,
+        cwd,
+        sessionManager,
+        relevantPaths,
+      });
+    }
+
+    const apiInfo = resolveProviderApiInfo(provider, effectiveSecondary);
+    if (!apiInfo) {
+      throw new Error(
+        `Unknown provider: ${provider}. Supported providers: ${Object.keys(PROVIDER_API_MAP).join(", ")}. ` +
+          `Or set pi-heyyoo.secondary.baseUrl to use any OpenAI-compatible or Anthropic-compatible endpoint.`,
+      );
+    }
+
+    const apiKey = resolveApiKey(provider, effectiveSecondary?.apiKey);
+    if (!apiKey) {
+      throw new Error(
+        `No API key found for provider "${provider}". Set the appropriate environment variable, configure auth.json, ` +
+          `or set pi-heyyoo.secondary.apiKey.`,
+      );
+    }
+
+    const sessionId = cwd ? piSessionIds.get(cwd) : undefined;
+
     if (apiInfo.style === "anthropic") {
       return await callAnthropicApi(
         provider,
@@ -204,7 +218,7 @@ export async function callSecondaryModel(
         model,
         thinking,
         promptTokensEstimate: Math.ceil((systemPrompt.length + userPrompt.length) / 4),
-        url: apiInfo.baseUrl,
+        backend,
       });
     }
     throw err;
@@ -212,26 +226,399 @@ export async function callSecondaryModel(
 }
 
 function buildModelInfoOverride(
-  config: import("./types.js").HeyyooConfig | undefined,
+  secondary: SecondaryModelConfig | undefined,
+  modelInfo: import("./types.js").HeyyooConfig["modelInfo"],
   model: string,
 ): Partial<import("./model-registry.js").ModelInfo> | undefined {
-  if (!config) return undefined;
-  const user = config.modelInfo?.[model.toLowerCase()];
+  if (!secondary) return undefined;
+  const user = modelInfo?.[model.toLowerCase()];
   const override: { contextWindow?: number; maxOutputTokens?: number } = {};
-  if (typeof config.secondary.contextWindow === "number" && Number.isFinite(config.secondary.contextWindow)) {
-    override.contextWindow = config.secondary.contextWindow;
+  if (typeof secondary.contextWindow === "number" && Number.isFinite(secondary.contextWindow)) {
+    override.contextWindow = secondary.contextWindow;
   } else if (typeof user?.contextWindow === "number" && Number.isFinite(user.contextWindow)) {
     override.contextWindow = user.contextWindow;
   }
-  if (typeof config.secondary.maxOutputTokens === "number" && Number.isFinite(config.secondary.maxOutputTokens)) {
-    override.maxOutputTokens = config.secondary.maxOutputTokens;
+  if (typeof secondary.maxOutputTokens === "number" && Number.isFinite(secondary.maxOutputTokens)) {
+    override.maxOutputTokens = secondary.maxOutputTokens;
   } else if (typeof user?.maxOutputTokens === "number" && Number.isFinite(user.maxOutputTokens)) {
     override.maxOutputTokens = user.maxOutputTokens;
   }
   return Object.keys(override).length > 0 ? override : undefined;
 }
 
-function estimateCost(provider: string, model: string, inputTokens: number, outputTokens: number): number {
+const SIGKILL_TIMEOUT_MS = 5000;
+
+let testPiSpawnResolver: (() => { command: string; prefixArgs: string[] }) | null = null;
+
+/** Test hook: override the Pi binary used by the pi backend. */
+export function setPiSpawnResolver(resolver: (() => { command: string; prefixArgs: string[] }) | null): void {
+  testPiSpawnResolver = resolver;
+}
+
+function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
+  if (testPiSpawnResolver) return testPiSpawnResolver();
+  const isNode = /[\\/]node(?:\.exe)?$/i.test(process.execPath);
+  const isBun = /[\\/]bun(?:\.exe)?$/i.test(process.execPath);
+  if ((isNode || isBun) && process.argv[1]) {
+    return { command: process.execPath, prefixArgs: [process.argv[1]] };
+  }
+  return { command: process.execPath, prefixArgs: [] };
+}
+
+function writeTempSessionJsonl(sessionJsonl: string): { dir: string; filePath: string } {
+  const tmpDir = mkdtempSync(join(tmpdir(), "pi-heyyoo-"));
+  const filePath = join(tmpDir, "session.jsonl");
+  writeFileSync(filePath, sessionJsonl, { encoding: "utf-8", mode: 0o600 });
+  return { dir: tmpDir, filePath };
+}
+
+interface ContentPart {
+  type?: unknown;
+  text?: unknown;
+}
+
+interface AssistantMessageLike {
+  role?: unknown;
+  content?: unknown;
+  usage?: {
+    input?: number;
+    output?: number;
+    cost?: { total?: number } | number;
+    totalTokens?: number;
+  };
+}
+
+function extractTextFromContent(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const typed = part as ContentPart;
+    if (typed.type === "text" && typeof typed.text === "string") {
+      parts.push(typed.text);
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+function getFinalAssistantText(messages: AssistantMessageLike[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    const text = extractTextFromContent(message.content);
+    if (text.length > 0) return text;
+  }
+  return "";
+}
+
+interface PiProcessResult {
+  messages: AssistantMessageLike[];
+  stderr: string;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+}
+
+function processPiJsonLine(line: string, result: PiProcessResult): void {
+  if (!line.trim()) return;
+  let event: Record<string, unknown>;
+  try {
+    event = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+
+  const message = event.message as AssistantMessageLike | undefined;
+  if (!message) return;
+
+  if (event.type === "message_end" || event.type === "turn_end") {
+    if (message.role === "assistant") {
+      result.messages.push(message);
+      if (message.usage) {
+        result.inputTokens += message.usage.input || 0;
+        result.outputTokens += message.usage.output || 0;
+        result.cost +=
+          typeof message.usage.cost === "object" && message.usage.cost !== null
+            ? (message.usage.cost as { total?: number }).total || 0
+            : typeof message.usage.cost === "number"
+              ? message.usage.cost
+              : 0;
+      }
+    }
+  }
+}
+
+const INHERITED_SESSION_MAX_ENTRIES = 10;
+
+function redactSessionJsonl(jsonl: string): string {
+  return jsonl
+    .replace(/\b(sk-[a-zA-Z0-9_-]{20,})\b/g, "[REDACTED_API_KEY]")
+    .replace(/\b([a-f0-9]{64,})\b/gi, "[REDACTED_HEX_KEY]")
+    .replace(/\b([A-Za-z0-9+/]{48,}={0,2})\b/g, "[REDACTED_B64_KEY]")
+    .replace(/(--api-key\s+)\S+/gi, "$1[REDACTED]");
+}
+
+function isConversationEntry(entry: unknown): entry is Record<string, unknown> {
+  if (!entry || typeof entry !== "object") return false;
+  const role = (entry as Record<string, unknown>).role;
+  return role === "system" || role === "user" || role === "assistant";
+}
+
+function normalizePathForMatch(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function entryMentionsAnyPath(entry: unknown, paths: string[]): boolean {
+  const text = JSON.stringify(entry);
+  if (!text) return false;
+  const normalizedText = text.replace(/\\/g, "/");
+  return paths.some((p) => {
+    const normalized = normalizePathForMatch(p);
+    return normalizedText.includes(normalized) || text.includes(p);
+  });
+}
+
+function selectRelevantEntries(branch: unknown[], maxEntries: number, relevantPaths?: string[]): unknown[] {
+  const messages = branch.map((entry, index) => ({ entry, index })).filter(({ entry }) => isConversationEntry(entry));
+
+  if (!relevantPaths || relevantPaths.length === 0) {
+    return messages.slice(-maxEntries).map(({ entry }) => entry);
+  }
+
+  const matching: { entry: unknown; index: number }[] = [];
+  const nonMatching: { entry: unknown; index: number }[] = [];
+  for (const item of messages) {
+    if (entryMentionsAnyPath(item.entry, relevantPaths)) {
+      matching.push(item);
+    } else {
+      nonMatching.push(item);
+    }
+  }
+
+  const selected = matching.slice(-maxEntries);
+  const remainingSlots = maxEntries - selected.length;
+  if (remainingSlots > 0) {
+    const usedIndices = new Set(selected.map((i) => i.index));
+    const recentNonMatching = nonMatching.filter((i) => !usedIndices.has(i.index)).slice(-remainingSlots);
+    selected.push(...recentNonMatching);
+  }
+
+  selected.sort((a, b) => a.index - b.index);
+  return selected.map(({ entry }) => entry);
+}
+
+function buildInheritedSessionJsonl(
+  sessionManager?: CallSecondaryModelOptions["sessionManager"],
+  relevantPaths?: string[],
+  maxEntries = INHERITED_SESSION_MAX_ENTRIES,
+): string | null {
+  if (!sessionManager) return null;
+  try {
+    const header = sessionManager.getHeader();
+    const branch = sessionManager.getBranch();
+    if (!header || typeof header !== "object" || !Array.isArray(branch)) return null;
+    const lines: string[] = [JSON.stringify(header)];
+    const selected = selectRelevantEntries(branch, maxEntries, relevantPaths);
+    for (const entry of selected) lines.push(JSON.stringify(entry));
+    return redactSessionJsonl(lines.join("\n") + "\n");
+  } catch {
+    return null;
+  }
+}
+
+async function callPiBackend(
+  provider: string,
+  model: string,
+  systemPrompt: string,
+  userPrompt: string,
+  options: CallSecondaryModelOptions = {},
+): Promise<{ content: string; usage: UsageCost }> {
+  const { signal, thinking, cwd, sessionManager, relevantPaths } = options;
+
+  const inheritedSession = buildInheritedSessionJsonl(sessionManager, relevantPaths);
+  const taskJsonl =
+    [
+      JSON.stringify({
+        type: "message",
+        role: "system",
+        content: [{ type: "text", text: systemPrompt }],
+      }),
+      JSON.stringify({
+        type: "message",
+        role: "user",
+        content: [{ type: "text", text: userPrompt }],
+      }),
+    ].join("\n") + "\n";
+
+  const sessionJsonl = inheritedSession ? inheritedSession + taskJsonl : taskJsonl;
+
+  const tmp = writeTempSessionJsonl(sessionJsonl);
+  const { command, prefixArgs } = resolvePiSpawn();
+
+  const args = [
+    "--mode",
+    "json",
+    "-p",
+    "--session",
+    tmp.filePath,
+    "--provider",
+    provider,
+    "--model",
+    model,
+    "--thinking",
+    thinking ?? "off",
+    "--no-extensions",
+    "Respond to the user message above.",
+  ];
+
+  try {
+    const result = await runPiProcess(command, [...prefixArgs, ...args], cwd, signal);
+    const content = getFinalAssistantText(result.messages);
+    if (!content) {
+      const stderrPreview = result.stderr.trim().slice(0, 500);
+      throw new Error(`Secondary pi process produced no assistant text${stderrPreview ? `: ${stderrPreview}` : ""}`);
+    }
+
+    const estimatedInputTokens = result.inputTokens ?? estimateTokens(systemPrompt + userPrompt);
+    const estimatedOutputTokens = result.outputTokens ?? estimateTokens(content);
+    const usage: UsageCost = {
+      estimatedInputTokens,
+      estimatedOutputTokens,
+      estimatedCostUsd: result.cost ?? estimateCost(provider, model, estimatedInputTokens, estimatedOutputTokens),
+      sessionCostUsd: 0,
+    };
+    return { content, usage };
+  } finally {
+    try {
+      rmSync(tmp.dir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+}
+
+function runPiProcess(command: string, args: string[], cwd?: string, signal?: AbortSignal): Promise<PiProcessResult> {
+  const result: PiProcessResult = {
+    messages: [],
+    stderr: "",
+    inputTokens: 0,
+    outputTokens: 0,
+    cost: 0,
+  };
+
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Secondary pi process aborted"));
+      return;
+    }
+
+    const proc = spawn(command, args, {
+      cwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let buffer = "";
+    let settled = false;
+    let killed = false;
+    let sigkillTimeoutId: ReturnType<typeof setTimeout> | undefined;
+    let abortHandler: (() => void) | undefined;
+
+    const killProc = () => {
+      if (killed || !proc.pid) return;
+      killed = true;
+      try {
+        proc.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      sigkillTimeoutId = setTimeout(() => {
+        if (settled || !proc.pid) return;
+        if (process.platform === "win32") {
+          try {
+            spawn("taskkill", ["/pid", String(proc.pid), "/f", "/t"], { stdio: "ignore" }).unref();
+          } catch {
+            // ignore
+          }
+        } else {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+        }
+        sigkillTimeoutId = undefined;
+      }, SIGKILL_TIMEOUT_MS);
+    };
+
+    const settle = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (sigkillTimeoutId) {
+        clearTimeout(sigkillTimeoutId);
+        sigkillTimeoutId = undefined;
+      }
+      if (abortHandler && signal) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+      proc.stdout.off("data", onStdoutData);
+      proc.stderr.removeAllListeners("data");
+      if (buffer.trim()) processPiJsonLine(buffer, result);
+      if (err) {
+        reject(err);
+      } else {
+        resolve(result);
+      }
+    };
+
+    const onStdoutData = (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) processPiJsonLine(line, result);
+    };
+
+    proc.stdout.on("data", onStdoutData);
+
+    proc.stderr.on("data", (chunk: Buffer) => {
+      result.stderr += chunk.toString();
+    });
+
+    proc.on("close", (code, procSignal) => {
+      const effectiveCode = code ?? (procSignal ? 1 : 0);
+      if (effectiveCode !== 0 && !getFinalAssistantText(result.messages)) {
+        const stderrPreview = result.stderr.trim().slice(0, 500);
+        settle(
+          new Error(
+            `Secondary pi process exited with code ${effectiveCode}${stderrPreview ? `: ${stderrPreview}` : ""}`,
+          ),
+        );
+        return;
+      }
+      settle();
+    });
+
+    proc.on("error", (err) => {
+      settle(err);
+    });
+
+    if (signal) {
+      abortHandler = () => {
+        killProc();
+        settle(new Error("Secondary pi process aborted"));
+      };
+      if (signal.aborted) {
+        abortHandler();
+      } else {
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+    }
+  });
+}
+
+export function estimateCost(provider: string, model: string, inputTokens: number, outputTokens: number): number {
   // Approximate cost per 1M tokens in USD. These are rough averages.
   const key = `${provider}:${model}`.toLowerCase();
   const rates: Record<string, { input: number; output: number }> = {
@@ -372,8 +759,9 @@ async function callOpenAiCompatibleApi(
     Boolean(thinking) && thinking!.toLowerCase() !== "off" && (supportsReasoning || supportsAnthropicThinking);
   const modelInfo = resolveModelInfo(provider, model, modelInfoOverride);
   // Reasoning models can consume a large portion of the output budget in internal reasoning tokens,
-  // so use the model's full output limit when thinking/reasoning is enabled. Otherwise keep calls cheap.
-  const outputTokenLimit = thinkingEnabled ? modelInfo.maxOutputTokens : 2048;
+  // so use the model's full output limit when thinking/reasoning is enabled. Otherwise keep calls cheap
+  // while still honoring explicit maxOutputTokens overrides.
+  const outputTokenLimit = thinkingEnabled ? modelInfo.maxOutputTokens : Math.min(modelInfo.maxOutputTokens, 2048);
 
   const body: Record<string, unknown> = {
     model,
@@ -389,7 +777,9 @@ async function callOpenAiCompatibleApi(
     if (supportsReasoning) {
       body.reasoning_effort = reasoningEffortForModel(provider, model, thinking ?? "medium");
     } else {
-      body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking ?? "medium") };
+      // Anthropic requires budget_tokens < max_tokens, so keep a safety margin for visible output.
+      const budget = Math.min(thinkingBudget(thinking ?? "medium"), outputTokenLimit - 512);
+      body.thinking = { type: "enabled", budget_tokens: Math.max(1024, budget) };
     }
   }
   if (provider === "openai" && supportsMaxCompletionTokens(provider, model)) {
@@ -538,10 +928,13 @@ async function callAnthropicApi(
 ): Promise<{ content: string; usage: UsageCost }> {
   const url = `${apiInfo.baseUrl}/messages`;
 
-  const thinkingEnabled = Boolean(thinking) && (thinking as string).toLowerCase() !== "off";
+  const thinkingEnabled =
+    Boolean(thinking) &&
+    (thinking as string).toLowerCase() !== "off" &&
+    modelSupportsAnthropicThinking(provider, model);
   const modelInfo = resolveModelInfo(provider, model, modelInfoOverride);
   // Anthropic counts thinking tokens against max_tokens, so reserve room for visible output.
-  const outputTokenLimit = thinkingEnabled ? modelInfo.maxOutputTokens : 2048;
+  const outputTokenLimit = thinkingEnabled ? modelInfo.maxOutputTokens : Math.min(modelInfo.maxOutputTokens, 2048);
 
   const body: Record<string, unknown> = {
     model,
@@ -550,7 +943,8 @@ async function callAnthropicApi(
     messages: [{ role: "user", content: userPrompt }],
   };
   if (thinkingEnabled) {
-    body.thinking = { type: "enabled", budget_tokens: thinkingBudget(thinking ?? "medium") };
+    const budget = Math.min(thinkingBudget(thinking ?? "medium"), outputTokenLimit - 512);
+    body.thinking = { type: "enabled", budget_tokens: Math.max(1024, budget) };
   }
 
   const headers: Record<string, string> = {
@@ -613,25 +1007,21 @@ function modelSupportsAnthropicThinking(provider: string, model: string): boolea
     "anthropic/claude-sonnet-4-5",
     "anthropic/claude-opus-4-5",
   ]);
-  if (thinkingModels.has(modelLc)) return true;
+  const baseModel = modelLc.replace(/-\d{8}$/, "").replace(/-latest$/, "");
+  if (thinkingModels.has(baseModel)) return true;
   if (lc.startsWith("openrouter:")) {
     // OpenRouter passes provider-specific params only for Anthropic thinking models.
-    return [...thinkingModels].some((m) => modelLc.includes(m.replace("anthropic/", "")));
+    return [...thinkingModels].some((m) => baseModel.includes(m.replace("anthropic/", "")));
   }
   return false;
 }
 
-function supportsReasoningEffort(provider: string, model: string): boolean {
-  // OpenAI-style reasoning_effort is supported by OpenAI o-series/gpt-5 and DeepSeek reasoning models.
-  const lc = `${provider}:${model}`.toLowerCase();
+function supportsReasoningEffort(_provider: string, model: string): boolean {
+  // OpenAI-style reasoning_effort is supported by OpenAI o-series/gpt-5 models.
+  // DeepSeek reasoner models emit reasoning_content but do not accept a reasoning_effort parameter.
   const modelLc = model.toLowerCase();
-  const deepseekReasoner = /^deepseek[-/]?reasoner/;
-  const deepseekV4 = /^deepseek[-/]?v4/;
-  if (deepseekReasoner.test(modelLc)) return true;
-  if (deepseekV4.test(modelLc)) return true;
   if (modelLc.startsWith("o") && /^o\d/.test(modelLc)) return true;
   if (modelLc.startsWith("gpt-5")) return true;
-  if (lc.startsWith("openrouter:deepseek") && (deepseekReasoner.test(lc) || deepseekV4.test(lc))) return true;
   return false;
 }
 
@@ -707,11 +1097,15 @@ async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2, ba
       }
       const delay = baseDelayMs * 2 ** attempt;
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, delay);
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, delay);
         const signal = init.signal;
         if (!signal) return;
         const onAbort = () => {
           clearTimeout(timer);
+          signal.removeEventListener("abort", onAbort);
           resolve();
         };
         signal.addEventListener("abort", onAbort, { once: true });
