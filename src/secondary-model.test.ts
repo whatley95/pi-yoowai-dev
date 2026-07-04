@@ -194,8 +194,8 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
     const taskUser = entries.pop();
     const taskSystem = entries.pop();
     assert.equal(header?.type, "header");
-    assert.equal(taskSystem?.role, "system");
-    assert.equal(taskUser?.role, "user");
+    assert.equal(taskSystem?.message?.role, "system");
+    assert.equal(taskUser?.message?.role, "user");
 
     const inheritedMessages = entries.filter(
       (e) => e.type === "message" && (e.message?.role === "user" || e.message?.role === "assistant"),
@@ -248,9 +248,11 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
 
     const lines = content.split("\n").filter((l) => l.trim());
     const entries = lines.map((l) => JSON.parse(l));
+    const taskUser = entries.pop();
+    const taskSystem = entries.pop();
     entries.shift(); // header
-    entries.pop(); // task system
-    entries.pop(); // task user
+    assert.equal(taskSystem?.message?.role, "system");
+    assert.equal(taskUser?.message?.role, "user");
 
     const inheritedMessages = entries.filter(
       (e) => e.type === "message" && (e.message?.role === "user" || e.message?.role === "assistant"),

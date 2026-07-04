@@ -477,13 +477,11 @@ async function callPiBackend(
     [
       JSON.stringify({
         type: "message",
-        role: "system",
-        content: [{ type: "text", text: systemPrompt }],
+        message: { role: "system", content: [{ type: "text", text: systemPrompt }] },
       }),
       JSON.stringify({
         type: "message",
-        role: "user",
-        content: [{ type: "text", text: userPrompt }],
+        message: { role: "user", content: [{ type: "text", text: userPrompt }] },
       }),
     ].join("\n") + "\n";
 
