@@ -1,18 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { Value } from "@sinclair/typebox/value";
-import { getProjectConfigPath } from "./pi-paths.js";
+import { getSessionConfigDir, getSessionConfigPath } from "./session-scope.js";
 import { logEvent } from "./logger.js";
 import type { HeyyooSessionState, PlanResult } from "./types.js";
 import { validatePlanResult } from "./prompts.js";
 import { PlanResultSchema } from "./schemas.js";
 
 function getStateDir(cwd: string): string {
-  return getProjectConfigPath(cwd, "heyyoo");
+  return getSessionConfigDir(cwd, "plan.json");
 }
 
 function getPlanPath(cwd: string): string {
-  return join(getStateDir(cwd), "plan.json");
+  return getSessionConfigPath(cwd, "plan.json");
 }
 
 export function loadState(cwd: string): HeyyooSessionState | null {

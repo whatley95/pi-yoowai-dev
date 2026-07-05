@@ -74,6 +74,8 @@ import {
 import { runPreReviewCommands, formatPreReviewOutput } from "./pre-review.js";
 import { logEvent, readRecentLogs, clearLogs } from "./logger.js";
 import { createProgressReporter, clearYooStatus, type ProgressReporter } from "./progress.js";
+import { setSessionId, clearSessionId, pruneSessionDirs } from "./session-scope.js";
+import { executeYooIndex, formatIndexResult, validateYooIndexParams } from "./yoo-index.js";
 
 const STAGES = {
   plan: 3,
@@ -1487,6 +1489,17 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    // Scope volatile yoo state to this Pi session so plans/memory/cost do not
+    // leak across unrelated sessions on the same project.
+    try {
+      const sessionId = ctx.sessionManager.getSessionId();
+      setSessionId(ctx.cwd, sessionId);
+      // Clean up stale per-session directories from previous sessions.
+      pruneSessionDirs(ctx.cwd, sessionId);
+    } catch {
+      /* ignore if sessionManager is unavailable */
+    }
+
     const diskState = loadState(ctx.cwd);
     if (diskState) {
       sessionStates.set(ctx.cwd, diskState);
@@ -1505,6 +1518,7 @@ export default function (pi: ExtensionAPI) {
     sessionStates.delete(ctx.cwd);
     loopStates.delete(ctx.cwd);
     clearPiSessionId(ctx.cwd);
+    clearSessionId(ctx.cwd);
   });
 
   pi.on("tool_execution_start", async (event, ctx) => {
@@ -1727,6 +1741,69 @@ export default function (pi: ExtensionAPI) {
         details: result,
         isError: Boolean(result.error),
       };
+    },
+  });
+
+  pi.registerTool({
+    name: "yoo_index",
+    label: "Yoo Index — Project Context",
+    description:
+      "Read stored yoo project context: conventions, active plan, review memory, session cost, and recent logs. No model call — fast and deterministic. Use this before making changes to understand the project's rules, current task, and past issues.",
+    promptSnippet: "yoo_index: retrieve stored project context before acting on code",
+    promptGuidelines: [
+      "Call yoo_index when you need a quick overview of the project conventions, active plan, or recent review issues.",
+      "Use topic 'conventions' to learn the project's stack, naming, structure, and patterns.",
+      "Use topic 'plan' to see the current todo list and progress.",
+      "Use topic 'memory' with files:[...] to see past review issues for specific files.",
+      "Use topic 'cost' to check estimated spend in the current session.",
+      "Use topic 'logs' to see recent yoo errors or warnings.",
+      "yoo_index does not call a model; it only reads data yoo already stored.",
+    ],
+    parameters: Type.Object({
+      topic: Type.Optional(
+        Type.Union(
+          [
+            Type.Literal("all"),
+            Type.Literal("plan"),
+            Type.Literal("memory"),
+            Type.Literal("conventions"),
+            Type.Literal("cost"),
+            Type.Literal("logs"),
+          ],
+          {
+            description: "Which stored context to return. Defaults to 'all'.",
+          },
+        ),
+      ),
+      files: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "For memory topic: limit past issues to these file paths.",
+        }),
+      ),
+      query: Type.Optional(
+        Type.String({
+          description: "Optional keyword filter applied to memory text.",
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      try {
+        const indexParams = validateYooIndexParams(params);
+        const result = executeYooIndex(ctx.cwd, indexParams);
+        const text = formatIndexResult(result);
+        return {
+          content: [{ type: "text", text }],
+          details: result,
+          isError: false,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logEvent(ctx.cwd, "error", "yoo_index failed", { error: message });
+        return {
+          content: [{ type: "text", text: `yoo_index failed: ${message}` }],
+          isError: true,
+        };
+      }
     },
   });
 
@@ -2189,6 +2266,16 @@ export default function (pi: ExtensionAPI) {
     description: "Alias for /yoo-status",
     handler: async (_args, ctx) => {
       await showYooStatus(ctx);
+    },
+  });
+
+  pi.registerCommand("yoo-index", {
+    description: "Read stored yoo project context. Usage: /yoo-index [all|plan|memory|conventions|cost|logs]",
+    handler: async (args, ctx) => {
+      const topic = args.trim() || "all";
+      const result = executeYooIndex(ctx.cwd, { topic: topic as import("./yoo-index.js").IndexTopic });
+      const text = formatIndexResult(result);
+      await ctx.ui.select("yoo index", text.split("\n").filter(Boolean));
     },
   });
 

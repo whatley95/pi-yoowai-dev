@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { getProjectConfigPath } from "./pi-paths.js";
+import { getSessionConfigDir, getSessionConfigPath } from "./session-scope.js";
 import { logEvent } from "./logger.js";
 import type { ReviewIssue } from "./types.js";
 
@@ -14,7 +14,7 @@ interface FileMemory {
 }
 
 function getMemoryPath(cwd: string): string {
-  return getProjectConfigPath(cwd, "heyyoo", "memory.json");
+  return getSessionConfigPath(cwd, "memory.json");
 }
 
 function loadMemory(cwd: string): MemoryStore {
@@ -36,7 +36,7 @@ function loadMemory(cwd: string): MemoryStore {
 
 function saveMemory(cwd: string, memory: MemoryStore): void {
   try {
-    const dir = getProjectConfigPath(cwd, "heyyoo");
+    const dir = getSessionConfigDir(cwd, "memory.json");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     memory.updatedAt = new Date().toISOString();
     writeFileSync(getMemoryPath(cwd), JSON.stringify(memory, null, 2), { encoding: "utf-8", mode: 0o600 });
@@ -89,6 +89,21 @@ export function getPastIssuesForFiles(cwd: string, files: string[]): string {
   }
   if (found.length === 0) return "";
   return "Past issues found in changed files:\n" + found.join("\n");
+}
+
+export function getMemorySummary(cwd: string): string {
+  const memory = loadMemory(cwd);
+  const found: string[] = [];
+  for (const entry of Object.values(memory.files)) {
+    if (entry.issues.length === 0) continue;
+    const latest = entry.issues.slice(-3);
+    found.push(`\n${entry.file}:`);
+    for (const i of latest) {
+      found.push(`  - [${i.severity}] ${i.issue}`);
+    }
+  }
+  if (found.length === 0) return "";
+  return "Past issues found:\n" + found.join("\n");
 }
 
 function normalizeFile(file: string): string {

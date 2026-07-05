@@ -101,6 +101,23 @@ The `yoo` tool is called by the main agent during development:
 | `yoo({ security: "auth changes" })`                                   | Security-sensitive changes     | Audits diff for secrets, injection, auth, and other vulnerabilities |
 | `yoo({ review: "...", verify: true })`                                | Any high-stakes result         | Asks the main agent to confirm or refute the finding with evidence  |
 
+### `yoo_index` tool
+
+The `yoo_index` tool is a fast, read-only lookup for stored yoo context. It does not call a model.
+
+| Call | What it returns |
+| --- | --- |
+| `yoo_index({})` or `yoo_index({ topic: "all" })` | Conventions, active plan, review memory, cost, and recent logs |
+| `yoo_index({ topic: "conventions" })` | Project conventions from `yoo scan` |
+| `yoo_index({ topic: "plan" })` | Active todo list and progress |
+| `yoo_index({ topic: "memory" })` | Past review issues for all files |
+| `yoo_index({ topic: "memory", files: ["src/auth.ts"] })` | Past review issues for specific files |
+| `yoo_index({ topic: "memory", query: "race condition" })` | Memory entries matching a keyword |
+| `yoo_index({ topic: "cost" })` | Estimated session spend |
+| `yoo_index({ topic: "logs" })` | Recent yoo log entries |
+
+Use `yoo_index` before editing to quickly learn the project's rules, current task, and any known issues.
+
 ## Commands
 
 | Command                                        | What it does                                                                           |
@@ -116,6 +133,7 @@ The `yoo` tool is called by the main agent during development:
 | `/yoo security [description] [--full-project]` | Security audit of current diff or sampled project files                                |
 | `/yoo-status`                                  | Detailed diagnostics: base + per-tool models, config, plan, VCS, conventions, cost     |
 | `/yoo-info`                                    | Alias for `/yoo-status`                                                                |
+| `/yoo-index [topic]`                           | Read stored yoo context (plan, memory, conventions, cost, logs)                        |
 | `/yoo-model`                                   | Interactively pick the base or per-tool model; shows current provider/model/thinking   |
 | `/yoo-model <provider> [filter]`               | Pre-select provider and optionally filter the model list                               |
 | `/yoo-config`                                  | Show current `pi-heyyoo` settings                                                      |
@@ -124,7 +142,7 @@ The `yoo` tool is called by the main agent during development:
 | `/yoo-config <provider.model>`                 | Set the base secondary model directly (e.g. `/yoo-config openai.gpt-4o`)               |
 | `/yoo-test`                                    | Test connectivity; prints a per-model summary with latency, tokens, cost, and totals   |
 | `/yoo-backend <pi\|http>`                      | Switch secondary model backend (default: `pi`)                                         |
-| `/yoo-clear`                                   | Clear the active plan, session state, cost, memory, and conventions                    |
+| `/yoo-clear`                                   | Clear the current session's plan, state, cost, memory, and conventions                 |
 | `/yoo-next`                                    | Recommend the next step based on the active plan                                       |
 | `/yoo-done`                                    | Mark the current plan step complete and recommend the next step                        |
 | `/yoo-logs`                                    | Show recent error/event log entries for this project                                   |
@@ -216,10 +234,10 @@ This prevents the main agent from spinning in review-fix-review cycles.
 - **Automatic diff collection** — `yoo.review` auto-runs `git diff HEAD` (or `svn diff`)
 - **Adaptive context** — automatically includes full contents of small changed files, outlines for large ones, and respects the model's token budget
 - **Diff scope control** — limit reviews with `files`, `exclude`, `revision`, `since`, or `untracked`
-- **Plan persistence** — session state tracks the plan, review prompts include acceptance criteria
+- **Session-scoped state** — plan, review memory, and cost are scoped to the current Pi session, so old plans and issues do not leak into unrelated work; conventions persist per project
 - **Deep project scan** — `yoo.scan` reads `package.json`, `AGENTS.md`, detects frameworks, tests, ORM, UI, build tools, CI, package manager, entry points, scripts, and samples code style
 - **Project conventions** — scan results feed into plan, suggest, recommend, review, and judge prompts
-- **Review memory** — previous issues per file are included so the model knows what was already fixed
+- **Review memory** — previous issues per file are included so the model knows what was already fixed; memory is reset for each new Pi session
 - **Pre-review commands** — configured lint/test/typecheck output is included in the review prompt
 - **Cost tracking + budget** — estimated spend per call, session total, and optional hard budget
 - **One round-trip** — secondary model has no tools, pure judgment

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { getProjectConfigPath } from "./pi-paths.js";
+import { getSessionConfigDir, getSessionConfigPath } from "./session-scope.js";
 import { logEvent } from "./logger.js";
 import type { UsageCost } from "./types.js";
 
@@ -12,7 +12,7 @@ interface CostLog {
 }
 
 function getCostPath(cwd: string): string {
-  return getProjectConfigPath(cwd, "heyyoo", "cost.json");
+  return getSessionConfigPath(cwd, "cost.json");
 }
 
 function loadCost(cwd: string): CostLog {
@@ -38,7 +38,7 @@ function loadCost(cwd: string): CostLog {
 
 function saveCost(cwd: string, log: CostLog): void {
   try {
-    const dir = getProjectConfigPath(cwd, "heyyoo");
+    const dir = getSessionConfigDir(cwd, "cost.json");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(getCostPath(cwd), JSON.stringify(log, null, 2), { encoding: "utf-8", mode: 0o600 });
   } catch (err) {
