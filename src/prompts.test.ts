@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   parseJsonResponse,
+  salvageReviewFromMarkdown,
+  salvageJudgeFromMarkdown,
   validateReviewResult,
   validateJudgeResult,
   validateConventionsResult,
@@ -45,6 +47,56 @@ describe("parseJsonResponse", () => {
   it("returns null for empty input", () => {
     const result = parseJsonResponse("");
     assert.equal(result, null);
+  });
+
+  it("unwraps common wrapper objects", () => {
+    const result = parseJsonResponse('{ "response": "{ \\"foo\\": \\"bar\\" }" }');
+    assert.deepEqual(result, { foo: "bar" });
+  });
+
+  it("unwraps wrapper containing markdown JSON", () => {
+    const result = parseJsonResponse('{ "content": "```json\\n{ \\"foo\\": \\"bar\\" }\\n```" }');
+    assert.deepEqual(result, { foo: "bar" });
+  });
+});
+
+describe("salvageReviewFromMarkdown", () => {
+  it("extracts pass verdict and suggestions from markdown", () => {
+    const text = `# Review
+
+Verdict: pass
+
+- Add a comment
+- Move to IDEs section`;
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.verdict, "pass");
+    assert.equal(result?.suggestions.length, 2);
+    assert.equal(result?.consensus, false);
+  });
+
+  it("extracts blocked verdict", () => {
+    const text = "This is broken and cannot work.\n\n- Fix the crash";
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.verdict, "blocked");
+    assert.equal(result?.suggestions.length, 1);
+  });
+});
+
+describe("salvageJudgeFromMarkdown", () => {
+  it("extracts pass verdict and summary", () => {
+    const text = "Verdict: pass\n\nSummary: All criteria are met.";
+    const result = salvageJudgeFromMarkdown(text);
+    assert.equal(result?.verdict, "pass");
+    assert.equal(result?.consensus, true);
+    assert.match(result?.summary ?? "", /All criteria/);
+  });
+
+  it("extracts blocked verdict with suggestions", () => {
+    const text = "Verdict: blocked\n\n- Missing tests\n- Step 2 not reviewed";
+    const result = salvageJudgeFromMarkdown(text);
+    assert.equal(result?.verdict, "blocked");
+    assert.equal(result?.suggestions.length, 2);
+    assert.equal(result?.consensus, false);
   });
 });
 

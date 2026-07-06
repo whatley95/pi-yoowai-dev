@@ -21,6 +21,8 @@ import {
   buildScanPrompt,
   clearPromptCache,
   parseJsonResponse,
+  salvageReviewFromMarkdown,
+  salvageJudgeFromMarkdown,
   validatePlanResult,
   validateReviewResult,
   validateSuggestResult,
@@ -984,7 +986,7 @@ async function executeYooJudge(
       modelConfig.provider,
       modelConfig.id,
       system,
-      `${user}\n\nCRITICAL: Your previous response could not be parsed. Return ONLY valid JSON matching the required structure, with no markdown fences, no explanations, and no extra text.`,
+      `${user}\n\nCRITICAL: Your previous response could not be parsed. Return ONLY the required JSON object directly, with no markdown fences, no explanations, no wrapper objects (like { "response": "..." }), and no extra text.`,
       { signal, thinking: "off", cwd, sessionManager, task: "judge" },
     );
     const parsedRetry = parseJsonResponse(rawRetry);
@@ -993,17 +995,27 @@ async function executeYooJudge(
       judge = judgeRetry;
       cost = mergeUsageCost(cost, recordCostWithBudget(cwd, usageRetry));
     } else {
-      logEvent(cwd, "warn", "Failed to parse judgment from secondary model response after retry", {
-        raw: rawRetry.slice(0, 2000),
-        parsed: parsedRetry === null ? null : typeof parsedRetry,
-        parseError: getJsonParseError(rawRetry),
-        validationErrors: parsedRetry ? getJudgeValidationErrors(parsedRetry) : [],
-      });
-      return {
-        action: "judge",
-        error: "Failed to parse judgment from secondary model response.",
-        cost,
-      };
+      const salvaged = salvageJudgeFromMarkdown(rawRetry) ?? salvageJudgeFromMarkdown(raw);
+      if (salvaged) {
+        logEvent(cwd, "info", "Salvaged judgment from markdown response", {
+          verdict: salvaged.verdict,
+          suggestionCount: salvaged.suggestions.length,
+        });
+        judge = salvaged;
+        cost = mergeUsageCost(cost, recordCostWithBudget(cwd, usageRetry));
+      } else {
+        logEvent(cwd, "warn", "Failed to parse judgment from secondary model response after retry", {
+          raw: rawRetry.slice(0, 2000),
+          parsed: parsedRetry === null ? null : typeof parsedRetry,
+          parseError: getJsonParseError(rawRetry),
+          validationErrors: parsedRetry ? getJudgeValidationErrors(parsedRetry) : [],
+        });
+        return {
+          action: "judge",
+          error: "Failed to parse judgment from secondary model response.",
+          cost,
+        };
+      }
     }
   }
 
@@ -1295,7 +1307,7 @@ async function runReviewBatch(input: ReviewBatchInput): Promise<{ review: Review
       modelConfig.provider,
       modelConfig.id,
       system,
-      `${user}\n\nCRITICAL: Your previous response could not be parsed. Return ONLY valid JSON matching the required structure, with no markdown fences, no explanations, and no extra text.`,
+      `${user}\n\nCRITICAL: Your previous response could not be parsed. Return ONLY the required JSON object directly, with no markdown fences, no explanations, no wrapper objects (like { "response": "..." }), and no extra text.`,
       { signal, thinking: "off", cwd, sessionManager, relevantPaths, task: "review" },
     );
     const parsedRetry = parseJsonResponse(rawRetry);
@@ -1304,13 +1316,22 @@ async function runReviewBatch(input: ReviewBatchInput): Promise<{ review: Review
       review = reviewRetry;
       usageOut = mergeUsageCost(usageOut, usageRetry);
     } else {
-      logEvent(cwd, "warn", "Failed to parse review from secondary model response after retry", {
-        raw: rawRetry.slice(0, 2000),
-        parsed: parsedRetry === null ? null : typeof parsedRetry,
-        parseError: getJsonParseError(rawRetry),
-        validationErrors: parsedRetry ? getReviewValidationErrors(parsedRetry) : [],
-      });
-      throw new Error("Failed to parse review from secondary model response.");
+      const salvaged = salvageReviewFromMarkdown(rawRetry) ?? salvageReviewFromMarkdown(raw);
+      if (salvaged) {
+        logEvent(cwd, "info", "Salvaged review from markdown response", {
+          verdict: salvaged.verdict,
+          suggestionCount: salvaged.suggestions.length,
+        });
+        review = salvaged;
+      } else {
+        logEvent(cwd, "warn", "Failed to parse review from secondary model response after retry", {
+          raw: rawRetry.slice(0, 2000),
+          parsed: parsedRetry === null ? null : typeof parsedRetry,
+          parseError: getJsonParseError(rawRetry),
+          validationErrors: parsedRetry ? getReviewValidationErrors(parsedRetry) : [],
+        });
+        throw new Error("Failed to parse review from secondary model response.");
+      }
     }
   }
 

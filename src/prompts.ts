@@ -33,7 +33,7 @@ function buildPlanPromptImpl(task: string, conventions?: string): { system: stri
 
 You are creating a structured plan for the developer. Break the task into an actionable, ordered todo list with clear acceptance criteria for each step.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
 {
   "summary": "one-sentence summary of the overall plan",
   "todo": [
@@ -54,6 +54,7 @@ Rules:
 - Maximum 5-8 todo items
 - Maximum 5 acceptance criteria
 - Respect the project conventions shown above when choosing file names, structure, and patterns
+- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.
 - Do NOT include commentary, explanations, or any text outside the JSON`,
 
     user: `Create a plan for this task:\n\n${task}${conventionsBlock}`,
@@ -183,7 +184,7 @@ ${REVIEW_RUBRIC}
 
 You are provided with a diff and, when available, the full contents of changed files. Use the full file contents to verify context outside the diff; do not flag something as missing if you can see it in the full file.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
 {
   "verdict": "pass" | "needs-work" | "blocked",
   "issues": [
@@ -204,6 +205,7 @@ Rules:
 - Pay attention to pre-review command output (lint/test/typecheck). Failures there are real issues.
 - Memory shows past issues in the same files. If a past issue appears again, flag it as regression.
 - CRITICAL: Only flag issues you can see evidence for. If a property, method, template, or style exists in the provided full file contents, do NOT flag it as missing. When unsure, prefer "pass" or "low" severity over guessing.
+- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure and the review will be discarded.
 - Be strict but fair — flag real problems, not preferences`,
 
     user: `Review this code change. The developer says:\n\n${description}${vcsLine}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
@@ -233,7 +235,8 @@ Return ONLY a JSON object with this exact structure:
   "scripts": ["build: ...", "test: ..."]
 }
 
-Omit optional fields you cannot infer. Be concise and evidence-based. Do not include commentary outside the JSON.`,
+Omit optional fields you cannot infer. Be concise and evidence-based. Do not include commentary outside the JSON.
+CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
 
     user: "Analyze the following project file list and key configuration files, then infer the naming conventions, structure, patterns, and tech stack.",
   };
@@ -247,7 +250,7 @@ function buildSuggestPromptImpl(question: string, conventions?: string): { syste
 
 The developer is asking for advice on a technical choice. Offer practical, balanced options.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
 {
   "approaches": [
     { "title": "approach name", "description": "what it is", "pros": ["pro 1", "pro 2"], "cons": ["con 1"] }
@@ -259,6 +262,7 @@ Rules:
 - Each approach must have at least one pro and one con
 - Be specific — no vague advice like "use a better pattern"
 - Respect the project conventions shown above when evaluating approaches
+- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.
 - Do NOT include commentary outside the JSON`,
 
     user: `I need advice on:\n\n${question}${conventionsBlock}`,
@@ -283,7 +287,7 @@ function buildRecommendPromptImpl(
 
 Advise the developer on what to do next. Be decisive and actionable.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
 {
   "nextStep": "concrete, actionable next step",
   "reasoning": "why this is the right step",
@@ -295,7 +299,8 @@ Rules:
 - The step must be concrete and immediately actionable
 - Reasoning must explain the trade-off
 - Provide 1-2 alternatives that were considered but rejected
-- Respect the project conventions shown above when choosing file names, structure, and patterns`,
+- Respect the project conventions shown above when choosing file names, structure, and patterns
+- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
 
     user: `Here's where I'm at:\n\n${situation}${planContext}${conventionsBlock}\n\nWhat should I do next?`,
   };
@@ -322,7 +327,7 @@ function buildTestPromptImpl(
 
 You are reviewing the latest code change specifically for test coverage, test quality, and test failures.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
 {
   "verdict": "pass" | "needs-work" | "blocked",
   "findings": [
@@ -341,7 +346,8 @@ Rules:
 - "findings" should include failing tests, brittle tests, missing assertions, or tests that do not verify the described behavior
 - "missingTests" should list concrete production files whose changed behavior lacks a corresponding test
 - Be specific and evidence-based; do not invent files or failures not shown in the test output or diff
-- Respect project conventions when suggesting test file names or patterns`,
+- Respect project conventions when suggesting test file names or patterns
+- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
 
     user: `Review this change for test coverage and quality. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${testOutputBlock}${conventionsBlock}`,
   };
@@ -364,7 +370,7 @@ function buildSecurityPromptImpl(
 
 You are performing a security audit of the latest code change. Look for common vulnerabilities and risky patterns.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
 {
   "verdict": "pass" | "needs-review",
   "findings": [
@@ -379,7 +385,8 @@ Rules:
 - Each finding must include a specific, actionable remediation suggestion
 - Categories must be one of: secrets, injection, auth, access-control, validation, dependencies, crypto, logging, other
 - Do not flag speculative risks with no evidence in the provided diff or files
-- Pay special attention to: hardcoded secrets, SQL/command injection, unsafe eval, missing input validation, insecure auth, permissive CORS, dependency upgrades, and logging sensitive data`,
+- Pay special attention to: hardcoded secrets, SQL/command injection, unsafe eval, missing input validation, insecure auth, permissive CORS, dependency upgrades, and logging sensitive data
+- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
 
     user: `Audit this change for security issues. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${conventionsBlock}`,
   };
@@ -422,7 +429,7 @@ Additionally, check:
 7. REVIEW HISTORY: Look at the review_history below. Every plan step should have been reviewed and passed before judging. If ANY step was not reviewed, that is a blocking issue.
 8. COHERENCE: Do all pieces work together? Is there anything contradictory?
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences:
+Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
 {
   "verdict": "pass" | "needs-work" | "blocked",
   "issues": [
@@ -437,7 +444,8 @@ Rules:
 - "consensus" is true only when verdict is "pass" AND issues is empty
 - Provide a real summary that captures the overall quality, not filler
 - If any plan step is incomplete or unreviewed, that's a medium-severity issue
-- Check the review_history — unreviewed steps are blocking`,
+- Check the review_history — unreviewed steps are blocking
+- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
 
     user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}${historyBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}`,
   };
@@ -493,10 +501,32 @@ export function parseJsonResponse<T>(text: string): T | null {
   const cleaned = text.replace(/^\uFEFF/, "").trim();
 
   // Try the whole text first.
+  let parsed: unknown;
   try {
-    return JSON.parse(cleaned) as T;
+    parsed = JSON.parse(cleaned);
   } catch {
-    /* continue */
+    parsed = undefined;
+  }
+
+  // Unwrap common LLM wrapper objects like { "response": "..." }.
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const keys = Object.keys(parsed);
+    if (keys.length === 1) {
+      const key = keys[0];
+      const value = (parsed as Record<string, unknown>)[key];
+      if (typeof value === "string" && ["response", "answer", "result", "content", "data"].includes(key)) {
+        const unwrapped = parseJsonResponse<T>(value);
+        if (unwrapped !== null) return unwrapped;
+      }
+    }
+  }
+
+  if (parsed !== undefined) {
+    try {
+      return parsed as T;
+    } catch {
+      /* continue */
+    }
   }
 
   // Try each markdown code fence.
@@ -732,4 +762,78 @@ export function getJudgeValidationErrors(data: unknown): Array<{ path: string; m
 
 export function getPlanValidationErrors(data: unknown): Array<{ path: string; message: string; value: unknown }> {
   return formatValidationErrors(PlanResultSchema, data);
+}
+
+export function salvageReviewFromMarkdown(raw: string): ReviewResult | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const lower = text.toLowerCase();
+
+  let verdict: ReviewResult["verdict"] = "needs-work";
+  if (/\bpass\b|\bapproved\b|\blooks good\b|\blgtm\b/.test(lower) && !/\bneeds-work\b|\bblocked\b/.test(lower)) {
+    verdict = "pass";
+  } else if (/\bblocked\b|\bcannot work\b|\bbroken\b/.test(lower)) {
+    verdict = "blocked";
+  }
+
+  const suggestions: string[] = [];
+  const bulletRegex = /^[-*•]\s+(.+)$/gim;
+  let match: RegExpExecArray | null;
+  while ((match = bulletRegex.exec(text)) !== null) {
+    const line = match[1].trim();
+    if (line && !line.toLowerCase().startsWith("verdict")) {
+      suggestions.push(line);
+    }
+  }
+
+  // If there are no suggestions but the text has a clear "suggestion" section, capture sentences.
+  if (suggestions.length === 0) {
+    const sentenceRegex = /[A-Z][^.!?]*(?:suggest|recommend|consider|should|could|improvement)[^.!?]*[.!?]/gi;
+    const sentenceMatches = text.match(sentenceRegex);
+    if (sentenceMatches) {
+      suggestions.push(...sentenceMatches.map((s) => s.trim()));
+    }
+  }
+
+  return {
+    verdict,
+    issues: [],
+    suggestions: suggestions.slice(0, 10),
+    consensus: verdict === "pass" && suggestions.length === 0,
+  };
+}
+
+export function salvageJudgeFromMarkdown(raw: string): import("./types.js").JudgeResult | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const lower = text.toLowerCase();
+  let verdict: import("./types.js").JudgeResult["verdict"] = "needs-work";
+  if (/\bpass\b|\bapproved\b|\blooks good\b|\blgtm\b/.test(lower) && !/\bneeds-work\b|\bblocked\b/.test(lower)) {
+    verdict = "pass";
+  } else if (/\bblocked\b|\bcannot work\b|\bbroken\b/.test(lower)) {
+    verdict = "blocked";
+  }
+
+  const suggestions: string[] = [];
+  const bulletRegex = /^[-*•]\s+(.+)$/gim;
+  let match: RegExpExecArray | null;
+  while ((match = bulletRegex.exec(text)) !== null) {
+    const line = match[1].trim();
+    if (line && !line.toLowerCase().startsWith("verdict")) {
+      suggestions.push(line);
+    }
+  }
+
+  const summaryMatch = text.match(/(?:summary|assessment|overall)[\s:]*(.+?)(?=\n\n|$)/is);
+  const summary = summaryMatch?.[1].trim() ?? text.slice(0, 300).trim();
+
+  return {
+    verdict,
+    issues: [],
+    suggestions: suggestions.slice(0, 10),
+    consensus: verdict === "pass" && suggestions.length === 0,
+    summary,
+  };
 }
