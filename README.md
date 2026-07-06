@@ -280,6 +280,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 - **Review memory** — previous issues per file are included so the model knows what was already fixed; memory is reset for each new Pi session
 - **Pre-review commands** — configured lint/test/typecheck output is included in the review prompt
 - **Cost tracking + budget** — estimated spend per call, session total, and optional hard budget
+- **Robust JSON parsing** — unwraps wrapper objects like `{ "response": "..." }`, retries with reasoning off, and falls back to markdown salvage for `plan`, `review`, and `judge` so a prose response does not break the workflow
 - **One round-trip** — secondary model has no tools, pure judgment
 - **Supports OpenAI-compatible and Anthropic APIs** — 13 providers pre-configured
 
