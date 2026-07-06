@@ -25,6 +25,9 @@ import {
   salvageJudgeFromMarkdown,
   salvagePlanFromMarkdown,
   salvageSuggestFromMarkdown,
+  salvageRecommendFromMarkdown,
+  salvageTestFromMarkdown,
+  salvageSecurityFromMarkdown,
   validatePlanResult,
   validateReviewResult,
   validateSuggestResult,
@@ -39,6 +42,8 @@ import {
   getSuggestValidationErrors,
   getRecommendValidationErrors,
   getJudgeValidationErrors,
+  getTestValidationErrors,
+  getSecurityValidationErrors,
 } from "./prompts.js";
 import { calculateReviewBudget, estimateTokens, type ReviewBudget } from "./token-budget.js";
 import { resolveModelInfo } from "./model-registry.js";
@@ -252,36 +257,25 @@ async function executeYooPlan(
   });
 
   progress(3, STAGES.plan, "Parsing plan…");
-  const parsed = parseJsonResponse(raw);
-  let plan = validatePlanResult(parsed);
   const cost = recordCostWithBudget(cwd, usage);
+  const plan = parseStructuredResult(cwd, raw, {
+    label: "Plan",
+    validate: validatePlanResult,
+    validationErrors: getPlanValidationErrors,
+    salvage: (text) => salvagePlanFromMarkdown(text, task),
+    salvageDetails: (salvaged) => ({
+      todoCount: salvaged.todo.length,
+      summary: salvaged.summary.slice(0, 100),
+    }),
+  });
 
   if (!plan) {
-    logEvent(cwd, "debug", "Plan response was not valid JSON; trying markdown salvage", {
-      raw: raw.slice(0, 2000),
-      parseError: getJsonParseError(raw),
-      validationErrors: parsed ? getPlanValidationErrors(parsed) : [],
-    });
-    const salvaged = salvagePlanFromMarkdown(raw, task);
-    if (salvaged) {
-      logEvent(cwd, "info", "Salvaged plan from markdown response", {
-        todoCount: salvaged.todo.length,
-        summary: salvaged.summary.slice(0, 100),
-      });
-      plan = salvaged;
-    } else {
-      logEvent(cwd, "warn", "Failed to parse plan from secondary model response", {
-        raw: raw.slice(0, 2000),
-        parseError: getJsonParseError(raw),
-        validationErrors: parsed ? getPlanValidationErrors(parsed) : [],
-      });
-      return {
-        action: "plan",
-        error: "Failed to parse plan from secondary model response.",
-        plan: { todo: [task], acceptanceCriteria: [], summary: raw.slice(0, 200) },
-        cost,
-      };
-    }
+    return {
+      action: "plan",
+      error: "Failed to parse plan from secondary model response.",
+      plan: { todo: [task], acceptanceCriteria: [], summary: raw.slice(0, 200) },
+      cost,
+    };
   }
 
   setPlan(cwd, plan);
@@ -742,22 +736,27 @@ async function executeYooTest(
   });
 
   progress(7, STAGES.test, "Parsing test result…");
-  const parsed = parseJsonResponse(raw);
-  const test = validateTestResult(parsed);
+  const cost = recordCostWithBudget(cwd, usage);
+  const test = parseStructuredResult(cwd, raw, {
+    label: "Test result",
+    validate: validateTestResult,
+    validationErrors: getTestValidationErrors,
+    salvage: salvageTestFromMarkdown,
+    salvageDetails: (salvaged) => ({
+      verdict: salvaged.verdict,
+      findingCount: salvaged.findings.length,
+      missingTestCount: salvaged.missingTests.length,
+    }),
+  });
   if (!test) {
-    logEvent(cwd, "warn", "Failed to parse test result from secondary model response", {
-      raw: raw.slice(0, 2000),
-      parsed: parsed === null ? null : typeof parsed,
-      parseError: getJsonParseError(raw),
-    });
     return {
       action: "test",
       error: "Failed to parse test analysis from secondary model response.",
-      cost: recordCostWithBudget(cwd, usage),
+      cost,
     };
   }
 
-  return { action: "test", test, cost: recordCostWithBudget(cwd, usage) };
+  return { action: "test", test, cost };
 }
 
 async function executeYooSecurity(
@@ -844,22 +843,26 @@ async function executeYooSecurity(
   });
 
   progress(5, STAGES.security, "Parsing security audit…");
-  const parsed = parseJsonResponse(raw);
-  const security = validateSecurityResult(parsed);
+  const cost = recordCostWithBudget(cwd, usage);
+  const security = parseStructuredResult(cwd, raw, {
+    label: "Security result",
+    validate: validateSecurityResult,
+    validationErrors: getSecurityValidationErrors,
+    salvage: salvageSecurityFromMarkdown,
+    salvageDetails: (salvaged) => ({
+      verdict: salvaged.verdict,
+      findingCount: salvaged.findings.length,
+    }),
+  });
   if (!security) {
-    logEvent(cwd, "warn", "Failed to parse security result from secondary model response", {
-      raw: raw.slice(0, 2000),
-      parsed: parsed === null ? null : typeof parsed,
-      parseError: getJsonParseError(raw),
-    });
     return {
       action: "security",
       error: "Failed to parse security audit from secondary model response.",
-      cost: recordCostWithBudget(cwd, usage),
+      cost,
     };
   }
 
-  return { action: "security", security, cost: recordCostWithBudget(cwd, usage) };
+  return { action: "security", security, cost };
 }
 
 async function executeYooSuggest(
@@ -890,36 +893,20 @@ async function executeYooSuggest(
   });
 
   progress(3, STAGES.suggest, "Parsing suggestions…");
-  const parsed = parseJsonResponse(raw);
-  let suggest = validateSuggestResult(parsed);
   const cost = recordCostWithBudget(cwd, usage);
-
+  const suggest = parseStructuredResult(cwd, raw, {
+    label: "Suggestions",
+    validate: validateSuggestResult,
+    validationErrors: getSuggestValidationErrors,
+    salvage: salvageSuggestFromMarkdown,
+    salvageDetails: (salvaged) => ({ approachCount: salvaged.approaches.length }),
+  });
   if (!suggest) {
-    logEvent(cwd, "debug", "Suggestions response was not valid JSON; trying markdown salvage", {
-      raw: raw.slice(0, 2000),
-      parsed: parsed === null ? null : typeof parsed,
-      parseError: getJsonParseError(raw),
-      validationErrors: parsed ? getSuggestValidationErrors(parsed) : [],
-    });
-    const salvaged = salvageSuggestFromMarkdown(raw);
-    if (salvaged) {
-      logEvent(cwd, "info", "Salvaged suggestions from markdown response", {
-        approachCount: salvaged.approaches.length,
-      });
-      suggest = salvaged;
-    } else {
-      logEvent(cwd, "warn", "Failed to parse suggestions from secondary model response", {
-        raw: raw.slice(0, 2000),
-        parsed: parsed === null ? null : typeof parsed,
-        parseError: getJsonParseError(raw),
-        validationErrors: parsed ? getSuggestValidationErrors(parsed) : [],
-      });
-      return {
-        action: "suggest",
-        error: "Failed to parse suggestions from secondary model response.",
-        cost,
-      };
-    }
+    return {
+      action: "suggest",
+      error: "Failed to parse suggestions from secondary model response.",
+      cost,
+    };
   }
 
   return { action: "suggest", suggest, cost };
@@ -955,26 +942,27 @@ async function executeYooRecommend(
   });
 
   progress(3, STAGES.recommend, "Parsing recommendation…");
-  const parsed = parseJsonResponse(raw);
-  const recommend = validateRecommendResult(parsed);
+  const cost = recordCostWithBudget(cwd, usage);
+  const recommend = parseStructuredResult(cwd, raw, {
+    label: "Recommendation",
+    validate: validateRecommendResult,
+    validationErrors: getRecommendValidationErrors,
+    salvage: salvageRecommendFromMarkdown,
+    salvageDetails: (salvaged) => ({
+      nextStep: salvaged.nextStep.slice(0, 100),
+      alternativeCount: salvaged.alternatives.length,
+    }),
+  });
 
   if (!recommend) {
-    const parseError = getJsonParseError(raw);
-    const validationErrors = parsed ? getRecommendValidationErrors(parsed) : [];
-    logEvent(cwd, "warn", "Failed to parse recommendation from secondary model response", {
-      raw: raw.slice(0, 2000),
-      parsed: parsed === null ? null : typeof parsed,
-      parseError,
-      validationErrors,
-    });
     return {
       action: "recommend",
       error: "Failed to parse recommendation from secondary model response.",
-      cost: recordCostWithBudget(cwd, usage),
+      cost,
     };
   }
 
-  return { action: "recommend", recommend, cost: recordCostWithBudget(cwd, usage) };
+  return { action: "recommend", recommend, cost };
 }
 
 async function executeYooJudge(
@@ -1018,37 +1006,23 @@ async function executeYooJudge(
   });
 
   progress(3, STAGES.judge, "Parsing judgment…");
-  const parsed = parseJsonResponse(raw);
-  let judge = validateJudgeResult(parsed);
   const cost = recordCostWithBudget(cwd, usage);
-
+  const judge = parseStructuredResult(cwd, raw, {
+    label: "Judgment",
+    validate: validateJudgeResult,
+    validationErrors: getJudgeValidationErrors,
+    salvage: salvageJudgeFromMarkdown,
+    salvageDetails: (salvaged) => ({
+      verdict: salvaged.verdict,
+      suggestionCount: salvaged.suggestions.length,
+    }),
+  });
   if (!judge) {
-    logEvent(cwd, "debug", "Judgment response was not valid JSON; trying markdown salvage", {
-      raw: raw.slice(0, 2000),
-      parsed: parsed === null ? null : typeof parsed,
-      parseError: getJsonParseError(raw),
-      validationErrors: parsed ? getJudgeValidationErrors(parsed) : [],
-    });
-    const salvaged = salvageJudgeFromMarkdown(raw);
-    if (salvaged) {
-      logEvent(cwd, "info", "Salvaged judgment from markdown response", {
-        verdict: salvaged.verdict,
-        suggestionCount: salvaged.suggestions.length,
-      });
-      judge = salvaged;
-    } else {
-      logEvent(cwd, "warn", "Failed to parse judgment from secondary model response", {
-        raw: raw.slice(0, 2000),
-        parsed: parsed === null ? null : typeof parsed,
-        parseError: getJsonParseError(raw),
-        validationErrors: parsed ? getJudgeValidationErrors(parsed) : [],
-      });
-      return {
-        action: "judge",
-        error: "Failed to parse judgment from secondary model response.",
-        cost,
-      };
-    }
+    return {
+      action: "judge",
+      error: "Failed to parse judgment from secondary model response.",
+      cost,
+    };
   }
 
   return { action: "judge", judge, cost };
@@ -1167,6 +1141,41 @@ async function executeYooScan(
 function recordCostWithBudget(cwd: string, usage: UsageCost): UsageCost {
   const config = loadHeyyooConfig(cwd);
   return recordCost(cwd, usage, config.costBudgetUsd);
+}
+
+function parseStructuredResult<T>(
+  cwd: string,
+  raw: string,
+  options: {
+    label: string;
+    validate: (data: unknown) => T | null;
+    validationErrors: (data: unknown) => Array<{ path: string; message: string; value: unknown }>;
+    salvage?: (raw: string) => T | null;
+    salvageDetails?: (value: T) => Record<string, unknown>;
+  },
+): T | null {
+  const parsed = parseJsonResponse(raw);
+  const result = options.validate(parsed);
+  if (result) return result;
+
+  const details = {
+    raw: raw.slice(0, 2000),
+    parsed: parsed === null ? null : typeof parsed,
+    parseError: getJsonParseError(raw),
+    validationErrors: parsed ? options.validationErrors(parsed) : [],
+  };
+  logEvent(cwd, "debug", `${options.label} response was not valid JSON; trying markdown salvage`, details);
+
+  const salvaged = options.salvage?.(raw) ?? null;
+  if (salvaged) {
+    logEvent(cwd, "info", `Salvaged ${options.label.toLowerCase()} from markdown response`, {
+      ...(options.salvageDetails?.(salvaged) ?? {}),
+    });
+    return salvaged;
+  }
+
+  logEvent(cwd, "warn", `Failed to parse ${options.label.toLowerCase()} from secondary model response`, details);
+  return null;
 }
 
 function mergeUsageCost(a: UsageCost, b: UsageCost): UsageCost {
@@ -1317,32 +1326,19 @@ async function runReviewBatch(input: ReviewBatchInput): Promise<{ review: Review
     task: "review",
   });
 
-  const parsed = parseJsonResponse(raw);
-  let review = validateReviewResult(parsed);
+  const review = parseStructuredResult(cwd, raw, {
+    label: "Review",
+    validate: validateReviewResult,
+    validationErrors: getReviewValidationErrors,
+    salvage: salvageReviewFromMarkdown,
+    salvageDetails: (salvaged) => ({
+      verdict: salvaged.verdict,
+      suggestionCount: salvaged.suggestions.length,
+    }),
+  });
 
   if (!review) {
-    logEvent(cwd, "debug", "Review response was not valid JSON; trying markdown salvage", {
-      raw: raw.slice(0, 2000),
-      parsed: parsed === null ? null : typeof parsed,
-      parseError: getJsonParseError(raw),
-      validationErrors: parsed ? getReviewValidationErrors(parsed) : [],
-    });
-    const salvaged = salvageReviewFromMarkdown(raw);
-    if (salvaged) {
-      logEvent(cwd, "info", "Salvaged review from markdown response", {
-        verdict: salvaged.verdict,
-        suggestionCount: salvaged.suggestions.length,
-      });
-      review = salvaged;
-    } else {
-      logEvent(cwd, "warn", "Failed to parse review from secondary model response", {
-        raw: raw.slice(0, 2000),
-        parsed: parsed === null ? null : typeof parsed,
-        parseError: getJsonParseError(raw),
-        validationErrors: parsed ? getReviewValidationErrors(parsed) : [],
-      });
-      throw new Error("Failed to parse review from secondary model response.");
-    }
+    throw new Error("Failed to parse review from secondary model response.");
   }
 
   return { review, usage };

@@ -6,6 +6,9 @@ import {
   salvageJudgeFromMarkdown,
   salvagePlanFromMarkdown,
   salvageSuggestFromMarkdown,
+  salvageRecommendFromMarkdown,
+  salvageTestFromMarkdown,
+  salvageSecurityFromMarkdown,
   validateReviewResult,
   validateJudgeResult,
   validateConventionsResult,
@@ -13,10 +16,12 @@ import {
   validateSecurityResult,
   buildPlanPrompt,
   buildAdaptiveReviewPrompt,
+  buildSuggestPrompt,
   buildScanPrompt,
   buildRecommendPrompt,
   buildTestPrompt,
   buildSecurityPrompt,
+  buildJudgePrompt,
   clearPromptCache,
 } from "./prompts.js";
 
@@ -176,6 +181,43 @@ Use Provider B for cost.
   });
 });
 
+describe("additional markdown salvage", () => {
+  it("extracts a recommendation from markdown", () => {
+    const result = salvageRecommendFromMarkdown(`## Next Step
+Ship the parser change.
+
+## Reasoning
+It keeps the existing contract.
+
+## Alternatives
+- Make markdown primary
+- Disable thinking`);
+    assert.equal(result?.nextStep, "Ship the parser change.");
+    assert.match(result?.reasoning ?? "", /contract/);
+    assert.equal(result?.alternatives.length, 2);
+  });
+
+  it("extracts test findings from markdown", () => {
+    const result = salvageTestFromMarkdown(`Verdict: needs-work
+
+- Missing regression test for empty input
+
+Missing tests:
+- Add parser empty-input coverage`);
+    assert.equal(result?.verdict, "needs-work");
+    assert.ok(result!.findings.length > 0);
+    assert.equal(result?.missingTests.length, 1);
+  });
+
+  it("extracts security findings from markdown", () => {
+    const result = salvageSecurityFromMarkdown(`Verdict: needs-review
+
+- Possible auth bypass in route guard`);
+    assert.equal(result?.verdict, "needs-review");
+    assert.equal(result?.findings[0]?.category, "auth");
+  });
+});
+
 describe("validateReviewResult", () => {
   it("derives consensus only from pass with no issues", () => {
     assert.equal(
@@ -321,6 +363,27 @@ describe("prompt caching", () => {
     assert.ok(prompt.system.includes("## Result"));
     assert.ok(prompt.system.includes("```json"));
     assert.ok(prompt.system.includes("Do not include any text after the closing JSON fence."));
+  });
+
+  it("uses parseable JSON examples in structured prompt fences", () => {
+    const prompts = [
+      buildPlanPrompt("task", "conventions"),
+      buildAdaptiveReviewPrompt("desc", "diff", [], {}),
+      buildScanPrompt(),
+      buildSuggestPrompt("question", "conventions"),
+      buildRecommendPrompt("situation", [], "conventions"),
+      buildTestPrompt("desc", "diff", [], "tests ok", "conventions"),
+      buildSecurityPrompt("desc", "diff", [], "conventions"),
+      buildJudgePrompt("desc", [], [], "history", "conventions"),
+    ];
+
+    for (const prompt of prompts) {
+      const fences = [...prompt.system.matchAll(/```json\s*([\s\S]*?)```/g)];
+      assert.ok(fences.length > 0);
+      for (const fence of fences) {
+        assert.doesNotThrow(() => JSON.parse(fence[1].trim()));
+      }
+    }
   });
 
   it("returns distinct objects so mutations do not affect the cache", () => {

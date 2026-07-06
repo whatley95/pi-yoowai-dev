@@ -199,15 +199,17 @@ ${REVIEW_RUBRIC}
 You are provided with a diff and, when available, the full contents of changed files. Use the full file contents to verify context outside the diff; do not flag something as missing if you can see it in the full file.
 
 ${finalJsonBlock(`{
-  "verdict": "pass" | "needs-work" | "blocked",
+  "verdict": "needs-work",
   "issues": [
-    { "severity": "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
+    { "severity": "medium", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
   ],
   "suggestions": ["improvement 1", "improvement 2"],
-  "consensus": true | false
+  "consensus": false
 }`)}
 
 Rules:
+- "verdict" must be one of: "pass", "needs-work", "blocked"
+- issue "severity" must be one of: "high", "medium", "low"
 - "verdict" is "pass" only if ALL rubric categories are clean — no issues at any severity
 - "verdict" is "blocked" if the code is fundamentally broken or cannot work as described
 - "verdict" is "needs-work" for anything in between
@@ -333,9 +335,9 @@ function buildTestPromptImpl(
 You are reviewing the latest code change specifically for test coverage, test quality, and test failures.
 
 ${finalJsonBlock(`{
-  "verdict": "pass" | "needs-work" | "blocked",
+  "verdict": "needs-work",
   "findings": [
-    { "severity": "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it", "category": "failing-test" | "missing-test" | "test-quality" | "coverage" }
+    { "severity": "medium", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it", "category": "missing-test" }
   ],
   "missingTests": [
     { "file": "src/feature.ts", "reason": "explain what behavior needs a test" }
@@ -344,6 +346,9 @@ ${finalJsonBlock(`{
 }`)}
 
 Rules:
+- "verdict" must be one of: "pass", "needs-work", "blocked"
+- finding "severity" must be one of: "high", "medium", "low"
+- finding "category" must be one of: "failing-test", "missing-test", "test-quality", "coverage"
 - "verdict" is "pass" only if the diff has adequate tests and no failing tests
 - "verdict" is "blocked" if tests are failing in a way that prevents merging
 - "verdict" is "needs-work" for missing tests or low-quality tests that should be improved
@@ -374,14 +379,17 @@ function buildSecurityPromptImpl(
 You are performing a security audit of the latest code change. Look for common vulnerabilities and risky patterns.
 
 ${finalJsonBlock(`{
-  "verdict": "pass" | "needs-review",
+  "verdict": "needs-review",
   "findings": [
-    { "severity": "critical" | "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it", "category": "secrets" | "injection" | "auth" | "access-control" | "validation" | "dependencies" | "crypto" | "logging" | "other" }
+    { "severity": "medium", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it", "category": "validation" }
   ],
   "summary": "one-paragraph security assessment"
 }`)}
 
 Rules:
+- "verdict" must be one of: "pass", "needs-review"
+- finding "severity" must be one of: "critical", "high", "medium", "low"
+- finding "category" must be one of: "secrets", "injection", "auth", "access-control", "validation", "dependencies", "crypto", "logging", "other"
 - "verdict" is "pass" only if no findings are high or critical
 - "verdict" is "needs-review" if any medium+ finding exists
 - Each finding must include a specific, actionable remediation suggestion
@@ -431,16 +439,18 @@ Additionally, check:
 8. COHERENCE: Do all pieces work together? Is there anything contradictory?
 
 ${finalJsonBlock(`{
-  "verdict": "pass" | "needs-work" | "blocked",
+  "verdict": "needs-work",
   "issues": [
-    { "severity": "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
+    { "severity": "medium", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
   ],
   "suggestions": ["improvement 1"],
-  "consensus": true | false,
+  "consensus": false,
   "summary": "one-paragraph holistic assessment of the completed work"
 }`)}
 
 Rules:
+- "verdict" must be one of: "pass", "needs-work", "blocked"
+- issue "severity" must be one of: "high", "medium", "low"
 - "consensus" is true only when verdict is "pass" AND issues is empty
 - Provide a real summary that captures the overall quality, not filler
 - If any plan step is incomplete or unreviewed, that's a medium-severity issue
@@ -776,6 +786,34 @@ export function getPlanValidationErrors(data: unknown): Array<{ path: string; me
   return formatValidationErrors(PlanResultSchema, data);
 }
 
+export function getTestValidationErrors(data: unknown): Array<{ path: string; message: string; value: unknown }> {
+  return formatValidationErrors(TestResultSchema, data);
+}
+
+export function getSecurityValidationErrors(data: unknown): Array<{ path: string; message: string; value: unknown }> {
+  return formatValidationErrors(SecurityResultSchema, data);
+}
+
+function markdownBullets(text: string): string[] {
+  const bullets: string[] = [];
+  const bulletRegex = /^[-*•]\s+(.+)$/gim;
+  let match: RegExpExecArray | null;
+  while ((match = bulletRegex.exec(text)) !== null) {
+    const line = match[1].trim();
+    if (line) bullets.push(line);
+  }
+  return bullets;
+}
+
+function firstMarkdownParagraph(text: string): string {
+  return (
+    text
+      .split(/\n\s*\n/)
+      .map((p) => p.replace(/^#+\s+/gm, "").trim())
+      .find((p) => p.length > 0) ?? ""
+  );
+}
+
 export function salvageReviewFromMarkdown(raw: string): ReviewResult | null {
   const text = raw.trim();
   if (!text) return null;
@@ -910,6 +948,93 @@ export function salvageSuggestFromMarkdown(raw: string): import("./types.js").Su
 
   if (approaches.length === 0) return null;
   return { approaches };
+}
+
+export function salvageRecommendFromMarkdown(raw: string): import("./types.js").RecommendResult | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const bullets = markdownBullets(text);
+  const nextStepMatch = text.match(/(?:next\s*step|recommend(?:ation)?)[\s:]*\n?(.+?)(?=\n\n|$)/is);
+  const reasoningMatch = text.match(/(?:reasoning|why)[\s:]*\n?(.+?)(?=\n\n|$)/is);
+  const alternativesMatch = text.match(/(?:alternatives?|other options?)[\s:]*\n+([\s\S]*?)(?=\n#+\s|\n\n##|$)/i);
+  const nextStep = nextStepMatch?.[1].replace(/^[-*•]\s+/, "").trim() || bullets[0] || firstMarkdownParagraph(text);
+  const reasoning = reasoningMatch?.[1].trim() || firstMarkdownParagraph(text) || nextStep;
+  const alternatives = alternativesMatch ? markdownBullets(alternativesMatch[1]) : bullets.slice(1, 3);
+
+  if (!nextStep) return null;
+  return {
+    nextStep: nextStep.slice(0, 500),
+    reasoning: reasoning.slice(0, 1000),
+    alternatives: alternatives.slice(0, 3),
+  };
+}
+
+export function salvageTestFromMarkdown(raw: string): import("./types.js").TestResult | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const lower = text.toLowerCase();
+  let verdict: import("./types.js").TestResult["verdict"] = "needs-work";
+  if (/\bblocked\b|\bfailing\b|\bfails\b|\bcannot merge\b/.test(lower)) {
+    verdict = "blocked";
+  } else if (/\bpass\b|\badequate\b|\bcovered\b/.test(lower) && !/\bneeds-work\b|\bmissing\b|\bfailing\b/.test(lower)) {
+    verdict = "pass";
+  }
+
+  const bullets = markdownBullets(text);
+  const missingSection = text.match(/(?:missing\s*tests?)[\s:]*\n+([\s\S]*?)(?=\n#+\s|\n\n##|$)/i);
+  const missingTests = (missingSection ? markdownBullets(missingSection[1]) : []).map((reason) => ({ reason }));
+  const findings = bullets
+    .filter((b) => !missingTests.some((m) => m.reason === b))
+    .slice(0, 10)
+    .map((issue) => ({
+      severity: verdict === "blocked" ? ("high" as const) : ("medium" as const),
+      issue,
+      suggestion: "Address this test finding.",
+      category: lower.includes("failing") || lower.includes("fails") ? "failing-test" : "test-quality",
+    }));
+
+  return {
+    verdict,
+    findings,
+    missingTests: missingTests.slice(0, 10),
+    summary: firstMarkdownParagraph(text).slice(0, 1000) || text.slice(0, 300),
+  };
+}
+
+export function salvageSecurityFromMarkdown(raw: string): import("./types.js").SecurityResult | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const lower = text.toLowerCase();
+  const hasSeriousFinding = /\bcritical\b|\bhigh\b|\bvulnerab|\binjection\b|\bsecret\b|\bauth\b/.test(lower);
+  const verdict: import("./types.js").SecurityResult["verdict"] =
+    /\bpass\b|\bno findings\b|\bno security issues\b/.test(lower) && !hasSeriousFinding ? "pass" : "needs-review";
+  const findings = markdownBullets(text)
+    .slice(0, 10)
+    .map((issue) => ({
+      severity: /critical/i.test(issue)
+        ? ("critical" as const)
+        : hasSeriousFinding
+          ? ("medium" as const)
+          : ("low" as const),
+      issue,
+      suggestion: "Review and remediate this security finding.",
+      category: lower.includes("secret")
+        ? "secrets"
+        : lower.includes("injection")
+          ? "injection"
+          : lower.includes("auth")
+            ? "auth"
+            : "other",
+    }));
+
+  return {
+    verdict,
+    findings,
+    summary: firstMarkdownParagraph(text).slice(0, 1000) || text.slice(0, 300),
+  };
 }
 
 export function salvagePlanFromMarkdown(raw: string, fallbackTask: string): import("./types.js").PlanResult | null {
