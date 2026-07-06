@@ -133,6 +133,8 @@ Explain a code snippet, error message, diff, or file with the secondary model.
 | `yoo_explain({ target: "src/auth.ts" })` | Explains the purpose and structure of a file |
 | `yoo_explain({ target: "function verifySession", files: ["src/auth.ts"] })` | Explains a specific function with full file context |
 
+`yoo_explain` is read-only — it does not edit files. If you pass a merge conflict, it explains the conflicting versions and suggests resolutions, but it does not claim the files are resolved.
+
 ### `yoo_learn` tool
 
 Record a persistent project fact that yoo will remember across sessions.

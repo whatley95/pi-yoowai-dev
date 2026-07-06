@@ -476,6 +476,9 @@ Rules:
 - Break down the important parts clearly
 - If this is an error, explain the root cause and how to fix it
 - If this is code, explain the intent, inputs, outputs, and any non-obvious behavior
+- If this is a diff or merge conflict, explain the conflicting versions and trade-offs. Do NOT claim the conflict is resolved or that files have been edited.
+- Phrase any recommendations as suggestions, not as completed actions.
+- Do NOT include a "Next Steps" section that implies work has already been done.
 - Reference specific files, functions, or line numbers when available
 - Do NOT include commentary outside the explanation`,
 
@@ -836,6 +839,68 @@ export function salvageJudgeFromMarkdown(raw: string): import("./types.js").Judg
     consensus: verdict === "pass" && suggestions.length === 0,
     summary,
   };
+}
+
+export function salvageSuggestFromMarkdown(raw: string): import("./types.js").SuggestResult | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const approaches: import("./types.js").Approach[] = [];
+  const headingRegex = /^#{2,3}\s+(.+)$/gm;
+  const headings: Array<{ title: string; index: number }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = headingRegex.exec(text)) !== null) {
+    headings.push({ title: match[1].trim(), index: match.index });
+  }
+
+  if (headings.length > 0) {
+    for (let i = 0; i < headings.length; i++) {
+      const start = headings[i].index + headings[i].title.length + 1;
+      const end = i < headings.length - 1 ? headings[i + 1].index : text.length;
+      const section = text.slice(start, end).trim();
+      const paragraphs = section.split(/\n\s*\n/).map((p) => p.trim());
+      const description = paragraphs[0] ?? "";
+
+      const pros: string[] = [];
+      const cons: string[] = [];
+      const bulletRegex = /^[-*]\s+(.+)$/gm;
+      let bullet: RegExpExecArray | null;
+      while ((bullet = bulletRegex.exec(section)) !== null) {
+        const line = bullet[1].trim();
+        const lower = line.toLowerCase();
+        if (lower.startsWith("con") || lower.startsWith("downside") || lower.startsWith("disadvantage")) {
+          cons.push(line);
+        } else {
+          pros.push(line);
+        }
+      }
+
+      approaches.push({
+        title: headings[i].title,
+        description,
+        pros: pros.slice(0, 5),
+        cons: cons.slice(0, 5),
+      });
+    }
+  } else {
+    const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim());
+    const description = paragraphs[0] ?? text.slice(0, 300);
+    const bullets: string[] = [];
+    const bulletRegex = /^[-*]\s+(.+)$/gm;
+    let bullet: RegExpExecArray | null;
+    while ((bullet = bulletRegex.exec(text)) !== null) {
+      bullets.push(bullet[1].trim());
+    }
+    approaches.push({
+      title: "Suggested approach",
+      description,
+      pros: bullets.slice(0, 5),
+      cons: [],
+    });
+  }
+
+  if (approaches.length === 0) return null;
+  return { approaches };
 }
 
 export function salvagePlanFromMarkdown(raw: string, fallbackTask: string): import("./types.js").PlanResult | null {

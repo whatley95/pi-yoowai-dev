@@ -9,6 +9,23 @@ export function createProgressReporter(
   onUpdate?: (update: unknown) => void,
 ): ProgressReporter {
   return (stage: number, total: number, message: string) => {
+    if (stage >= total) {
+      clearYooStatus(ctx);
+      if (onUpdate) {
+        onUpdate({
+          content: [{ type: "text", text: message }],
+          details: {
+            action,
+            inProgress: false,
+            progressMessage: message,
+            stage,
+            total,
+          },
+        });
+      }
+      return;
+    }
+
     if (onUpdate) {
       onUpdate({
         content: [{ type: "text", text: message }],

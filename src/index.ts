@@ -24,6 +24,7 @@ import {
   salvageReviewFromMarkdown,
   salvageJudgeFromMarkdown,
   salvagePlanFromMarkdown,
+  salvageSuggestFromMarkdown,
   validatePlanResult,
   validateReviewResult,
   validateSuggestResult,
@@ -895,23 +896,54 @@ async function executeYooSuggest(
 
   progress(3, STAGES.suggest, "Parsing suggestions…");
   const parsed = parseJsonResponse(raw);
-  const suggest = validateSuggestResult(parsed);
+  let suggest = validateSuggestResult(parsed);
+  let cost = recordCostWithBudget(cwd, usage);
 
   if (!suggest) {
-    logEvent(cwd, "warn", "Failed to parse suggestions from secondary model response", {
+    logEvent(cwd, "warn", "Failed to parse suggestions from secondary model response, retrying with reasoning off", {
       raw: raw.slice(0, 2000),
       parsed: parsed === null ? null : typeof parsed,
       parseError: getJsonParseError(raw),
       validationErrors: parsed ? getSuggestValidationErrors(parsed) : [],
     });
-    return {
-      action: "suggest",
-      error: "Failed to parse suggestions from secondary model response.",
-      cost: recordCostWithBudget(cwd, usage),
-    };
+    progress(3, STAGES.suggest, "Parsing failed, retrying with reasoning off…");
+    const { content: rawRetry, usage: usageRetry } = await callSecondaryModel(
+      modelConfig.provider,
+      modelConfig.id,
+      system,
+      `${user}\n\nCRITICAL: Your previous response could not be parsed. Return ONLY the required JSON object directly, with no markdown fences, no explanations, no wrapper objects (like { "response": "..." }), and no extra text.`,
+      { signal, thinking: "off", cwd, sessionManager, task: "suggest" },
+    );
+    const parsedRetry = parseJsonResponse(rawRetry);
+    const suggestRetry = validateSuggestResult(parsedRetry);
+    if (suggestRetry) {
+      suggest = suggestRetry;
+      cost = mergeUsageCost(cost, recordCostWithBudget(cwd, usageRetry));
+    } else {
+      const salvaged = salvageSuggestFromMarkdown(rawRetry) ?? salvageSuggestFromMarkdown(raw);
+      if (salvaged) {
+        logEvent(cwd, "info", "Salvaged suggestions from markdown response", {
+          approachCount: salvaged.approaches.length,
+        });
+        suggest = salvaged;
+        cost = mergeUsageCost(cost, recordCostWithBudget(cwd, usageRetry));
+      } else {
+        logEvent(cwd, "warn", "Failed to parse suggestions from secondary model response after retry", {
+          raw: rawRetry.slice(0, 2000),
+          parsed: parsedRetry === null ? null : typeof parsedRetry,
+          parseError: getJsonParseError(rawRetry),
+          validationErrors: parsedRetry ? getSuggestValidationErrors(parsedRetry) : [],
+        });
+        return {
+          action: "suggest",
+          error: "Failed to parse suggestions from secondary model response.",
+          cost,
+        };
+      }
+    }
   }
 
-  return { action: "suggest", suggest, cost: recordCostWithBudget(cwd, usage) };
+  return { action: "suggest", suggest, cost };
 }
 
 async function executeYooRecommend(

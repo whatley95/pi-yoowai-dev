@@ -5,6 +5,7 @@ import {
   salvageReviewFromMarkdown,
   salvageJudgeFromMarkdown,
   salvagePlanFromMarkdown,
+  salvageSuggestFromMarkdown,
   validateReviewResult,
   validateJudgeResult,
   validateConventionsResult,
@@ -124,6 +125,30 @@ Acceptance criteria:
     const result = salvagePlanFromMarkdown("Just do the thing.", "fallback task");
     assert.equal(result?.todo.length, 1);
     assert.equal(result?.todo[0], "fallback task");
+  });
+});
+
+describe("salvageSuggestFromMarkdown", () => {
+  it("extracts approaches from headings", () => {
+    const text = `## Option A
+Use Provider A for speed.
+- Pro: fast
+- Con: expensive
+
+## Option B
+Use Provider B for cost.
+- Pro: cheap`;
+    const result = salvageSuggestFromMarkdown(text);
+    assert.equal(result?.approaches.length, 2);
+    assert.equal(result?.approaches[0].title, "Option A");
+    assert.ok(result?.approaches[0].cons.length > 0);
+  });
+
+  it("falls back to single approach when no headings", () => {
+    const result = salvageSuggestFromMarkdown("Try this.\n- It is simple\n- It is fast");
+    assert.equal(result?.approaches.length, 1);
+    assert.equal(result?.approaches[0].title, "Suggested approach");
+    assert.equal(result?.approaches[0].pros.length, 2);
   });
 });
 
