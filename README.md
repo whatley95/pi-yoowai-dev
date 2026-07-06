@@ -57,6 +57,8 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
 
 If no secondary model is configured, yoo returns an error. Configure `pi-heyyoo.secondary` in settings.json or use `/yoo-model` to pick one interactively. You can also set a different model per yoo tool with `taskModels` or `/yoo-model`.
 
+Structured tools let the secondary model write brief Markdown analysis, but the final machine-readable result must be a fenced JSON block under `## Result`. The configured `thinking` level is passed through unchanged for each tool, including per-tool `taskModels` overrides; yoo does not silently cap or turn off thinking after parse failures.
+
 ### Options
 
 | Option                         | Type                                    | Description                                                                                                                         |
@@ -282,7 +284,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 - **Review memory** — previous issues per file are included so the model knows what was already fixed; memory is reset for each new Pi session
 - **Pre-review commands** — configured lint/test/typecheck output is included in the review prompt
 - **Cost tracking + budget** — estimated spend per call, session total, and optional hard budget
-- **Robust JSON parsing** — unwraps wrapper objects like `{ "response": "..." }`, retries with reasoning off, and falls back to markdown salvage for `plan`, `review`, and `judge` so a prose response does not break the workflow
+- **Robust JSON parsing** — accepts Markdown analysis followed by a `## Result` fenced JSON block, unwraps wrapper objects like `{ "response": "..." }`, and falls back to markdown salvage without changing the configured thinking level
 - **One round-trip** — secondary model has no tools, pure judgment
 - **Supports OpenAI-compatible and Anthropic APIs** — 13 providers pre-configured
 

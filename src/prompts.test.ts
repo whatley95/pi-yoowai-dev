@@ -31,6 +31,30 @@ describe("parseJsonResponse", () => {
     assert.deepEqual(result, { foo: "bar" });
   });
 
+  it("parses the explicit markdown result JSON block", () => {
+    const result = parseJsonResponse(`# Analysis
+This is the reasoning.
+
+## Result
+\`\`\`json
+{"foo": "bar"}
+\`\`\``);
+    assert.deepEqual(result, { foo: "bar" });
+  });
+
+  it("prefers the explicit result block over earlier valid JSON examples", () => {
+    const result = parseJsonResponse(`Example:
+\`\`\`json
+{"foo": "example"}
+\`\`\`
+
+## Result
+\`\`\`json
+{"foo": "actual"}
+\`\`\``);
+    assert.deepEqual(result, { foo: "actual" });
+  });
+
   it("parses JSON wrapped in prose", () => {
     const result = parseJsonResponse('Here is the result:\n{"foo": "bar"}\nHope that helps!');
     assert.deepEqual(result, { foo: "bar" });
@@ -289,6 +313,14 @@ describe("prompt caching", () => {
     const b = buildPlanPrompt("task", "conventions");
     assert.equal(a.system, b.system);
     assert.equal(a.user, b.user);
+  });
+
+  it("asks structured tools for markdown ending with fenced JSON", () => {
+    const prompt = buildPlanPrompt("task", "conventions");
+    assert.ok(prompt.system.includes("You may write brief Markdown analysis first."));
+    assert.ok(prompt.system.includes("## Result"));
+    assert.ok(prompt.system.includes("```json"));
+    assert.ok(prompt.system.includes("Do not include any text after the closing JSON fence."));
   });
 
   it("returns distinct objects so mutations do not affect the cache", () => {

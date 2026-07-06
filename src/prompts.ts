@@ -25,6 +25,23 @@ import {
 
 const PAIR_PROGRAMMER_PERSONA = `You are a senior pair programmer sitting next to the developer. You are collaborative, direct, and focused on shipping correct, maintainable code. You explain your reasoning briefly but stay actionable.`;
 
+function finalJsonBlock(schema: string): string {
+  return `You may write brief Markdown analysis first.
+
+End your response with this exact section:
+
+## Result
+\`\`\`json
+${schema}
+\`\`\`
+
+Rules for the final JSON block:
+- The fenced JSON block is the machine-readable result parsed by the tool.
+- The JSON must match the schema exactly.
+- Do not put comments or trailing commas inside the JSON.
+- Do not include any text after the closing JSON fence.`;
+}
+
 function buildPlanPromptImpl(task: string, conventions?: string): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
 
@@ -33,8 +50,7 @@ function buildPlanPromptImpl(task: string, conventions?: string): { system: stri
 
 You are creating a structured plan for the developer. Break the task into an actionable, ordered todo list with clear acceptance criteria for each step.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
-{
+${finalJsonBlock(`{
   "summary": "one-sentence summary of the overall plan",
   "todo": [
     { "description": "step 1", "priority": "high", "dependsOn": [] },
@@ -42,7 +58,7 @@ Return ONLY a JSON object with this exact structure — no extra text, no markdo
     "step 3"
   ],
   "acceptanceCriteria": ["criterion 1: when X happens Y should occur", "criterion 2: ..."]
-}
+}`)}
 
 Rules:
 - todo items must be concrete, verifiable, and ordered (what to do, not how to think about it)
@@ -53,9 +69,7 @@ Rules:
 - Each todo item should be one small unit of work — the main agent should complete it in 1-2 turns
 - Maximum 5-8 todo items
 - Maximum 5 acceptance criteria
-- Respect the project conventions shown above when choosing file names, structure, and patterns
-- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.
-- Do NOT include commentary, explanations, or any text outside the JSON`,
+- Respect the project conventions shown above when choosing file names, structure, and patterns`,
 
     user: `Create a plan for this task:\n\n${task}${conventionsBlock}`,
   };
@@ -184,15 +198,14 @@ ${REVIEW_RUBRIC}
 
 You are provided with a diff and, when available, the full contents of changed files. Use the full file contents to verify context outside the diff; do not flag something as missing if you can see it in the full file.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
-{
+${finalJsonBlock(`{
   "verdict": "pass" | "needs-work" | "blocked",
   "issues": [
     { "severity": "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
   ],
   "suggestions": ["improvement 1", "improvement 2"],
   "consensus": true | false
-}
+}`)}
 
 Rules:
 - "verdict" is "pass" only if ALL rubric categories are clean — no issues at any severity
@@ -205,7 +218,6 @@ Rules:
 - Pay attention to pre-review command output (lint/test/typecheck). Failures there are real issues.
 - Memory shows past issues in the same files. If a past issue appears again, flag it as regression.
 - CRITICAL: Only flag issues you can see evidence for. If a property, method, template, or style exists in the provided full file contents, do NOT flag it as missing. When unsure, prefer "pass" or "low" severity over guessing.
-- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure and the review will be discarded.
 - Be strict but fair — flag real problems, not preferences`,
 
     user: `Review this code change. The developer says:\n\n${description}${vcsLine}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
@@ -218,8 +230,7 @@ function buildScanPromptImpl(): { system: string; user: string } {
 
 You are analyzing the codebase to extract conventions and architecture patterns. This context will ground future pair-programming sessions.
 
-Return ONLY a JSON object with this exact structure:
-{
+${finalJsonBlock(`{
   "naming": "dominant naming convention (e.g. camelCase, PascalCase, snake_case)",
   "structure": "project structure summary (e.g. src/, app/, lib/, tests/)",
   "patterns": ["observed pattern 1", "observed pattern 2"],
@@ -233,10 +244,9 @@ Return ONLY a JSON object with this exact structure:
   "packageManager": "package manager if detectable (e.g. npm, pnpm)",
   "entryPoints": ["src/index.ts"],
   "scripts": ["build: ...", "test: ..."]
-}
+}`)}
 
-Omit optional fields you cannot infer. Be concise and evidence-based. Do not include commentary outside the JSON.
-CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
+Omit optional fields you cannot infer. Be concise and evidence-based.`,
 
     user: "Analyze the following project file list and key configuration files, then infer the naming conventions, structure, patterns, and tech stack.",
   };
@@ -250,20 +260,17 @@ function buildSuggestPromptImpl(question: string, conventions?: string): { syste
 
 The developer is asking for advice on a technical choice. Offer practical, balanced options.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
-{
+${finalJsonBlock(`{
   "approaches": [
     { "title": "approach name", "description": "what it is", "pros": ["pro 1", "pro 2"], "cons": ["con 1"] }
   ]
-}
+}`)}
 
 Rules:
 - Provide 2-3 concrete approaches
 - Each approach must have at least one pro and one con
 - Be specific — no vague advice like "use a better pattern"
-- Respect the project conventions shown above when evaluating approaches
-- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.
-- Do NOT include commentary outside the JSON`,
+- Respect the project conventions shown above when evaluating approaches`,
 
     user: `I need advice on:\n\n${question}${conventionsBlock}`,
   };
@@ -287,20 +294,18 @@ function buildRecommendPromptImpl(
 
 Advise the developer on what to do next. Be decisive and actionable.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
-{
+${finalJsonBlock(`{
   "nextStep": "concrete, actionable next step",
   "reasoning": "why this is the right step",
   "alternatives": ["alternative 1", "alternative 2"]
-}
+}`)}
 
 Rules:
 - Return exactly ONE recommended step — be decisive
 - The step must be concrete and immediately actionable
 - Reasoning must explain the trade-off
 - Provide 1-2 alternatives that were considered but rejected
-- Respect the project conventions shown above when choosing file names, structure, and patterns
-- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
+- Respect the project conventions shown above when choosing file names, structure, and patterns`,
 
     user: `Here's where I'm at:\n\n${situation}${planContext}${conventionsBlock}\n\nWhat should I do next?`,
   };
@@ -327,8 +332,7 @@ function buildTestPromptImpl(
 
 You are reviewing the latest code change specifically for test coverage, test quality, and test failures.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
-{
+${finalJsonBlock(`{
   "verdict": "pass" | "needs-work" | "blocked",
   "findings": [
     { "severity": "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it", "category": "failing-test" | "missing-test" | "test-quality" | "coverage" }
@@ -337,7 +341,7 @@ Return ONLY a JSON object with this exact structure — no extra text, no markdo
     { "file": "src/feature.ts", "reason": "explain what behavior needs a test" }
   ],
   "summary": "one-paragraph assessment"
-}
+}`)}
 
 Rules:
 - "verdict" is "pass" only if the diff has adequate tests and no failing tests
@@ -346,8 +350,7 @@ Rules:
 - "findings" should include failing tests, brittle tests, missing assertions, or tests that do not verify the described behavior
 - "missingTests" should list concrete production files whose changed behavior lacks a corresponding test
 - Be specific and evidence-based; do not invent files or failures not shown in the test output or diff
-- Respect project conventions when suggesting test file names or patterns
-- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
+- Respect project conventions when suggesting test file names or patterns`,
 
     user: `Review this change for test coverage and quality. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${testOutputBlock}${conventionsBlock}`,
   };
@@ -370,14 +373,13 @@ function buildSecurityPromptImpl(
 
 You are performing a security audit of the latest code change. Look for common vulnerabilities and risky patterns.
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
-{
+${finalJsonBlock(`{
   "verdict": "pass" | "needs-review",
   "findings": [
     { "severity": "critical" | "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it", "category": "secrets" | "injection" | "auth" | "access-control" | "validation" | "dependencies" | "crypto" | "logging" | "other" }
   ],
   "summary": "one-paragraph security assessment"
-}
+}`)}
 
 Rules:
 - "verdict" is "pass" only if no findings are high or critical
@@ -385,8 +387,7 @@ Rules:
 - Each finding must include a specific, actionable remediation suggestion
 - Categories must be one of: secrets, injection, auth, access-control, validation, dependencies, crypto, logging, other
 - Do not flag speculative risks with no evidence in the provided diff or files
-- Pay special attention to: hardcoded secrets, SQL/command injection, unsafe eval, missing input validation, insecure auth, permissive CORS, dependency upgrades, and logging sensitive data
-- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
+- Pay special attention to: hardcoded secrets, SQL/command injection, unsafe eval, missing input validation, insecure auth, permissive CORS, dependency upgrades, and logging sensitive data`,
 
     user: `Audit this change for security issues. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${conventionsBlock}`,
   };
@@ -429,8 +430,7 @@ Additionally, check:
 7. REVIEW HISTORY: Look at the review_history below. Every plan step should have been reviewed and passed before judging. If ANY step was not reviewed, that is a blocking issue.
 8. COHERENCE: Do all pieces work together? Is there anything contradictory?
 
-Return ONLY a JSON object with this exact structure — no extra text, no markdown fences, no wrapper object like { "response": "..." }:
-{
+${finalJsonBlock(`{
   "verdict": "pass" | "needs-work" | "blocked",
   "issues": [
     { "severity": "high" | "medium" | "low", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
@@ -438,14 +438,13 @@ Return ONLY a JSON object with this exact structure — no extra text, no markdo
   "suggestions": ["improvement 1"],
   "consensus": true | false,
   "summary": "one-paragraph holistic assessment of the completed work"
-}
+}`)}
 
 Rules:
 - "consensus" is true only when verdict is "pass" AND issues is empty
 - Provide a real summary that captures the overall quality, not filler
 - If any plan step is incomplete or unreviewed, that's a medium-severity issue
-- Check the review_history — unreviewed steps are blocking
-- CRITICAL: Your output is parsed by JSON.parse. Markdown, explanations, or wrapper objects will cause a parse failure.`,
+- Check the review_history — unreviewed steps are blocking`,
 
     user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}${historyBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}`,
   };
@@ -527,6 +526,16 @@ export function parseJsonResponse<T>(text: string): T | null {
   if (parsed !== undefined) {
     try {
       return parsed as T;
+    } catch {
+      /* continue */
+    }
+  }
+
+  // Prefer the explicit structured-output section used by the prompts.
+  const resultFence = cleaned.match(/(?:^|\n)##\s*Result\s*\n+```(?:json)?\s*([\s\S]*?)```/i);
+  if (resultFence) {
+    try {
+      return JSON.parse(resultFence[1].trim()) as T;
     } catch {
       /* continue */
     }
