@@ -8,6 +8,8 @@ import {
   callSecondaryModel,
   providerSupportsJsonObject,
   setPiSpawnResolver,
+  setPiSessionId,
+  clearPiSessionId,
   getProviderApiInfo,
   setSdkGetModelOverride,
   setSdkStreamSimpleOverride,
@@ -755,6 +757,16 @@ describe("sdk backend", () => {
     setSdkStreamSimpleOverride(null);
   });
 
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        clearPiSessionId(dir);
+      } catch {
+        // ignore
+      }
+    }
+  });
+
   it("opencode-go defaults to sdk backend", async () => {
     const cwd = makeTempDir("yoo-sdk-default-");
     tmpDirs.push(cwd);
@@ -929,5 +941,75 @@ describe("sdk backend", () => {
     assert.equal(receivedOptions?.maxRetries, 5);
     assert.equal(receivedOptions?.maxRetryDelayMs, 2000);
     assert.equal(receivedOptions?.timeoutMs, 30000);
+  });
+
+  it("sdk backend applies Pi agent default options when not configured", async () => {
+    const cwd = makeTempDir("yoo-sdk-defaults-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    let receivedOptions: SimpleStreamOptions | undefined;
+    setSdkStreamSimpleOverride((_model, _context, options) => {
+      receivedOptions = options;
+      return fakeSdkStream(fakeSdkAssistantMessage("ok"));
+    });
+
+    await callSecondaryModel("opencode-go", "qwen3.7-max", "system", "user", { cwd });
+    assert.equal(receivedOptions?.cacheRetention, "short");
+    assert.equal(receivedOptions?.maxRetries, 3);
+    assert.equal(receivedOptions?.timeoutMs, 300_000);
+  });
+
+  it("sdk backend sends opencode attribution headers when sessionId is set", async () => {
+    const cwd = makeTempDir("yoo-sdk-opencode-headers-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
+    setPiSessionId(cwd, "yoo-session-123");
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId, "anthropic-messages"));
+    let receivedOptions: SimpleStreamOptions | undefined;
+    setSdkStreamSimpleOverride((_model, _context, options) => {
+      receivedOptions = options;
+      return fakeSdkStream(fakeSdkAssistantMessage("ok"));
+    });
+
+    await callSecondaryModel("opencode-go", "qwen3.7-max", "system", "user", { cwd });
+    assert.equal(receivedOptions?.headers?.["x-opencode-session"], "yoo-session-123");
+    assert.equal(receivedOptions?.headers?.["x-opencode-client"], "pi");
+  });
+
+  it("sdk backend omits opencode headers for non-opencode providers", async () => {
+    const cwd = makeTempDir("yoo-sdk-no-opencode-headers-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "sdk", apiKey: "sk-test" });
+    setPiSessionId(cwd, "yoo-session-456");
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    let receivedOptions: SimpleStreamOptions | undefined;
+    setSdkStreamSimpleOverride((_model, _context, options) => {
+      receivedOptions = options;
+      return fakeSdkStream(fakeSdkAssistantMessage("ok"));
+    });
+
+    await callSecondaryModel("openai", "gpt-4o-mini", "system", "user", { cwd });
+    assert.equal(receivedOptions?.headers?.["x-opencode-session"], undefined);
+    assert.equal(receivedOptions?.headers?.["x-opencode-client"], undefined);
+  });
+
+  it("sdk backend maps cacheRetention auto to short", async () => {
+    const cwd = makeTempDir("yoo-sdk-auto-cache-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test", cacheRetention: "auto" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    let receivedOptions: SimpleStreamOptions | undefined;
+    setSdkStreamSimpleOverride((_model, _context, options) => {
+      receivedOptions = options;
+      return fakeSdkStream(fakeSdkAssistantMessage("ok"));
+    });
+
+    await callSecondaryModel("opencode-go", "qwen3.7-max", "system", "user", { cwd });
+    assert.equal(receivedOptions?.cacheRetention, "short");
   });
 });

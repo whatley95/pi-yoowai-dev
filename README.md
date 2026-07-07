@@ -83,11 +83,11 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | `secondary.contextWindow`      | number                                  | Override the model's context window                                                                                                 |
 | `secondary.maxOutputTokens`    | number                                  | Override the model's max output tokens                                                                                              |
 | `secondary.backend`            | `"sdk" \| "pi" \| "http"`              | Backend for model calls. `"sdk"` uses Pi's `pi-ai` provider layer (default); `"pi"` spawns the Pi CLI; `"http"` uses direct provider HTTP |
-| `secondary.cacheRetention`     | `"auto" \| "none" \| string`           | SDK cache retention hint (SDK backend only)                                                                                         |
-| `secondary.transport`          | `"fetch" \| string`                    | SDK HTTP transport hint (SDK backend only)                                                                                          |
+| `secondary.cacheRetention`     | `"none" \| "short" \| "long"`          | SDK cache retention hint (SDK backend only, default: `"short"` to match the main Pi agent)                                         |
+| `secondary.transport`          | `"sse" \| "websocket" \| "websocket-cached" \| "auto"` | SDK HTTP transport hint (SDK backend only)                                                                            |
 | `secondary.maxRetries`         | number                                  | Maximum SDK request retries (SDK backend only, default: 3)                                                                          |
-| `secondary.maxRetryDelayMs`    | number                                  | Maximum delay between SDK retries in ms (SDK backend only)                                                                          |
-| `secondary.timeoutMs`          | number                                  | SDK request timeout in ms (SDK backend only)                                                                                        |
+| `secondary.maxRetryDelayMs`    | number                                  | Maximum delay between SDK retries in ms (SDK backend only, default: 60000)                                                          |
+| `secondary.timeoutMs`          | number                                  | SDK request timeout in ms (SDK backend only, default: 300000 = 5 min)                                                               |
 | `secondary.apiKey`             | string                                  | Inline API key (prefer `auth.json` or env vars)                                                                                     |
 | `secondary.style`              | `"openai-compatible" \| "anthropic"`    | API style when using `baseUrl` (default: `"openai-compatible"`)                                                                     |
 | `secondary.authHeader`         | string                                  | Custom auth header name when using `baseUrl`                                                                                        |
@@ -411,14 +411,17 @@ When the user asks a technical or architectural question, call `yoo.suggest` or 
 | xiaomi, xiaomi-token-plan-ams/cn/sgp, zai, zai-coding-cn                        | OpenAI-compatible |
 | kimi-coding, minimax, minimax-cn, vercel-ai-gateway                             | Anthropic native  |
 
-**SDK backend (Pi-routed providers)** — these providers have models with complex compat requirements (per-model API styles, 8+ thinking formats, `max_completion_tokens` vs `max_tokens`, `reasoning_effort` mapping). They default to the `sdk` backend, which uses Pi's `pi-ai` provider layer and catalog metadata for token budgets, caching, and retries. Set `secondary.backend` to `"pi"` or `"http"` to override:
+**SDK backend (default)** — all providers default to the `sdk` backend, which uses Pi's `pi-ai` provider layer and catalog metadata for token budgets, caching, retries, and thinking-level mapping. This is the same provider layer the main Pi agent uses, so new models added to Pi are automatically supported. Set `secondary.backend` to `"pi"` or `"http"` to override:
 
 | Provider       | Reason                                                                                     |
 | -------------- | ------------------------------------------------------------------------------------------ |
 | opencode-go    | Mixed API styles + complex thinking formats per model                                      |
 | opencode       | Same — mixed openai-completions, anthropic-messages, google-generative-ai, openai-responses |
+| deepseek, etc. | Use the SDK for built-in retry/cache behavior and future-proof model support               |
 
-**Auto-detect:** When no `backend` is explicitly set, pi-heyyoo uses direct HTTP for known providers or custom `baseUrl`, and uses the `sdk` backend for Pi-routed providers (`opencode-go`, `opencode`). Set `secondary.backend` to `"sdk"`, `"pi"`, or `"http"` to override.
+SDK backend defaults mirror the main Pi agent: `cacheRetention: "short"`, `maxRetries: 3`, and `timeoutMs: 300000`. For `opencode`/`opencode-go` calls, pi-heyyoo also sends the `x-opencode-session` and `x-opencode-client: pi` attribution headers when a session id is available.
+
+**Auto-detect:** When no `backend` is explicitly set, pi-heyyoo uses the `sdk` backend for all providers. Direct HTTP is used only when `secondary.baseUrl` is set or when `secondary.backend` is explicitly `"http"`. Set `secondary.backend` to `"sdk"`, `"pi"`, or `"http"` to override.
 
 You can also use **any OpenAI-compatible or Anthropic-compatible endpoint** by setting `secondary.baseUrl`. Set `secondary.style` to `"anthropic"` for Anthropic-style endpoints.
 

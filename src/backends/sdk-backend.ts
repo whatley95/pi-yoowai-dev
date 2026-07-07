@@ -49,6 +49,31 @@ function sdkPayloadType(payload: unknown): string {
   return typeof p.type === "string" ? p.type : Object.keys(p).join(",");
 }
 
+const OPENCODE_HOST = "opencode.ai";
+
+function matchesHost(baseUrl: string, host: string): boolean {
+  try {
+    return new URL(baseUrl).host.endsWith(host);
+  } catch {
+    return baseUrl.includes(host);
+  }
+}
+
+function isOpencodeProvider(model: { provider: string; baseUrl: string }): boolean {
+  return model.provider === "opencode" || model.provider === "opencode-go" || matchesHost(model.baseUrl, OPENCODE_HOST);
+}
+
+function buildSdkHeaders(
+  model: { provider: string; baseUrl: string },
+  sessionId: string | undefined,
+): Record<string, string> | undefined {
+  if (!isOpencodeProvider(model) || !sessionId) return undefined;
+  return {
+    "x-opencode-session": sessionId,
+    "x-opencode-client": "pi",
+  };
+}
+
 export async function callSdkBackend(
   provider: string,
   model: string,
@@ -90,21 +115,30 @@ export async function callSdkBackend(
     ],
   };
 
+  const sessionId = cwd ? getPiSessionId(cwd) : undefined;
   const sdkOptions: SimpleStreamOptions = {
     apiKey,
     signal,
-    sessionId: cwd ? getPiSessionId(cwd) : undefined,
+    sessionId,
+    // Mirror the main Pi agent's defaults for cache retention, retries, and
+    // HTTP idle timeout. These keep the SDK backend consistent with how Pi
+    // itself calls the same providers.
+    cacheRetention: secondary?.cacheRetention === "auto" ? "short" : (secondary?.cacheRetention ?? "short"),
+    maxRetries: secondary?.maxRetries ?? 3,
+    timeoutMs: secondary?.timeoutMs ?? 300_000,
   };
 
   if (thinking && thinking.toLowerCase() !== "off") {
     sdkOptions.reasoning = thinking as import("@earendil-works/pi-ai").ThinkingLevel;
   }
 
-  if (secondary?.cacheRetention) sdkOptions.cacheRetention = secondary.cacheRetention;
   if (secondary?.transport) sdkOptions.transport = secondary.transport;
-  if (typeof secondary?.maxRetries === "number") sdkOptions.maxRetries = secondary.maxRetries;
   if (typeof secondary?.maxRetryDelayMs === "number") sdkOptions.maxRetryDelayMs = secondary.maxRetryDelayMs;
-  if (typeof secondary?.timeoutMs === "number") sdkOptions.timeoutMs = secondary.timeoutMs;
+
+  const opencodeHeaders = buildSdkHeaders(builtinModel, sessionId);
+  if (opencodeHeaders) {
+    sdkOptions.headers = { ...sdkOptions.headers, ...opencodeHeaders };
+  }
 
   if (cwd) {
     sdkOptions.onResponse = (response) => {

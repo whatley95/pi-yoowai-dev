@@ -1,6 +1,6 @@
 export type BackendType = "pi" | "http" | "sdk";
 
-export type SdkCacheRetention = "none" | "short" | "long";
+export type SdkCacheRetention = "none" | "short" | "long" | "auto";
 
 export type SdkTransport = "sse" | "websocket" | "websocket-cached" | "auto";
 

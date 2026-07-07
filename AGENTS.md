@@ -83,7 +83,12 @@ pi-heyyoo/
 ### Module responsibilities
 
 - **`index.ts`** — Main orchestrator. Holds per-`cwd` session state in memory, wires tool/command handlers, formats final text output, and integrates all submodules.
-- **`secondary-model.ts`** — Maps provider names (e.g. `anthropic`, `openai`, `deepseek`, `opencode-go`, `google`) to API styles, builds chat requests, estimates tokens/cost, and returns raw model output.
+- **`secondary-model.ts`** — Entry point for secondary model calls; resolves task model overrides, enforces the cost budget, and dispatches to the appropriate backend.
+- **`backends/`** — Three interchangeable backends for model calls:
+  - `sdk-backend.ts` — Pi's `pi-ai` SDK (default); handles provider attribution headers, retries, caching, and thinking-level mapping.
+  - `http-backend.ts` — Direct provider HTTP for custom `baseUrl` or explicit `backend: "http"`.
+  - `pi-backend.ts` — Spawns the Pi CLI for fallback or explicit `backend: "pi"`.
+  - `backend-resolver.ts` — Picks the backend and resolves SDK catalog metadata for token budgets.
 - **`auth-reader.ts`** — Reads `~/.pi/agent/auth.json`, then falls back to environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.). Supports `!command`, `$ENV`, and `${ENV}` key indirection.
 - **`prompts.ts`** — Builds system/user prompts for each action and validates the JSON the model returns.
 - **`diff-grabber.ts`** — Uses `git diff` / `svn diff`. Supports `files`, `exclude`, `revision`, `since`, `untracked`. Truncates diffs to ~6,000 chars.
@@ -195,11 +200,13 @@ Relevant keys:
 
 - `secondary.provider` / `secondary.id` — required; determines which model answers.
 - `secondary.thinking` — optional reasoning budget (`off` → `xhigh`).
+- `secondary.backend` — `"sdk"` (default), `"pi"`, or `"http"`. `"sdk"` uses Pi's `pi-ai` provider layer; `"pi"` spawns the Pi CLI; `"http"` uses direct provider HTTP.
 - `secondary.baseUrl` — optional custom endpoint for any OpenAI-compatible or Anthropic-compatible provider.
 - `secondary.apiKey` — optional inline API key (prefer `auth.json` or env vars).
 - `secondary.style` — `"openai-compatible"` (default) or `"anthropic"`; used only with `baseUrl`.
 - `secondary.authHeader` / `secondary.authPrefix` — optional auth header overrides; used only with `baseUrl`.
 - `secondary.contextWindow` / `secondary.maxOutputTokens` — optional overrides for the current model.
+- `secondary.cacheRetention` / `secondary.transport` / `secondary.maxRetries` / `secondary.maxRetryDelayMs` / `secondary.timeoutMs` — optional SDK backend tuning. Defaults mirror the main Pi agent (`cacheRetention: "short"`, `maxRetries: 3`, `timeoutMs: 300000`).
 - `modelInfo` — optional per-model token budget overrides, keyed by model id.
 - `autoJudge` — run `judge` automatically when the last plan step passes review.
 - `preReviewCommands` — shell commands run before each review; output is included in the prompt. Interpreter commands (`node`, `npx`, `python`, `python3`, `ruby`) are restricted to relative script files; inline-evaluation flags (`-c`, `-e`, `--eval`, etc.) are rejected.
