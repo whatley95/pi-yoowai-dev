@@ -463,6 +463,7 @@ interface PiProcessResult {
   rawStdout: string[];
   // Track the last message_update event's message and assistantMessageEvent for fallback.
   lastAssistantMessageEvent?: Record<string, unknown>;
+  lastMessageUpdateText?: string;
 }
 
 function processPiJsonLine(line: string, result: PiProcessResult, cwd?: string): void {
@@ -476,16 +477,36 @@ function processPiJsonLine(line: string, result: PiProcessResult, cwd?: string):
 
   // Debug: log every event type so we can diagnose providers that emit unusual events.
   if (process.env.PI_HEYYOO_DEBUG === "1" || process.env.PI_HEYYOO_DEBUG === "true") {
+    function shapeOf(value: unknown, depth = 0): unknown {
+      if (depth > 2) return "...";
+      if (value === null || typeof value !== "object") return typeof value;
+      if (Array.isArray(value)) {
+        const first = value.length > 0 ? shapeOf(value[0], depth + 1) : "empty";
+        return `array(${value.length})<${JSON.stringify(first)}>`;
+      }
+      const record = value as Record<string, unknown>;
+      const shaped: Record<string, unknown> = {};
+      for (const key of Object.keys(record).slice(0, 20)) {
+        const v = record[key];
+        if (key === "text" || key === "thinking" || key === "content" || key === "delta") {
+          shaped[key] = typeof v === "string" ? `string(${v.length})` : shapeOf(v, depth + 1);
+        } else {
+          shaped[key] = shapeOf(v, depth + 1);
+        }
+      }
+      return shaped;
+    }
+    const assistantMessageEvent = event.assistantMessageEvent as Record<string, unknown> | undefined;
+    const message = event.message as AssistantMessageLike | undefined;
     const debugInfo = JSON.stringify({
       type: event.type,
       keys: Object.keys(event),
-      hasMessage: !!event.message,
-      hasDelta: typeof event.delta === "string",
+      messageShape: shapeOf(message),
+      assistantMessageEventShape: shapeOf(assistantMessageEvent),
     });
     if (cwd) {
       logEvent(cwd, "debug", "pi-backend event", { event: debugInfo });
     } else {
-      // eslint-disable-next-line no-console
       console.log("[pi-heyyoo pi-backend event]", debugInfo);
     }
   }
@@ -501,12 +522,46 @@ function processPiJsonLine(line: string, result: PiProcessResult, cwd?: string):
       } else if (type === "text_delta") {
         result.streamText += delta;
       }
+    } else if (delta && typeof delta === "object" && !Array.isArray(delta)) {
+      const deltaObj = delta as Record<string, unknown>;
+      if (deltaObj.type === "text_delta" && typeof deltaObj.text === "string") {
+        result.streamText += deltaObj.text;
+      } else if (deltaObj.type === "thinking_delta" && typeof deltaObj.thinking === "string") {
+        result.streamThinking += deltaObj.thinking;
+      } else if (typeof deltaObj.text === "string") {
+        result.streamText += deltaObj.text;
+      } else if (typeof deltaObj.thinking === "string") {
+        result.streamThinking += deltaObj.thinking;
+      }
     }
     if (type === "text_delta" && typeof e.text === "string") {
       result.streamText += e.text;
     }
     if (type === "thinking_delta" && typeof e.thinking === "string") {
       result.streamThinking += e.thinking;
+    }
+    const contentBlock = e.content_block as Record<string, unknown> | undefined;
+    if (contentBlock) {
+      if (contentBlock.type === "text" && typeof contentBlock.text === "string") {
+        result.streamText += contentBlock.text;
+      } else if (contentBlock.type === "thinking" && typeof contentBlock.thinking === "string") {
+        result.streamThinking += contentBlock.thinking;
+      }
+    }
+    // Some provider streams emit the finalized block content on text_end/thinking_end.
+    if ((type === "text_end" || type === "text") && typeof e.content === "string") {
+      result.streamText += e.content;
+    }
+    if ((type === "thinking_end" || type === "thinking") && typeof e.content === "string") {
+      result.streamThinking += e.content;
+    }
+    // The unified AI event carries the partial AssistantMessage in `partial`.
+    const partial = e.partial as AssistantMessageLike | undefined;
+    if (partial && partial.role === "assistant") {
+      const text = extractTextFromContent(partial.content);
+      if (text.length > 0) {
+        result.lastMessageUpdateText = text;
+      }
     }
   }
   accumulateDelta(event);
@@ -518,6 +573,15 @@ function processPiJsonLine(line: string, result: PiProcessResult, cwd?: string):
 
   const message = event.message as AssistantMessageLike | undefined;
   if (!message) return;
+
+  // message_update events carry the partial assistant message. Capture the latest
+  // partial content as a fallback when the final message_end/turn_end is empty.
+  if (event.type === "message_update" && message.role === "assistant") {
+    const text = extractTextFromContent(message.content);
+    if (text.length > 0) {
+      result.lastMessageUpdateText = text;
+    }
+  }
 
   if (event.type === "message_end" || event.type === "turn_end") {
     if (message.role === "assistant") {
@@ -547,6 +611,10 @@ function getFinalAssistantText(result: PiProcessResult): string {
   // Fallback to accumulated streaming deltas (for Anthropic-style streaming).
   if (result.streamText.trim().length > 0) return result.streamText.trim();
   if (result.streamThinking.trim().length > 0) return result.streamThinking.trim();
+  // Fallback to the last message_update event's partial message content.
+  if (result.lastMessageUpdateText && result.lastMessageUpdateText.length > 0) {
+    return result.lastMessageUpdateText;
+  }
   // Fallback to the last assistantMessageEvent content block if present.
   if (result.lastAssistantMessageEvent) {
     const text = extractTextFromContent(result.lastAssistantMessageEvent.content);
@@ -759,7 +827,6 @@ async function callPiBackend(
         const diag = `messages=${result.messages.length} [${msgRoles}], stderr=${stderrPreview || "(empty)"}`;
         attemptErrors.push(`attempt ${attempt + 1}: ${diag}`);
         if (cwd) {
-          const debug = process.env.PI_HEYYOO_DEBUG === "1" || process.env.PI_HEYYOO_DEBUG === "true";
           logEvent(cwd, "warn", "Pi backend produced no assistant text, retrying", {
             attempt: attempt + 1,
             maxRetries: maxRetries + 1,
