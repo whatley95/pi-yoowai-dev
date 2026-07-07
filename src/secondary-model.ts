@@ -605,6 +605,9 @@ async function callPiBackend(
 
   const config = cwd ? loadHeyyooConfig(cwd) : undefined;
   const processTimeoutMs = config?.processTimeoutMs ?? PI_PROCESS_TIMEOUT_MS;
+  // Pass the parent Pi session ID to the child process so opencode-go/opencode
+  // receive the same x-opencode-session header for sticky provider routing.
+  const sessionId = cwd ? piSessionIds.get(cwd) : undefined;
 
   const inheritedSession = buildInheritedSessionJsonl(sessionManager, relevantPaths);
   if (cwd) {
@@ -647,8 +650,13 @@ async function callPiBackend(
     "--thinking",
     thinking ?? "off",
     "--no-extensions",
-    "Respond to the user message above.",
   ];
+  // Pass the parent Pi session ID so opencode-go/opencode get the same
+  // x-opencode-session header for sticky provider routing.
+  if (sessionId) {
+    args.push("--session-id", sessionId);
+  }
+  args.push("Respond to the user message above.");
 
   try {
     const maxRetries = 2;
