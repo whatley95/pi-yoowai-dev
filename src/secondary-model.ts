@@ -461,7 +461,7 @@ interface PiProcessResult {
   streamThinking: string;
 }
 
-function processPiJsonLine(line: string, result: PiProcessResult): void {
+function processPiJsonLine(line: string, result: PiProcessResult, cwd?: string): void {
   if (!line.trim()) return;
   let event: Record<string, unknown>;
   try {
@@ -472,16 +472,18 @@ function processPiJsonLine(line: string, result: PiProcessResult): void {
 
   // Debug: log every event type so we can diagnose providers that emit unusual events.
   if (process.env.PI_HEYYOO_DEBUG === "1" || process.env.PI_HEYYOO_DEBUG === "true") {
-    // eslint-disable-next-line no-console
-    console.log(
-      "[pi-heyyoo pi-backend event]",
-      JSON.stringify({
-        type: event.type,
-        keys: Object.keys(event),
-        hasMessage: !!event.message,
-        hasDelta: typeof event.delta === "string",
-      }),
-    );
+    const debugInfo = JSON.stringify({
+      type: event.type,
+      keys: Object.keys(event),
+      hasMessage: !!event.message,
+      hasDelta: typeof event.delta === "string",
+    });
+    if (cwd) {
+      logEvent(cwd, "debug", "pi-backend event", { event: debugInfo });
+    } else {
+      // eslint-disable-next-line no-console
+      console.log("[pi-heyyoo pi-backend event]", debugInfo);
+    }
   }
 
   // Accumulate streaming deltas from providers that emit them (Anthropic-style).
@@ -880,7 +882,7 @@ function runPiProcess(
       }
       proc.stdout.off("data", onStdoutData);
       proc.stderr.removeAllListeners("data");
-      if (buffer.trim()) processPiJsonLine(buffer, result);
+      if (buffer.trim()) processPiJsonLine(buffer, result, cwd);
       if (err) {
         reject(err);
       } else {
@@ -892,7 +894,7 @@ function runPiProcess(
       buffer += chunk.toString();
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || "";
-      for (const line of lines) processPiJsonLine(line, result);
+      for (const line of lines) processPiJsonLine(line, result, cwd);
     };
 
     proc.stdout.on("data", onStdoutData);
