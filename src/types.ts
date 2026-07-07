@@ -3,30 +3,18 @@ export type YooAction = "plan" | "review" | "suggest" | "recommend" | "judge" | 
 /** Tasks that can have a per-model override in settings.json. Includes yoo tool actions plus separate tools like explain. */
 export type YooModelTask = YooAction | "explain";
 
-export interface SecondaryModelConfig {
-  provider: string;
-  id: string;
-  thinking?: string;
-  contextWindow?: number;
-  maxOutputTokens?: number;
-  /** Backend to use for secondary model calls. "pi" spawns the pi CLI; "http" uses direct provider HTTP; "sdk" uses Pi's pi-ai provider layer. */
-  backend?: "pi" | "http" | "sdk";
-  /** Custom base URL for any OpenAI-compatible or Anthropic-compatible provider. */
-  baseUrl?: string;
-  /** Inline API key. Prefer auth.json or env vars; this is a fallback. */
-  apiKey?: string;
-  /** API style when using a custom baseUrl. Defaults to openai-compatible. */
-  style?: "openai-compatible" | "anthropic";
-  /** Custom auth header name when using baseUrl. Defaults to Authorization. */
-  authHeader?: string;
-  /** Custom auth prefix when using baseUrl. Defaults to "Bearer ". */
-  authPrefix?: string;
-}
+export type {
+  BackendType,
+  SdkCacheRetention,
+  SdkTransport,
+  SecondaryModelConfig,
+  ProviderApiInfo,
+} from "./types/secondary-model.js";
 
 export interface HeyyooConfig {
-  secondary: SecondaryModelConfig;
+  secondary: import("./types/secondary-model.js").SecondaryModelConfig;
   /** Per-task model overrides. Any omitted field falls back to `secondary`. */
-  taskModels?: Partial<Record<YooModelTask, Partial<SecondaryModelConfig>>>;
+  taskModels?: Partial<Record<YooModelTask, Partial<import("./types/secondary-model.js").SecondaryModelConfig>>>;
   autoJudge?: boolean;
   preReviewCommands?: string[];
   /** Custom command to run for yoo.test analysis (e.g. "npm test"). If omitted, yoo.test will auto-detect or fall back to static diff analysis. */
@@ -205,16 +193,6 @@ export interface StageProfile {
   provider: string;
   id: string;
   thinking?: string;
-}
-
-export interface ProviderApiInfo {
-  style: "openai-compatible" | "anthropic";
-  baseUrl: string;
-  authHeader: string;
-  authPrefix: string;
-  queryAuthKey?: string;
-  /** Whether the provider supports OpenAI-style response_format: { type: "json_object" }. */
-  supportsJsonObject?: boolean;
 }
 
 export interface CallSecondaryModelOptions {

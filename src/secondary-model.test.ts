@@ -885,4 +885,49 @@ describe("sdk backend", () => {
     await callSecondaryModel("opencode-go", "qwen3.7-max", "system", "user", { cwd, thinking: "high" });
     assert.equal(receivedOptions?.reasoning, "high");
   });
+
+  it("sdk backend uses catalog maxTokens for non-thinking calls", async () => {
+    const cwd = makeTempDir("yoo-sdk-catalog-tokens-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    let receivedOptions: SimpleStreamOptions | undefined;
+    setSdkStreamSimpleOverride((_model, _context, options) => {
+      receivedOptions = options;
+      return fakeSdkStream(fakeSdkAssistantMessage("ok"));
+    });
+
+    await callSecondaryModel("opencode-go", "qwen3.7-max", "system", "user", { cwd, thinking: "off" });
+    assert.equal(receivedOptions?.maxTokens, 2048);
+  });
+
+  it("sdk backend passes cacheRetention, transport, and retry options", async () => {
+    const cwd = makeTempDir("yoo-sdk-options-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, {
+      provider: "opencode-go",
+      id: "qwen3.7-max",
+      apiKey: "opencode-test",
+      cacheRetention: "long",
+      transport: "websocket-cached",
+      maxRetries: 5,
+      maxRetryDelayMs: 2000,
+      timeoutMs: 30000,
+    });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    let receivedOptions: SimpleStreamOptions | undefined;
+    setSdkStreamSimpleOverride((_model, _context, options) => {
+      receivedOptions = options;
+      return fakeSdkStream(fakeSdkAssistantMessage("ok"));
+    });
+
+    await callSecondaryModel("opencode-go", "qwen3.7-max", "system", "user", { cwd });
+    assert.equal(receivedOptions?.cacheRetention, "long");
+    assert.equal(receivedOptions?.transport, "websocket-cached");
+    assert.equal(receivedOptions?.maxRetries, 5);
+    assert.equal(receivedOptions?.maxRetryDelayMs, 2000);
+    assert.equal(receivedOptions?.timeoutMs, 30000);
+  });
 });

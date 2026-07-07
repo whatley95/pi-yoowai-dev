@@ -33,6 +33,12 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
       "provider": "opencode-go",
       "id": "deepseek-v4-pro",
       "thinking": "xhigh",
+      "backend": "sdk",
+      "cacheRetention": "auto",
+      "transport": "fetch",
+      "maxRetries": 3,
+      "maxRetryDelayMs": 8000,
+      "timeoutMs": 120000,
       "contextWindow": 64000,
       "maxOutputTokens": 8192
     },
@@ -76,8 +82,12 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | `verifyByDefault`              | boolean                                 | If true, every yoo result asks the main agent to confirm the finding with evidence                                                  |
 | `secondary.contextWindow`      | number                                  | Override the model's context window                                                                                                 |
 | `secondary.maxOutputTokens`    | number                                  | Override the model's max output tokens                                                                                              |
-| `secondary.backend`             | `"pi" \| "http"`                       | Backend for model calls. `"pi"` spawns child pi process; `"http"` uses direct provider HTTP. Auto-detected if omitted (known providers → HTTP, unknown → pi) |
-| `secondary.baseUrl`            | string                                  | Custom endpoint for any OpenAI-compatible or Anthropic-compatible provider                                                          |
+| `secondary.backend`            | `"sdk" \| "pi" \| "http"`              | Backend for model calls. `"sdk"` uses Pi's `pi-ai` provider layer (default); `"pi"` spawns the Pi CLI; `"http"` uses direct provider HTTP |
+| `secondary.cacheRetention`     | `"auto" \| "none" \| string`           | SDK cache retention hint (SDK backend only)                                                                                         |
+| `secondary.transport`          | `"fetch" \| string`                    | SDK HTTP transport hint (SDK backend only)                                                                                          |
+| `secondary.maxRetries`         | number                                  | Maximum SDK request retries (SDK backend only, default: 3)                                                                          |
+| `secondary.maxRetryDelayMs`    | number                                  | Maximum delay between SDK retries in ms (SDK backend only)                                                                          |
+| `secondary.timeoutMs`          | number                                  | SDK request timeout in ms (SDK backend only)                                                                                        |
 | `secondary.apiKey`             | string                                  | Inline API key (prefer `auth.json` or env vars)                                                                                     |
 | `secondary.style`              | `"openai-compatible" \| "anthropic"`    | API style when using `baseUrl` (default: `"openai-compatible"`)                                                                     |
 | `secondary.authHeader`         | string                                  | Custom auth header name when using `baseUrl`                                                                                        |
@@ -186,7 +196,7 @@ Recorded facts appear in `yoo_index({ topic: "learned" })`.
 | `/yoo-config set <key> <value>`                | Write a dotted setting (e.g. `/yoo-config set taskModels.review.id claude-sonnet-4-5`) |
 | `/yoo-config <provider.model>`                 | Set the base secondary model directly (e.g. `/yoo-config openai.gpt-4o`)               |
 | `/yoo-test`                                    | Test connectivity; prints a per-model summary with latency, tokens, cost, and totals   |
-| `/yoo-backend <pi\|http>`                      | Switch secondary model backend (default: `pi`)                                         |
+| `/yoo-backend <sdk\|pi\|http>`                 | Switch secondary model backend (default: `sdk`)                                        |
 | `/yoo-clear`                                   | Clear the current session's plan, state, cost, memory, and conventions                 |
 | `/yoo-next`                                    | Recommend the next step based on the active plan                                       |
 | `/yoo-done`                                    | Mark the current plan step complete and recommend the next step                        |
@@ -275,7 +285,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 
 ## How it works
 
-- **Auto-detect backend** — known providers use direct HTTP (fast, no child process); unknown providers fall back to the pi process for Pi's routing/auth layer; override with `secondary.backend` or `/yoo-backend`
+- **Auto-detect backend** — known providers use direct HTTP; Pi-routed providers (e.g. `opencode-go`) default to the `sdk` backend using Pi's `pi-ai` provider layer; override with `secondary.backend` or `/yoo-backend`
 - **Automatic diff collection** — `yoo.review` auto-runs `git diff HEAD` (or `svn diff`)
 - **Adaptive context** — automatically includes full contents of small changed files, outlines for large ones, and respects the model's token budget
 - **Diff scope control** — limit reviews with `files`, `exclude`, `revision`, `since`, or `untracked`
@@ -342,14 +352,14 @@ When the user asks a technical or architectural question, call `yoo.suggest` or 
 | xiaomi, xiaomi-token-plan-ams/cn/sgp, zai, zai-coding-cn                        | OpenAI-compatible |
 | kimi-coding, minimax, minimax-cn, vercel-ai-gateway                             | Anthropic native  |
 
-**Pi backend (per-model routing)** — these providers have models with complex compat requirements (per-model API styles, 8+ thinking formats, `max_completion_tokens` vs `max_tokens`, `reasoning_effort` mapping) that pi-heyyoo cannot replicate without duplicating Pi's entire openai-completions compat layer. They use the pi process which handles all compat correctly:
+**SDK backend (Pi-routed providers)** — these providers have models with complex compat requirements (per-model API styles, 8+ thinking formats, `max_completion_tokens` vs `max_tokens`, `reasoning_effort` mapping). They default to the `sdk` backend, which uses Pi's `pi-ai` provider layer and catalog metadata for token budgets, caching, and retries. Set `secondary.backend` to `"pi"` or `"http"` to override:
 
 | Provider       | Reason                                                                                     |
 | -------------- | ------------------------------------------------------------------------------------------ |
 | opencode-go    | Mixed API styles + complex thinking formats per model                                      |
 | opencode       | Same — mixed openai-completions, anthropic-messages, google-generative-ai, openai-responses |
 
-**Auto-detect:** When no `backend` is explicitly set, pi-heyyoo uses direct HTTP for known providers or custom `baseUrl`, and falls back to the pi process for unknown providers. Set `secondary.backend` to `"http"` or `"pi"` to override.
+**Auto-detect:** When no `backend` is explicitly set, pi-heyyoo uses direct HTTP for known providers or custom `baseUrl`, and uses the `sdk` backend for Pi-routed providers (`opencode-go`, `opencode`). Set `secondary.backend` to `"sdk"`, `"pi"`, or `"http"` to override.
 
 You can also use **any OpenAI-compatible or Anthropic-compatible endpoint** by setting `secondary.baseUrl`. Set `secondary.style` to `"anthropic"` for Anthropic-style endpoints.
 

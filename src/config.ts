@@ -28,6 +28,14 @@ function pickOptionalStyle(value: unknown, fallback: SecondaryModelConfig["style
   return fallback;
 }
 
+function pickOptionalEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T | undefined,
+): T | undefined {
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
 function mergeSecondaryFields(
   base: Partial<SecondaryModelConfig>,
   override: Partial<SecondaryModelConfig>,
@@ -41,6 +49,11 @@ function mergeSecondaryFields(
     backend: isValidBackend(override.backend) ? override.backend : base.backend,
     baseUrl: pickOptionalString(override.baseUrl, base.baseUrl),
     apiKey: pickOptionalString(override.apiKey, base.apiKey),
+    cacheRetention: pickOptionalEnum(override.cacheRetention, ["none", "short", "long"], base.cacheRetention),
+    transport: pickOptionalEnum(override.transport, ["sse", "websocket", "websocket-cached", "auto"], base.transport),
+    maxRetries: pickOptionalNumber(override.maxRetries, base.maxRetries),
+    maxRetryDelayMs: pickOptionalNumber(override.maxRetryDelayMs, base.maxRetryDelayMs),
+    timeoutMs: pickOptionalNumber(override.timeoutMs, base.timeoutMs),
     style: pickOptionalStyle(override.style, base.style),
     authHeader: pickOptionalString(override.authHeader, base.authHeader),
     authPrefix: pickOptionalString(override.authPrefix, base.authPrefix),

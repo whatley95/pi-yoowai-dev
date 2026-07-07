@@ -99,4 +99,27 @@ describe("resolveTaskModel", () => {
     assert.equal(result.contextWindow, undefined);
     assert.equal(result.maxOutputTokens, undefined);
   });
+
+  it("preserves sdk options through task overrides", () => {
+    const config: HeyyooConfig = {
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        cacheRetention: "short",
+        transport: "sse",
+        maxRetries: 3,
+        maxRetryDelayMs: 1000,
+        timeoutMs: 60000,
+      },
+      taskModels: {
+        review: { cacheRetention: "long", maxRetries: 5 },
+      },
+    };
+    const result = resolveTaskModel(config, "review");
+    assert.equal(result.cacheRetention, "long");
+    assert.equal(result.transport, "sse");
+    assert.equal(result.maxRetries, 5);
+    assert.equal(result.maxRetryDelayMs, 1000);
+    assert.equal(result.timeoutMs, 60000);
+  });
 });
