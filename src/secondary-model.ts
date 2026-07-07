@@ -632,7 +632,24 @@ async function callPiBackend(
       }),
     ].join("\n") + "\n";
 
-  const sessionJsonl = inheritedSession ? inheritedSession + taskJsonl : taskJsonl;
+  // Preserve parent Pi session ID in the header so opencode-go/opencode get the
+  // same x-opencode-session header for sticky routing. When there is no inherited
+  // session, create a minimal header with the parent session ID.
+  let sessionJsonl: string;
+  if (inheritedSession) {
+    sessionJsonl = inheritedSession + taskJsonl;
+  } else if (sessionId) {
+    const header = {
+      type: "session",
+      version: 3,
+      id: sessionId,
+      timestamp: new Date().toISOString(),
+      cwd: cwd,
+    };
+    sessionJsonl = JSON.stringify(header) + "\n" + taskJsonl;
+  } else {
+    sessionJsonl = taskJsonl;
+  }
 
   const tmp = writeTempSessionJsonl(sessionJsonl);
   const { command, prefixArgs } = resolvePiSpawn();
@@ -650,13 +667,8 @@ async function callPiBackend(
     "--thinking",
     thinking ?? "off",
     "--no-extensions",
+    "Respond to the user message above.",
   ];
-  // Pass the parent Pi session ID so opencode-go/opencode get the same
-  // x-opencode-session header for sticky provider routing.
-  if (sessionId) {
-    args.push("--session-id", sessionId);
-  }
-  args.push("Respond to the user message above.");
 
   try {
     const maxRetries = 2;
