@@ -416,6 +416,7 @@ function writeTempSessionJsonl(sessionJsonl: string): { dir: string; filePath: s
 interface ContentPart {
   type?: unknown;
   text?: unknown;
+  thinking?: unknown;
 }
 
 interface AssistantMessageLike {
@@ -432,15 +433,20 @@ interface AssistantMessageLike {
 function extractTextFromContent(content: unknown): string {
   if (typeof content === "string") return content.trim();
   if (!Array.isArray(content)) return "";
-  const parts: string[] = [];
+  const textParts: string[] = [];
+  const fallbackParts: string[] = [];
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const typed = part as ContentPart;
     if (typed.type === "text" && typeof typed.text === "string") {
-      parts.push(typed.text);
+      textParts.push(typed.text);
+    } else if (typed.type === "thinking" && typeof typed.thinking === "string") {
+      // Fallback: some high-thinking models (e.g. qwen3.7-max on opencode-go)
+      // return only thinking blocks. Use them when no text is available.
+      fallbackParts.push(typed.thinking);
     }
   }
-  return parts.join("\n").trim();
+  return (textParts.length > 0 ? textParts : fallbackParts).join("\n").trim();
 }
 
 function getFinalAssistantText(messages: AssistantMessageLike[]): string {
