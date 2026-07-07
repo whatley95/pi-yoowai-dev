@@ -30,7 +30,7 @@ export async function executeYooScan(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "scan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
-  const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig);
+  const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   progress(1, STAGES.scan, "Scanning local project conventions…");
   const localScan = scanProjectConventions(cwd);

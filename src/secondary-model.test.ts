@@ -493,7 +493,7 @@ describe("providerSupportsJsonObject", () => {
 
   it("returns true for custom OpenAI-compatible baseUrl", () => {
     assert.equal(
-      providerSupportsJsonObject("custom", {
+      providerSupportsJsonObject("custom", "x", {
         provider: "custom",
         id: "x",
         baseUrl: "https://example.com/v1",
@@ -505,7 +505,7 @@ describe("providerSupportsJsonObject", () => {
 
   it("returns false for custom Anthropic-compatible baseUrl", () => {
     assert.equal(
-      providerSupportsJsonObject("custom", {
+      providerSupportsJsonObject("custom", "x", {
         provider: "custom",
         id: "x",
         baseUrl: "https://example.com/v1",
@@ -522,6 +522,8 @@ describe("PROVIDER_API_MAP coverage", () => {
     // Complex providers (bedrock, vertex, azure, github-copilot, cloudflare) are
     // intentionally excluded — they fall back to the pi process backend.
     const expected = [
+      "opencode-go",
+      "opencode",
       "anthropic",
       "openai",
       "deepseek",
@@ -573,6 +575,31 @@ describe("PROVIDER_API_MAP coverage", () => {
     for (const p of ["ant-ling", "nvidia", "huggingface", "moonshotai", "zai", "xiaomi"]) {
       assert.equal(providerSupportsJsonObject(p), true, `Provider ${p} should support json_object`);
     }
+  });
+});
+
+describe("per-model API overrides", () => {
+  it("opencode-go:qwen3.7-max uses anthropic style", () => {
+    const info = getProviderApiInfo("opencode-go", "qwen3.7-max");
+    assert.ok(info);
+    assert.equal(info!.style, "anthropic", "qwen3.7-max should use anthropic style");
+  });
+
+  it("opencode-go:kimi-k2.7-code uses openai-compatible style", () => {
+    const info = getProviderApiInfo("opencode-go", "kimi-k2.7-code");
+    assert.ok(info);
+    assert.equal(info!.style, "openai-compatible", "kimi-k2.7-code should use openai-compatible style");
+  });
+
+  it("opencode-go without model defaults to openai-compatible", () => {
+    const info = getProviderApiInfo("opencode-go");
+    assert.ok(info);
+    assert.equal(info!.style, "openai-compatible");
+  });
+
+  it("providerSupportsJsonObject respects per-model overrides", () => {
+    assert.equal(providerSupportsJsonObject("opencode-go", "kimi-k2.7-code"), true);
+    assert.equal(providerSupportsJsonObject("opencode-go", "qwen3.7-max"), false);
   });
 });
 

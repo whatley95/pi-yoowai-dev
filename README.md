@@ -289,7 +289,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 - **Cost tracking + budget** — estimated spend per call, session total, and optional hard budget
 - **Robust JSON parsing** — accepts Markdown analysis followed by a `## Result` fenced JSON block, unwraps wrapper objects like `{ "response": "..." }`, and falls back to markdown salvage without changing the configured thinking level
 - **One round-trip** — secondary model has no tools, pure judgment
-- **Supports OpenAI-compatible and Anthropic APIs** — 26 providers pre-configured for direct HTTP, plus any custom endpoint via `baseUrl`
+- **Supports OpenAI-compatible and Anthropic APIs** — 28 providers pre-configured for direct HTTP, plus any custom endpoint via `baseUrl`
 
 ## Consensus protocol
 
@@ -331,10 +331,11 @@ When the user asks a technical or architectural question, call `yoo.suggest` or 
 
 ## Supported providers
 
-**Direct HTTP (26 providers)** — fast, no child process overhead:
+**Direct HTTP (28 providers)** — fast, no child process overhead:
 
 | Provider                                                                        | API style         |
 | ------------------------------------------------------------------------------- | ----------------- |
+| opencode-go, opencode                                                           | OpenAI-compatible (with per-model overrides for anthropic-style models) |
 | anthropic                                                                       | Anthropic native  |
 | openai, deepseek, openrouter, groq, mistral, xai, together, fireworks, cerebras | OpenAI-compatible |
 | google                                                                          | Google Gemini (OpenAI-compatible endpoint) |
@@ -342,12 +343,7 @@ When the user asks a technical or architectural question, call `yoo.suggest` or 
 | xiaomi, xiaomi-token-plan-ams/cn/sgp, zai, zai-coding-cn                        | OpenAI-compatible |
 | kimi-coding, minimax, minimax-cn, vercel-ai-gateway                             | Anthropic native  |
 
-**Pi backend (per-model routing)** — these providers have models with mixed API styles, so they use the pi process which handles per-model routing:
-
-| Provider       | Reason                                                                                     |
-| -------------- | ------------------------------------------------------------------------------------------ |
-| opencode-go    | Some models use openai-completions, others use anthropic-messages with different baseUrls  |
-| opencode       | Same — mixed openai-completions, anthropic-messages, google-generative-ai, openai-responses |
+**Per-model overrides:** `opencode-go` and `opencode` have some models that use the Anthropic messages API instead of OpenAI completions (e.g. `qwen3.7-max`, `claude-sonnet-4-5`). pi-heyyoo automatically selects the correct API style per model via a `MODEL_API_OVERRIDES` map.
 
 **Auto-detect:** When no `backend` is explicitly set, pi-heyyoo uses direct HTTP for known providers or custom `baseUrl`, and falls back to the pi process for unknown providers. Set `secondary.backend` to `"http"` or `"pi"` to override.
 

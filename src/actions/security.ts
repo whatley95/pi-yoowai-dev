@@ -43,7 +43,7 @@ export async function executeYooSecurity(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "security", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
-  const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig);
+  const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   const sessionContext = getSessionContext(ctx);
   const conventions = loadConventions(cwd);

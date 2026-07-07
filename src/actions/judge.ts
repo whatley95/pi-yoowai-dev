@@ -26,7 +26,7 @@ export async function executeYooJudge(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "judge", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
-  const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig);
+  const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   const state = getState(cwd);
   const reviewHistory = buildReviewHistory(cwd);

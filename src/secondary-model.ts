@@ -10,10 +10,20 @@ import { resolveModelInfo } from "./model-registry.js";
 import type { ProviderApiInfo, UsageCost, CallSecondaryModelOptions, SecondaryModelConfig } from "./types.js";
 
 const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
-  // Note: opencode-go and opencode are intentionally excluded from the HTTP map.
-  // They have per-model API styles (some models use openai-completions, others use
-  // anthropic-messages with a different baseUrl). The pi backend handles per-model
-  // routing correctly, so these providers fall back to the pi process.
+  "opencode-go": {
+    style: "openai-compatible",
+    baseUrl: "https://opencode.ai/zen/go/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  opencode: {
+    style: "openai-compatible",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
   anthropic: {
     style: "anthropic",
     baseUrl: "https://api.anthropic.com/v1",
@@ -195,11 +205,127 @@ const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
   },
 };
 
-export function getProviderApiInfo(provider: string): ProviderApiInfo | undefined {
-  return PROVIDER_API_MAP[provider.toLowerCase()];
+// Per-model API style overrides for providers that have mixed API styles.
+// Key format: "provider:model". When present, this overrides the provider-level
+// entry in PROVIDER_API_MAP for that specific model.
+// This matches Pi's per-model `api` and `baseUrl` fields in the generated model files.
+const MODEL_API_OVERRIDES: Record<string, ProviderApiInfo> = {
+  // opencode-go models that use anthropic-messages API (no /v1 in baseUrl)
+  "opencode-go:qwen3.7-max": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/go/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode-go:qwen3.7-plus": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/go/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode-go:minimax-m3": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/go/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  // opencode models that use anthropic-messages API
+  "opencode:claude-fable-5": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-haiku-4-5": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-opus-4-1": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-opus-4-5": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-opus-4-6": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-opus-4-7": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-opus-4-8": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-sonnet-4": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-sonnet-4-5": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-sonnet-4-6": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:claude-sonnet-5": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:qwen3.5-plus": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "opencode:qwen3.6-plus": {
+    style: "anthropic",
+    baseUrl: "https://opencode.ai/zen/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+};
+
+export function getProviderApiInfo(provider: string, model?: string): ProviderApiInfo | undefined {
+  const p = provider.toLowerCase();
+  // Check per-model override first
+  if (model) {
+    const overrideKey = `${p}:${model}`;
+    const override = MODEL_API_OVERRIDES[overrideKey];
+    if (override) return override;
+  }
+  return PROVIDER_API_MAP[p];
 }
 
-function resolveProviderApiInfo(provider: string, secondary?: SecondaryModelConfig): ProviderApiInfo | undefined {
+function resolveProviderApiInfo(
+  provider: string,
+  model: string,
+  secondary?: SecondaryModelConfig,
+): ProviderApiInfo | undefined {
   if (secondary?.baseUrl) {
     const style = secondary.style ?? "openai-compatible";
     if (style !== "openai-compatible" && style !== "anthropic") {
@@ -213,12 +339,16 @@ function resolveProviderApiInfo(provider: string, secondary?: SecondaryModelConf
       supportsJsonObject: style === "openai-compatible",
     };
   }
-  return getProviderApiInfo(provider);
+  return getProviderApiInfo(provider, model);
 }
 
 /** Returns true when the effective provider supports OpenAI-style json_object structured output. */
-export function providerSupportsJsonObject(provider: string, secondary?: SecondaryModelConfig): boolean {
-  const apiInfo = resolveProviderApiInfo(provider, secondary);
+export function providerSupportsJsonObject(
+  provider: string,
+  model?: string,
+  secondary?: SecondaryModelConfig,
+): boolean {
+  const apiInfo = resolveProviderApiInfo(provider, model || "", secondary);
   return apiInfo?.supportsJsonObject === true;
 }
 
@@ -281,7 +411,7 @@ export async function callSecondaryModel(
       });
     }
 
-    const apiInfo = resolveProviderApiInfo(provider, effectiveSecondary);
+    const apiInfo = resolveProviderApiInfo(provider, model, effectiveSecondary);
     if (!apiInfo) {
       throw new Error(
         `Unknown provider: ${provider}. Supported providers: ${Object.keys(PROVIDER_API_MAP).join(", ")}. ` +
