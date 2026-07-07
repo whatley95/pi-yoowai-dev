@@ -77,6 +77,7 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
     try {
       const global = JSON.parse(readFileSync(globalPath, "utf-8"));
       if (global["pi-heyyoo"]) {
+        checkUnknownKeys(global["pi-heyyoo"], "global", cwd);
         config = mergeConfig(config, global["pi-heyyoo"]);
       }
     } catch (err) {
@@ -91,6 +92,7 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
     try {
       const project = JSON.parse(readFileSync(projectPath, "utf-8"));
       if (project["pi-heyyoo"]) {
+        checkUnknownKeys(project["pi-heyyoo"], "project", cwd);
         config = mergeConfig(config, project["pi-heyyoo"]);
       }
     } catch (err) {
@@ -99,6 +101,59 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
         path: projectPath,
       });
     }
+  }
+
+  return validateConfig(config, cwd);
+}
+
+/** Known top-level keys in pi-heyyoo config. */
+const KNOWN_CONFIG_KEYS = new Set([
+  "secondary",
+  "taskModels",
+  "autoJudge",
+  "preReviewCommands",
+  "testCommand",
+  "costBudgetUsd",
+  "reviewMaxDiffChars",
+  "reviewFullFileThresholdLines",
+  "reviewMaxInputTokens",
+  "reviewStrategy",
+  "verifyByDefault",
+  "parallelReview",
+  "deepScan",
+  "modelInfo",
+  "processTimeoutMs",
+]);
+
+/** Warn about unknown config keys that might be typos. */
+function checkUnknownKeys(raw: Record<string, unknown>, source: string, cwd: string): void {
+  if (!raw || typeof raw !== "object") return;
+  for (const key of Object.keys(raw)) {
+    if (!KNOWN_CONFIG_KEYS.has(key)) {
+      logEvent(cwd, "warn", `Config: unknown key "${key}" in ${source} settings — possible typo`, {});
+    }
+  }
+}
+
+/** Validate config and log warnings for common mistakes. */
+function validateConfig(config: HeyyooConfig, cwd: string): HeyyooConfig {
+  const warnings: string[] = [];
+
+  if (!config.secondary.provider) {
+    warnings.push("secondary.provider is not set — yoo tool will not work");
+  }
+  if (!config.secondary.id) {
+    warnings.push("secondary.id is not set — yoo tool will not work");
+  }
+  if (config.processTimeoutMs !== undefined && config.processTimeoutMs <= 0) {
+    warnings.push(`processTimeoutMs=${config.processTimeoutMs} is invalid, using default`);
+  }
+  if (config.costBudgetUsd !== undefined && config.costBudgetUsd < 0) {
+    warnings.push(`costBudgetUsd=${config.costBudgetUsd} is negative, budget disabled`);
+  }
+
+  for (const w of warnings) {
+    logEvent(cwd, "warn", `Config: ${w}`, {});
   }
 
   return config;

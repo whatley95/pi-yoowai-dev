@@ -549,7 +549,8 @@ async function callPiBackend(
         }
         // No assistant text — collect diagnostics and retry.
         const stderrPreview = result.stderr.trim().slice(0, 500);
-        const diag = `messages=${result.messages.length}, stderr=${stderrPreview || "(empty)"}`;
+        const msgRoles = result.messages.map((m) => m.role).join(",");
+        const diag = `messages=${result.messages.length} [${msgRoles}], stderr=${stderrPreview || "(empty)"}`;
         attemptErrors.push(`attempt ${attempt + 1}: ${diag}`);
         if (cwd) {
           logEvent(cwd, "warn", "Pi backend produced no assistant text, retrying", {
@@ -579,6 +580,16 @@ async function callPiBackend(
         const delay = 500 * 2 ** attempt; // 500ms, 1s
         await new Promise((r) => setTimeout(r, delay));
       }
+    }
+    // On final failure, include raw output diagnostics if PI_HEYYOO_DEBUG is set.
+    const debug = process.env.PI_HEYYOO_DEBUG === "1" || process.env.PI_HEYYOO_DEBUG === "true";
+    if (debug && cwd) {
+      logEvent(cwd, "error", "Pi backend exhausted retries — raw diagnostics", {
+        attemptErrors,
+        provider,
+        model,
+        promptTokensEstimate: estimateTokens(systemPrompt + userPrompt),
+      });
     }
     throw new Error(
       `Secondary pi process produced no assistant text after ${maxRetries + 1} attempts: ${attemptErrors.join(" | ")}`,
