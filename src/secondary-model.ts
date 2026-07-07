@@ -207,20 +207,11 @@ const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
 // overhead and transient 503 errors from the provider's inference layer.
 const MODEL_API_OVERRIDES: Record<string, ProviderApiInfo> = {
   // opencode-go models that use anthropic-messages API.
-  "opencode-go:qwen3.7-max": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/go/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-    supportsJsonObject: false,
-  },
-  "opencode-go:qwen3.7-plus": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/go/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-    supportsJsonObject: false,
-  },
+  // Note: qwen3.7-max/qwen3.7-plus are intentionally NOT routed via HTTP by
+  // default. The opencode-go Anthropic endpoint currently returns 503
+  // "Inference is temporarily unavailable" for these models; falling back to
+  // the pi backend (which uses Pi's full Anthropic compat layer) works.
+  // Users can still force HTTP with `backend: "http"` in settings.
   "opencode-go:minimax-m3": {
     style: "anthropic",
     baseUrl: "https://opencode.ai/zen/go/v1",
@@ -1300,6 +1291,8 @@ async function callOpenAiCompatibleApi(
     headers["x-opencode-client"] = "pi";
   }
 
+  logHttpDebug("OpenAI-compatible HTTP request", provider, model, url, headers, body);
+
   const response = await fetchWithRetry(url, {
     method: "POST",
     headers,
@@ -1507,6 +1500,22 @@ async function* readAnthropicSseStream(response: Response, signal?: AbortSignal)
   }
 }
 
+function logHttpDebug(
+  label: string,
+  provider: string,
+  model: string,
+  url: string,
+  headers: Record<string, string>,
+  body: Record<string, unknown>,
+): void {
+  if (process.env.PI_HEYYOO_DEBUG !== "1" && process.env.PI_HEYYOO_DEBUG !== "true") return;
+  const redactedHeaders: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    redactedHeaders[key] = /api[-_]?key|auth|token|session/i.test(key) ? "[REDACTED]" : value;
+  }
+  console.log(`[pi-heyyoo debug] ${label}`, JSON.stringify({ provider, model, url, headers: redactedHeaders, body }));
+}
+
 async function callAnthropicApi(
   provider: string,
   apiInfo: ProviderApiInfo,
@@ -1532,10 +1541,10 @@ async function callAnthropicApi(
   const body: Record<string, unknown> = {
     model,
     max_tokens: outputTokenLimit,
-    system: systemPrompt,
+    // Pi sends the system prompt as an array of text blocks for anthropic-messages.
+    system: [{ type: "text", text: systemPrompt }],
     messages: [{ role: "user", content: userPrompt }],
-    // Pi always streams Anthropic messages API requests; some providers (e.g. opencode-go qwen3.7-max)
-    // only serve the streaming path and return 503 for non-streaming requests.
+    // Pi always streams Anthropic messages API requests; some providers only serve the streaming path.
     stream: true,
   };
   if (thinkingEnabled) {
@@ -1569,6 +1578,8 @@ async function callAnthropicApi(
     headers["x-opencode-session"] = sessionId;
     headers["x-opencode-client"] = "pi";
   }
+
+  logHttpDebug("Anthropic HTTP request", provider, model, url, headers, body);
 
   const response = await fetchWithRetry(url, {
     method: "POST",
