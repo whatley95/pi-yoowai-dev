@@ -147,10 +147,15 @@ function tokenize(command: string): string[] {
   return tokens;
 }
 
+// Providers with multiple env var candidates (checked in order, first match wins).
+// Matches Pi's env-api-keys.ts precedence.
+const PROVIDER_ENV_MAP_MULTI: Record<string, string[]> = {
+  anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+};
+
 const PROVIDER_ENV_MAP: Record<string, string> = {
   "opencode-go": "OPENCODE_API_KEY",
   opencode: "OPENCODE_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
   openai: "OPENAI_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
@@ -181,5 +186,13 @@ const PROVIDER_ENV_MAP: Record<string, string> = {
 };
 
 function providerToEnvVar(provider: string): string | undefined {
+  // Check multi-env-var providers first (e.g. anthropic has OAUTH_TOKEN + API_KEY)
+  const multi = PROVIDER_ENV_MAP_MULTI[provider];
+  if (multi) {
+    for (const envVar of multi) {
+      if (process.env[envVar]) return envVar;
+    }
+    return multi[0]; // return primary for error messages
+  }
   return PROVIDER_ENV_MAP[provider];
 }

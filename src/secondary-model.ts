@@ -10,20 +10,10 @@ import { resolveModelInfo } from "./model-registry.js";
 import type { ProviderApiInfo, UsageCost, CallSecondaryModelOptions, SecondaryModelConfig } from "./types.js";
 
 const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
-  "opencode-go": {
-    style: "openai-compatible",
-    baseUrl: "https://opencode.ai/zen/go/v1",
-    authHeader: "Authorization",
-    authPrefix: "Bearer ",
-    supportsJsonObject: true,
-  },
-  opencode: {
-    style: "openai-compatible",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "Authorization",
-    authPrefix: "Bearer ",
-    supportsJsonObject: true,
-  },
+  // Note: opencode-go and opencode are intentionally excluded from the HTTP map.
+  // They have per-model API styles (some models use openai-completions, others use
+  // anthropic-messages with a different baseUrl). The pi backend handles per-model
+  // routing correctly, so these providers fall back to the pi process.
   anthropic: {
     style: "anthropic",
     baseUrl: "https://api.anthropic.com/v1",

@@ -522,8 +522,6 @@ describe("PROVIDER_API_MAP coverage", () => {
     // Complex providers (bedrock, vertex, azure, github-copilot, cloudflare) are
     // intentionally excluded — they fall back to the pi process backend.
     const expected = [
-      "opencode-go",
-      "opencode",
       "anthropic",
       "openai",
       "deepseek",
