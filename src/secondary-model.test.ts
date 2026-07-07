@@ -522,8 +522,6 @@ describe("PROVIDER_API_MAP coverage", () => {
     // Complex providers (bedrock, vertex, azure, github-copilot, cloudflare) are
     // intentionally excluded — they fall back to the pi process backend.
     const expected = [
-      "opencode-go",
-      "opencode",
       "anthropic",
       "openai",
       "deepseek",
@@ -579,27 +577,10 @@ describe("PROVIDER_API_MAP coverage", () => {
 });
 
 describe("per-model API overrides", () => {
-  it("opencode-go:qwen3.7-max uses anthropic style", () => {
-    const info = getProviderApiInfo("opencode-go", "qwen3.7-max");
-    assert.ok(info);
-    assert.equal(info!.style, "anthropic", "qwen3.7-max should use anthropic style");
-  });
-
-  it("opencode-go:kimi-k2.7-code uses openai-compatible style", () => {
-    const info = getProviderApiInfo("opencode-go", "kimi-k2.7-code");
-    assert.ok(info);
-    assert.equal(info!.style, "openai-compatible", "kimi-k2.7-code should use openai-compatible style");
-  });
-
-  it("opencode-go without model defaults to openai-compatible", () => {
-    const info = getProviderApiInfo("opencode-go");
-    assert.ok(info);
-    assert.equal(info!.style, "openai-compatible");
-  });
-
-  it("providerSupportsJsonObject respects per-model overrides", () => {
-    assert.equal(providerSupportsJsonObject("opencode-go", "kimi-k2.7-code"), true);
-    assert.equal(providerSupportsJsonObject("opencode-go", "qwen3.7-max"), false);
+  it("opencode-go models are not in HTTP map (use pi backend)", () => {
+    assert.equal(getProviderApiInfo("opencode-go", "kimi-k2.7-code"), undefined);
+    assert.equal(getProviderApiInfo("opencode-go", "qwen3.7-max"), undefined);
+    assert.equal(getProviderApiInfo("opencode"), undefined);
   });
 });
 

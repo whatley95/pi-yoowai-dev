@@ -10,20 +10,12 @@ import { resolveModelInfo } from "./model-registry.js";
 import type { ProviderApiInfo, UsageCost, CallSecondaryModelOptions, SecondaryModelConfig } from "./types.js";
 
 const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
-  "opencode-go": {
-    style: "openai-compatible",
-    baseUrl: "https://opencode.ai/zen/go/v1",
-    authHeader: "Authorization",
-    authPrefix: "Bearer ",
-    supportsJsonObject: true,
-  },
-  opencode: {
-    style: "openai-compatible",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "Authorization",
-    authPrefix: "Bearer ",
-    supportsJsonObject: true,
-  },
+  // Note: opencode-go and opencode are intentionally excluded from the HTTP map.
+  // Their models have complex compat requirements (per-model API styles, 8+
+  // thinking formats, max_completion_tokens vs max_tokens, reasoning_effort
+  // mapping) that pi-heyyoo cannot replicate without duplicating Pi's entire
+  // openai-completions compat layer. They fall back to the pi process which
+  // handles all compat correctly.
   anthropic: {
     style: "anthropic",
     baseUrl: "https://api.anthropic.com/v1",
@@ -208,107 +200,10 @@ const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
 // Per-model API style overrides for providers that have mixed API styles.
 // Key format: "provider:model". When present, this overrides the provider-level
 // entry in PROVIDER_API_MAP for that specific model.
-// This matches Pi's per-model `api` and `baseUrl` fields in the generated model files.
-const MODEL_API_OVERRIDES: Record<string, ProviderApiInfo> = {
-  // opencode-go models that use anthropic-messages API (no /v1 in baseUrl)
-  "opencode-go:qwen3.7-max": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/go/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode-go:qwen3.7-plus": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/go/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode-go:minimax-m3": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/go/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  // opencode models that use anthropic-messages API
-  "opencode:claude-fable-5": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-haiku-4-5": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-opus-4-1": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-opus-4-5": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-opus-4-6": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-opus-4-7": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-opus-4-8": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-sonnet-4": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-sonnet-4-5": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-sonnet-4-6": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:claude-sonnet-5": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:qwen3.5-plus": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-  "opencode:qwen3.6-plus": {
-    style: "anthropic",
-    baseUrl: "https://opencode.ai/zen/v1",
-    authHeader: "x-api-key",
-    authPrefix: "",
-  },
-};
+// Note: opencode-go/opencode are NOT in the HTTP map (they use pi backend)
+// because their models have complex compat requirements beyond simple
+// openai-compatible/anthropic API styles.
+const MODEL_API_OVERRIDES: Record<string, ProviderApiInfo> = {};
 
 export function getProviderApiInfo(provider: string, model?: string): ProviderApiInfo | undefined {
   const p = provider.toLowerCase();
