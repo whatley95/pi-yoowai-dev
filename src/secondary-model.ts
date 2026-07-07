@@ -440,13 +440,16 @@ function extractTextFromContent(content: unknown): string {
     const typed = part as ContentPart;
     if (typed.type === "text" && typeof typed.text === "string") {
       textParts.push(typed.text);
-    } else if (typed.type === "thinking" && typeof typed.thinking === "string") {
-      // Fallback: some high-thinking models (e.g. qwen3.7-max on opencode-go)
-      // return only thinking blocks. Use them when no text is available.
+    }
+    // Some high-thinking models (e.g. qwen3.7-max on opencode-go) return only
+    // thinking/reasoning blocks. Collect them as a fallback when no real text
+    // is available; accept any object with a thinking string, not only type==="thinking".
+    if (typeof typed.thinking === "string") {
       fallbackParts.push(typed.thinking);
     }
   }
-  return (textParts.length > 0 ? textParts : fallbackParts).join("\n").trim();
+  const joinedText = textParts.join("\n").trim();
+  return joinedText.length > 0 ? joinedText : fallbackParts.join("\n").trim();
 }
 
 interface PiProcessResult {
@@ -478,8 +481,8 @@ function processPiJsonLine(line: string, result: PiProcessResult, cwd?: string):
   // Debug: log every event type so we can diagnose providers that emit unusual events.
   if (process.env.PI_HEYYOO_DEBUG === "1" || process.env.PI_HEYYOO_DEBUG === "true") {
     function shapeOf(value: unknown, depth = 0): unknown {
-      if (depth > 2) return "...";
       if (value === null || typeof value !== "object") return typeof value;
+      if (depth > 3) return "...";
       if (Array.isArray(value)) {
         const first = value.length > 0 ? shapeOf(value[0], depth + 1) : "empty";
         return `array(${value.length})<${JSON.stringify(first)}>`;
