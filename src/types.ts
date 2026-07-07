@@ -45,6 +45,8 @@ export interface HeyyooConfig {
   modelInfo?: Record<string, { contextWindow?: number; maxOutputTokens?: number }>;
   /** Timeout in ms for child pi process calls (default 300000 = 5 min). */
   processTimeoutMs?: number;
+  /** Timeout in ms per model in /yoo test (default 120000 = 2 min). */
+  testTimeoutMs?: number;
 }
 
 export interface PlanStep {

@@ -1493,7 +1493,10 @@ export default function (pi: ExtensionAPI) {
 
         notifyProgress(baseStage + 1, totalStages, `Testing ${label}${taskSuffix}…`);
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30_000);
+        // Thinking models via the pi backend can take 60+ seconds. Use 120s to avoid
+        // false failures on slow providers while still catching hung processes.
+        const testTimeoutMs = config.testTimeoutMs ?? 120_000;
+        const timeout = setTimeout(() => controller.abort(), testTimeoutMs);
 
         try {
           const { content, usage } = await callSecondaryModel(

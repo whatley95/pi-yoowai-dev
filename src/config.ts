@@ -123,6 +123,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   "deepScan",
   "modelInfo",
   "processTimeoutMs",
+  "testTimeoutMs",
 ]);
 
 /** Warn about unknown config keys that might be typos. */
@@ -253,5 +254,6 @@ function mergeConfig(base: HeyyooConfig, override: unknown): HeyyooConfig {
     deepScan: mergeFlag(base.deepScan, o.deepScan),
     modelInfo: mergeModelInfo(base.modelInfo, o.modelInfo),
     processTimeoutMs: pickOptionalNumber(o.processTimeoutMs, base.processTimeoutMs),
+    testTimeoutMs: pickOptionalNumber(o.testTimeoutMs, base.testTimeoutMs),
   };
 }

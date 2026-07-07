@@ -76,12 +76,15 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | `verifyByDefault`              | boolean                                 | If true, every yoo result asks the main agent to confirm the finding with evidence                                                  |
 | `secondary.contextWindow`      | number                                  | Override the model's context window                                                                                                 |
 | `secondary.maxOutputTokens`    | number                                  | Override the model's max output tokens                                                                                              |
+| `secondary.backend`             | `"pi" \| "http"`                       | Backend for model calls. `"pi"` spawns child pi process; `"http"` uses direct provider HTTP. Auto-detected if omitted (known providers → HTTP, unknown → pi) |
 | `secondary.baseUrl`            | string                                  | Custom endpoint for any OpenAI-compatible or Anthropic-compatible provider                                                          |
 | `secondary.apiKey`             | string                                  | Inline API key (prefer `auth.json` or env vars)                                                                                     |
 | `secondary.style`              | `"openai-compatible" \| "anthropic"`    | API style when using `baseUrl` (default: `"openai-compatible"`)                                                                     |
 | `secondary.authHeader`         | string                                  | Custom auth header name when using `baseUrl`                                                                                        |
 | `secondary.authPrefix`         | string                                  | Custom auth prefix when using `baseUrl`                                                                                             |
 | `modelInfo`                    | object                                  | Per-model token budget overrides, keyed by model id                                                                                 |
+| `processTimeoutMs`             | number                                  | Timeout in ms for child pi process calls (default: 300000 = 5 min)                                                                  |
+| `testTimeoutMs`                | number                                  | Timeout in ms per model in `/yoo test` (default: 120000 = 2 min)                                                                   |
 
 ## Tools
 
@@ -272,7 +275,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 
 ## How it works
 
-- **Default Pi backend** — spawns a child `pi` process; switch to direct HTTP with `/yoo-backend http`
+- **Auto-detect backend** — known providers use direct HTTP (fast, no child process); unknown providers fall back to the pi process for Pi's routing/auth layer; override with `secondary.backend` or `/yoo-backend`
 - **Automatic diff collection** — `yoo.review` auto-runs `git diff HEAD` (or `svn diff`)
 - **Adaptive context** — automatically includes full contents of small changed files, outlines for large ones, and respects the model's token budget
 - **Diff scope control** — limit reviews with `files`, `exclude`, `revision`, `since`, or `untracked`
@@ -286,7 +289,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 - **Cost tracking + budget** — estimated spend per call, session total, and optional hard budget
 - **Robust JSON parsing** — accepts Markdown analysis followed by a `## Result` fenced JSON block, unwraps wrapper objects like `{ "response": "..." }`, and falls back to markdown salvage without changing the configured thinking level
 - **One round-trip** — secondary model has no tools, pure judgment
-- **Supports OpenAI-compatible and Anthropic APIs** — 13 providers pre-configured
+- **Supports OpenAI-compatible and Anthropic APIs** — 26 providers pre-configured for direct HTTP, plus any custom endpoint via `baseUrl`
 
 ## Consensus protocol
 
@@ -328,12 +331,25 @@ When the user asks a technical or architectural question, call `yoo.suggest` or 
 
 ## Supported providers
 
+**Direct HTTP (26 providers)** — fast, no child process overhead:
+
 | Provider                                                                        | API style         |
 | ------------------------------------------------------------------------------- | ----------------- |
-| opencode-go, opencode                                                           | OpenAI-compatible |
 | anthropic                                                                       | Anthropic native  |
 | openai, deepseek, openrouter, groq, mistral, xai, together, fireworks, cerebras | OpenAI-compatible |
-| google                                                                          | Google Gemini     |
+| google                                                                          | Google Gemini (OpenAI-compatible endpoint) |
+| ant-ling, nvidia, huggingface, moonshotai, moonshotai-cn                        | OpenAI-compatible |
+| xiaomi, xiaomi-token-plan-ams/cn/sgp, zai, zai-coding-cn                        | OpenAI-compatible |
+| kimi-coding, minimax, minimax-cn, vercel-ai-gateway                             | Anthropic native  |
+
+**Pi backend (per-model routing)** — these providers have models with mixed API styles, so they use the pi process which handles per-model routing:
+
+| Provider       | Reason                                                                                     |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| opencode-go    | Some models use openai-completions, others use anthropic-messages with different baseUrls  |
+| opencode       | Same — mixed openai-completions, anthropic-messages, google-generative-ai, openai-responses |
+
+**Auto-detect:** When no `backend` is explicitly set, pi-heyyoo uses direct HTTP for known providers or custom `baseUrl`, and falls back to the pi process for unknown providers. Set `secondary.backend` to `"http"` or `"pi"` to override.
 
 You can also use **any OpenAI-compatible or Anthropic-compatible endpoint** by setting `secondary.baseUrl`. Set `secondary.style` to `"anthropic"` for Anthropic-style endpoints.
 
@@ -350,7 +366,7 @@ You can also use **any OpenAI-compatible or Anthropic-compatible endpoint** by s
 }
 ```
 
-API keys are resolved in order: `secondary.apiKey` → `~/.pi/agent/auth.json` → environment variables → `!command` execution.
+API keys are resolved in order: `secondary.apiKey` → `~/.pi/agent/auth.json` → environment variables → `!command` execution. For Anthropic, `ANTHROPIC_OAUTH_TOKEN` is checked before `ANTHROPIC_API_KEY` (matching Pi's precedence).
 
 ## Development scripts
 
