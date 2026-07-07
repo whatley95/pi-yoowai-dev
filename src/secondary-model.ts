@@ -74,7 +74,7 @@ const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
   },
   together: {
     style: "openai-compatible",
-    baseUrl: "https://api.together.xyz/v1",
+    baseUrl: "https://api.together.ai/v1",
     authHeader: "Authorization",
     authPrefix: "Bearer ",
     supportsJsonObject: true,
@@ -99,6 +99,109 @@ const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
     authHeader: "x-goog-api-key",
     authPrefix: "",
     supportsJsonObject: true,
+  },
+  // ── Additional providers (matched from Pi's built-in provider list) ──
+  "ant-ling": {
+    style: "openai-compatible",
+    baseUrl: "https://api.ant-ling.com/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  nvidia: {
+    style: "openai-compatible",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  huggingface: {
+    style: "openai-compatible",
+    baseUrl: "https://router.huggingface.co/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  moonshotai: {
+    style: "openai-compatible",
+    baseUrl: "https://api.moonshot.ai/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  "moonshotai-cn": {
+    style: "openai-compatible",
+    baseUrl: "https://api.moonshot.cn/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  xiaomi: {
+    style: "openai-compatible",
+    baseUrl: "https://api.xiaomimimo.com/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  "xiaomi-token-plan-ams": {
+    style: "openai-compatible",
+    baseUrl: "https://token-plan-ams.xiaomimimo.com/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  "xiaomi-token-plan-cn": {
+    style: "openai-compatible",
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  "xiaomi-token-plan-sgp": {
+    style: "openai-compatible",
+    baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  zai: {
+    style: "openai-compatible",
+    baseUrl: "https://api.z.ai/api/coding/paas/v4",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  "zai-coding-cn": {
+    style: "openai-compatible",
+    baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    supportsJsonObject: true,
+  },
+  // ── Anthropic-style providers ──
+  "kimi-coding": {
+    style: "anthropic",
+    baseUrl: "https://api.kimi.com/coding/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  minimax: {
+    style: "anthropic",
+    baseUrl: "https://api.minimax.io/anthropic/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "minimax-cn": {
+    style: "anthropic",
+    baseUrl: "https://api.minimaxi.com/anthropic/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
+  },
+  "vercel-ai-gateway": {
+    style: "anthropic",
+    baseUrl: "https://ai-gateway.vercel.sh/v1",
+    authHeader: "x-api-key",
+    authPrefix: "",
   },
 };
 
@@ -152,7 +255,10 @@ export async function callSecondaryModel(
   provider = (effectiveSecondary?.provider || provider).toLowerCase();
   model = effectiveSecondary?.id || model;
   const thinking = optionsThinking ?? effectiveSecondary?.thinking;
-  const backend = effectiveSecondary?.backend ?? "pi";
+  // Auto-detect backend: use direct HTTP for known providers or custom baseUrl,
+  // fall back to pi process for unknown providers that need Pi's routing/auth layer.
+  const knownProvider = Object.hasOwn(PROVIDER_API_MAP, provider) || Boolean(effectiveSecondary?.baseUrl);
+  const backend = effectiveSecondary?.backend ?? (knownProvider ? "http" : "pi");
 
   const modelInfoOverride = buildModelInfoOverride(effectiveSecondary, config?.modelInfo, model);
   const thinkingEnabledForBudget = Boolean(thinking) && thinking?.toLowerCase() !== "off";

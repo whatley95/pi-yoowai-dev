@@ -66,7 +66,7 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
   const projectPath = getProjectConfigPath(cwd, "settings.json");
 
   let config: HeyyooConfig = {
-    secondary: { provider: "", id: "", thinking: "xhigh", backend: "pi" },
+    secondary: { provider: "", id: "", thinking: "xhigh" },
     autoJudge: false,
     preReviewCommands: [],
     reviewFullFileThresholdLines: 300,

@@ -161,6 +161,23 @@ const PROVIDER_ENV_MAP: Record<string, string> = {
   fireworks: "FIREWORKS_API_KEY",
   cerebras: "CEREBRAS_API_KEY",
   google: "GEMINI_API_KEY",
+  // ── Additional providers (matched from Pi's env-api-keys.ts) ──
+  "ant-ling": "ANT_LING_API_KEY",
+  nvidia: "NVIDIA_API_KEY",
+  huggingface: "HF_TOKEN",
+  moonshotai: "MOONSHOT_API_KEY",
+  "moonshotai-cn": "MOONSHOT_API_KEY",
+  xiaomi: "XIAOMI_API_KEY",
+  "xiaomi-token-plan-ams": "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+  "xiaomi-token-plan-cn": "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+  "xiaomi-token-plan-sgp": "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+  zai: "ZAI_API_KEY",
+  "zai-coding-cn": "ZAI_CODING_CN_API_KEY",
+  "kimi-coding": "KIMI_API_KEY",
+  minimax: "MINIMAX_API_KEY",
+  "minimax-cn": "MINIMAX_CN_API_KEY",
+  "vercel-ai-gateway": "AI_GATEWAY_API_KEY",
+  "github-copilot": "COPILOT_GITHUB_TOKEN",
 };
 
 function providerToEnvVar(provider: string): string | undefined {

@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { callSecondaryModel, providerSupportsJsonObject, setPiSpawnResolver } from "./secondary-model.js";
+import {
+  callSecondaryModel,
+  providerSupportsJsonObject,
+  setPiSpawnResolver,
+  getProviderApiInfo,
+} from "./secondary-model.js";
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -43,7 +48,7 @@ describe("secondary-model backends", () => {
   it("defaults to pi backend when no backend is configured", async () => {
     const cwd = makeTempDir("pi-heyyoo-pi-default-");
     tmpDirs.push(cwd);
-    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini" });
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
     const script = join(cwd, "fake-pi.js");
     writeFileSync(
@@ -97,7 +102,7 @@ describe("secondary-model backends", () => {
   it("throws when pi backend exits with no assistant text", async () => {
     const cwd = makeTempDir("pi-heyyoo-pi-fail-");
     tmpDirs.push(cwd);
-    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini" });
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
     const script = join(cwd, "fake-pi-fail.js");
     writeFileSync(script, `process.stderr.write("something went wrong"); process.exit(1);`, "utf-8");
@@ -112,7 +117,7 @@ describe("secondary-model backends", () => {
   it("retries pi backend on empty output then succeeds", async () => {
     const cwd = makeTempDir("pi-heyyoo-pi-retry-");
     tmpDirs.push(cwd);
-    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini" });
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
     // First call: exit 0 with no output. Second call: produce assistant text.
     const script = join(cwd, "fake-pi-retry.js");
@@ -142,7 +147,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   it("throws with attempt count after exhausting pi backend retries", async () => {
     const cwd = makeTempDir("pi-heyyoo-pi-retry-exhaust-");
     tmpDirs.push(cwd);
-    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini" });
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
     // Always exit 0 with no output.
     const script = join(cwd, "fake-pi-empty.js");
@@ -158,7 +163,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   it("pi backend inherits a sanitized session snapshot when sessionManager is provided", async () => {
     const cwd = makeTempDir("pi-heyyoo-pi-session-");
     tmpDirs.push(cwd);
-    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini" });
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
     const script = join(cwd, "fake-pi-session.js");
     writeFileSync(
@@ -196,7 +201,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   it("filters inherited branch to conversation messages and excludes noise", async () => {
     const cwd = makeTempDir("pi-heyyoo-pi-filter-");
     tmpDirs.push(cwd);
-    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini" });
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
     const script = join(cwd, "fake-pi-echo.js");
     writeFileSync(
@@ -256,7 +261,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   it("prioritizes relevant paths when selecting inherited branch entries", async () => {
     const cwd = makeTempDir("pi-heyyoo-pi-relevant-");
     tmpDirs.push(cwd);
-    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini" });
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
     const script = join(cwd, "fake-pi-echo.js");
     writeFileSync(
@@ -313,7 +318,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   it("skips malformed session entries with undefined message objects", async () => {
     const cwd = makeTempDir("pi-heyyoo-pi-malformed-");
     tmpDirs.push(cwd);
-    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini" });
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
     const script = join(cwd, "fake-pi-echo.js");
     writeFileSync(
@@ -364,7 +369,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
     tmpDirs.push(cwd);
     writeSettings(
       cwd,
-      { provider: "openai", id: "gpt-4o-mini" },
+      { provider: "openai", id: "gpt-4o-mini", backend: "pi" },
       { taskModels: { review: { provider: "anthropic", id: "claude-3-5-sonnet" } } },
     );
 
@@ -508,5 +513,136 @@ describe("providerSupportsJsonObject", () => {
       }),
       false,
     );
+  });
+});
+
+describe("PROVIDER_API_MAP coverage", () => {
+  it("includes all providers from Pi's built-in list", () => {
+    // These are the providers pi-heyyoo can call directly via HTTP.
+    // Complex providers (bedrock, vertex, azure, github-copilot, cloudflare) are
+    // intentionally excluded — they fall back to the pi process backend.
+    const expected = [
+      "opencode-go",
+      "opencode",
+      "anthropic",
+      "openai",
+      "deepseek",
+      "openrouter",
+      "groq",
+      "mistral",
+      "xai",
+      "together",
+      "fireworks",
+      "cerebras",
+      "google",
+      "ant-ling",
+      "nvidia",
+      "huggingface",
+      "moonshotai",
+      "moonshotai-cn",
+      "xiaomi",
+      "xiaomi-token-plan-ams",
+      "xiaomi-token-plan-cn",
+      "xiaomi-token-plan-sgp",
+      "zai",
+      "zai-coding-cn",
+      "kimi-coding",
+      "minimax",
+      "minimax-cn",
+      "vercel-ai-gateway",
+    ];
+    for (const p of expected) {
+      assert.ok(providerSupportsJsonObject(p) !== undefined, `Provider ${p} should be in PROVIDER_API_MAP`);
+    }
+  });
+
+  it("uses correct baseUrl for together (not .xyz)", () => {
+    // Pi uses api.together.ai, not api.together.xyz
+    const info = getProviderApiInfo("together");
+    assert.ok(info);
+    assert.equal(info!.baseUrl, "https://api.together.ai/v1");
+  });
+
+  it("anthropic-style providers have anthropic style", () => {
+    for (const p of ["kimi-coding", "minimax", "minimax-cn", "vercel-ai-gateway"]) {
+      const info = getProviderApiInfo(p);
+      assert.ok(info, `Provider ${p} should exist`);
+      assert.equal(info!.style, "anthropic", `Provider ${p} should be anthropic style`);
+    }
+  });
+
+  it("new OpenAI-compatible providers support json_object", () => {
+    for (const p of ["ant-ling", "nvidia", "huggingface", "moonshotai", "zai", "xiaomi"]) {
+      assert.equal(providerSupportsJsonObject(p), true, `Provider ${p} should support json_object`);
+    }
+  });
+});
+
+describe("auto-detect backend", () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("uses http backend for known provider without explicit backend config", async () => {
+    const cwd = makeTempDir("yoo-auto-http-");
+    writeSettings(cwd, { provider: "deepseek", id: "deepseek-chat", apiKey: "sk-test" });
+    let fetchCalled = false;
+    global.fetch = (async () => {
+      fetchCalled = true;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      await callSecondaryModel("deepseek", "deepseek-chat", "sys", "usr", { cwd });
+      assert.ok(fetchCalled, "Should have used direct HTTP fetch for known provider");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("uses pi backend for unknown provider without explicit backend config", async () => {
+    const cwd = makeTempDir("yoo-auto-pi-");
+    writeSettings(cwd, { provider: "some-unknown-provider", id: "x" });
+    const script = join(cwd, "fake-pi-auto.js");
+    writeFileSync(
+      script,
+      `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"ok"}],usage:{input:1,output:1,cost:0}}}));`,
+      "utf-8",
+    );
+    setPiSpawnResolver(() => ({ command: process.execPath, prefixArgs: [script] }));
+    try {
+      const result = await callSecondaryModel("some-unknown-provider", "x", "sys", "usr", { thinking: "off", cwd });
+      assert.equal(result.content, "ok", "Should have used pi backend for unknown provider");
+    } finally {
+      setPiSpawnResolver(null);
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("uses http backend when baseUrl is set even for unknown provider", async () => {
+    const cwd = makeTempDir("yoo-auto-url-");
+    writeSettings(cwd, {
+      provider: "custom-provider",
+      id: "x",
+      baseUrl: "https://custom.example.com/v1",
+      apiKey: "sk-test",
+    });
+    let fetchCalled = false;
+    global.fetch = (async () => {
+      fetchCalled = true;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    try {
+      await callSecondaryModel("custom-provider", "x", "sys", "usr", { cwd });
+      assert.ok(fetchCalled, "Should have used HTTP when baseUrl is set");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });
