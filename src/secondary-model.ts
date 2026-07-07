@@ -470,6 +470,20 @@ function processPiJsonLine(line: string, result: PiProcessResult): void {
     return;
   }
 
+  // Debug: log every event type so we can diagnose providers that emit unusual events.
+  if (process.env.PI_HEYYOO_DEBUG === "1" || process.env.PI_HEYYOO_DEBUG === "true") {
+    // eslint-disable-next-line no-console
+    console.log(
+      "[pi-heyyoo pi-backend event]",
+      JSON.stringify({
+        type: event.type,
+        keys: Object.keys(event),
+        hasMessage: !!event.message,
+        hasDelta: typeof event.delta === "string",
+      }),
+    );
+  }
+
   // Accumulate streaming deltas from providers that emit them (Anthropic-style).
   const delta = event.delta;
   if (typeof delta === "string") {
