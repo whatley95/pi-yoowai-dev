@@ -181,6 +181,8 @@ export interface YooToolResult {
   security?: SecurityResult;
   error?: string;
   cost?: UsageCost;
+  /** The secondary model that produced this result. */
+  model?: StageProfile;
   inProgress?: boolean;
   progressMessage?: string;
   verificationRequested?: boolean;

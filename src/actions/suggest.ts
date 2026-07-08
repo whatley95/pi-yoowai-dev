@@ -33,6 +33,7 @@ export async function executeYooSuggest(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "suggest", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
+  const modelProfile = { provider: modelConfig.provider, id: modelConfig.id, thinking: modelConfig.thinking };
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   progress(1, STAGES.suggest, "Loading project conventions…");
@@ -68,6 +69,7 @@ export async function executeYooSuggest(
     return {
       action: "suggest",
       error: `Secondary model unavailable: ${msg.slice(0, 200)}. Try again or configure a different model via /yoo-model.`,
+      model: modelProfile,
     };
   }
 
@@ -85,8 +87,9 @@ export async function executeYooSuggest(
       action: "suggest",
       error: "Failed to parse suggestions from secondary model response.",
       cost,
+      model: modelProfile,
     };
   }
 
-  return { action: "suggest", suggest, cost };
+  return { action: "suggest", suggest, cost, model: modelProfile };
 }

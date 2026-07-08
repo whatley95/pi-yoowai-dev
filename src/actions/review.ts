@@ -42,6 +42,7 @@ export async function executeYooReview(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "review", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
+  const modelProfile = { provider: modelConfig.provider, id: modelConfig.id, thinking: modelConfig.thinking };
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   const state = getState(cwd);
@@ -239,7 +240,7 @@ export async function executeYooReview(
     }
 
     if (successes.length === 0) {
-      return { action: "review", error: failures.join("; ") };
+      return { action: "review", error: failures.join("; "), model: modelProfile };
     }
 
     review = mergeReviewResults(successes.map((s) => s.review));
@@ -315,6 +316,7 @@ export async function executeYooReview(
       return {
         action: "review",
         error: err instanceof Error ? err.message : String(err),
+        model: modelProfile,
       };
     }
     review = result.review;
@@ -364,7 +366,7 @@ export async function executeYooReview(
         review.autoJudged = true;
         const mergedCost =
           cost && judgeResult.cost ? mergeUsageCost(cost, judgeResult.cost) : (cost ?? judgeResult.cost);
-        return { action: "review", review, judge: judgeResult.judge, cost: mergedCost };
+        return { action: "review", review, judge: judgeResult.judge, cost: mergedCost, model: modelProfile };
       } else if (judgeResult.error) {
         review.suggestions.push(`Auto-judge failed: ${judgeResult.error}`);
       }
@@ -381,5 +383,5 @@ export async function executeYooReview(
   }
 
   progress(10, STAGES.review, "Finalizing review…");
-  return { action: "review", review, cost };
+  return { action: "review", review, cost, model: modelProfile };
 }

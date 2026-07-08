@@ -66,6 +66,7 @@ export async function executeYooTest(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "test", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
+  const modelProfile = { provider: modelConfig.provider, id: modelConfig.id, thinking: modelConfig.thinking };
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   progress(1, STAGES.test, "Collecting diff…");
@@ -147,8 +148,9 @@ export async function executeYooTest(
       action: "test",
       error: "Failed to parse test analysis from secondary model response.",
       cost,
+      model: modelProfile,
     };
   }
 
-  return { action: "test", test, cost };
+  return { action: "test", test, cost, model: modelProfile };
 }

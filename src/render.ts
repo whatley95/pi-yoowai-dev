@@ -1,6 +1,6 @@
 import { Text } from "@earendil-works/pi-tui";
 import { formatCost } from "./cost-tracker.js";
-import type { YooToolParams, YooToolResult, ReviewIssue } from "./types.js";
+import type { YooToolParams, YooToolResult, ReviewIssue, StageProfile } from "./types.js";
 
 interface Theme {
   fg(token: string, text: string): string;
@@ -66,6 +66,12 @@ function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
+}
+
+function modelSuffix(model?: StageProfile): string {
+  if (!model?.provider || !model.id) return "";
+  const thinking = model.thinking && model.thinking.toLowerCase() !== "off" ? ` (${model.thinking})` : "";
+  return ` · ${model.provider}:${model.id}${thinking}`;
 }
 
 function severityColor(severity: ReviewIssue["severity"]): string {
@@ -137,7 +143,7 @@ export function renderResult(
   }
 
   if (r.plan) {
-    lines.push(theme.fg("yoo", "yoo plan"));
+    lines.push(theme.fg("yoo", `yoo plan${modelSuffix(r.model)}`));
     lines.push(`  ${r.plan.todo.length} step(s) planned`);
     lines.push(`  ${theme.fg("dim", r.plan.summary)}`);
   }
@@ -145,7 +151,7 @@ export function renderResult(
   if (r.review) {
     const icon = r.review.verdict === "pass" ? "✓" : r.review.verdict === "blocked" ? "✗" : "⚠";
     const color = r.review.verdict === "pass" ? "green" : r.review.verdict === "blocked" ? "error" : "yellow";
-    lines.push(theme.fg(color, `yoo review ${icon} ${r.review.verdict}`));
+    lines.push(theme.fg(color, `yoo review ${icon} ${r.review.verdict}${modelSuffix(r.model)}`));
 
     if (r.review.truncated || (r.review.droppedFiles && r.review.droppedFiles.length > 0)) {
       const warnings: string[] = [];
@@ -182,21 +188,21 @@ export function renderResult(
   }
 
   if (r.suggest) {
-    lines.push(theme.fg("yoo", "yoo suggest"));
+    lines.push(theme.fg("yoo", `yoo suggest${modelSuffix(r.model)}`));
     for (const a of r.suggest.approaches) {
       lines.push(`  • ${theme.fg("bold", a.title)}`);
     }
   }
 
   if (r.recommend) {
-    lines.push(theme.fg("yoo", "yoo recommend"));
+    lines.push(theme.fg("yoo", `yoo recommend${modelSuffix(r.model)}`));
     lines.push(`  → ${r.recommend.nextStep}`);
   }
 
   if (r.test) {
     const icon = r.test.verdict === "pass" ? "✓" : r.test.verdict === "blocked" ? "✗" : "⚠";
     const color = r.test.verdict === "pass" ? "green" : r.test.verdict === "blocked" ? "error" : "yellow";
-    lines.push(theme.fg(color, `yoo test ${icon} ${r.test.verdict}`));
+    lines.push(theme.fg(color, `yoo test ${icon} ${r.test.verdict}${modelSuffix(r.model)}`));
     if (r.test.missingTests.length > 0) {
       lines.push(`  ${theme.fg("dim", `${r.test.missingTests.length} missing test(s)`)}`);
     }
@@ -208,7 +214,7 @@ export function renderResult(
   if (r.security) {
     const icon = r.security.verdict === "pass" ? "✓" : "⚠";
     const color = r.security.verdict === "pass" ? "green" : "error";
-    lines.push(theme.fg(color, `yoo security ${icon} ${r.security.verdict}`));
+    lines.push(theme.fg(color, `yoo security ${icon} ${r.security.verdict}${modelSuffix(r.model)}`));
     if (r.security.findings.length > 0) {
       lines.push(`  ${theme.fg("dim", `${r.security.findings.length} security finding(s)`)}`);
     }
@@ -217,7 +223,7 @@ export function renderResult(
   if (r.judge) {
     const icon = r.judge.verdict === "pass" ? "✓" : r.judge.verdict === "blocked" ? "✗" : "⚠";
     const color = r.judge.verdict === "pass" ? "green" : r.judge.verdict === "blocked" ? "error" : "yellow";
-    lines.push(theme.fg(color, `yoo judge ${icon} ${r.judge.verdict}`));
+    lines.push(theme.fg(color, `yoo judge ${icon} ${r.judge.verdict}${modelSuffix(r.model)}`));
     lines.push(`  ${theme.fg("dim", r.judge.summary)}`);
     if (r.judge.issues.length > 0) {
       lines.push(`  ${theme.fg("dim", `${r.judge.issues.length} remaining issue(s)`)}`);
@@ -228,7 +234,7 @@ export function renderResult(
   }
 
   if (r.scan) {
-    lines.push(theme.fg("yoo", "yoo scan"));
+    lines.push(theme.fg("yoo", `yoo scan${modelSuffix(r.model)}`));
     lines.push(`  ${r.scan.files.length} file(s) scanned`);
     lines.push(`  ${theme.fg("dim", `${r.scan.conventions.stack} • ${r.scan.conventions.naming}`)}`);
   }

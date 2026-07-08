@@ -49,6 +49,7 @@ export async function executeYooSecurity(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "security", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
+  const modelProfile = { provider: modelConfig.provider, id: modelConfig.id, thinking: modelConfig.thinking };
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   const sessionContext = getSessionContext(ctx);
@@ -131,8 +132,9 @@ export async function executeYooSecurity(
       action: "security",
       error: "Failed to parse security audit from secondary model response.",
       cost,
+      model: modelProfile,
     };
   }
 
-  return { action: "security", security, cost };
+  return { action: "security", security, cost, model: modelProfile };
 }

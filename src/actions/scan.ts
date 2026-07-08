@@ -30,6 +30,7 @@ export async function executeYooScan(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "scan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
+  const modelProfile = { provider: modelConfig.provider, id: modelConfig.id, thinking: modelConfig.thinking };
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   progress(1, STAGES.scan, "Scanning local project conventions…");
@@ -133,5 +134,10 @@ export async function executeYooScan(
     estimatedCostUsd: usage.estimatedCostUsd,
   });
 
-  return { action: "scan", scan: { conventions, files: localScan.files }, cost: recordCostWithBudget(cwd, usage) };
+  return {
+    action: "scan",
+    scan: { conventions, files: localScan.files },
+    cost: recordCostWithBudget(cwd, usage),
+    model: modelProfile,
+  };
 }

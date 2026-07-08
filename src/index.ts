@@ -13,7 +13,7 @@ const { version: VERSION, homepage: HOMEPAGE = "https://whatley.xyz" } = JSON.pa
 import { clearPromptCache } from "./prompts.js";
 import { renderCall, renderResult } from "./render.js";
 import { clearState } from "./plan-store.js";
-import type { YooToolResult, YooAction, YooModelTask, SecondaryModelConfig } from "./types.js";
+import type { YooToolResult, YooAction, YooModelTask, SecondaryModelConfig, StageProfile } from "./types.js";
 import { isPlanStep, planStepDescription } from "./types.js";
 import {
   createLoopDetectionState,
@@ -1809,6 +1809,12 @@ function issueEmoji(severity: "high" | "medium" | "low"): string {
   }
 }
 
+function formatModelSuffix(model?: StageProfile): string {
+  if (!model?.provider || !model.id) return "";
+  const thinking = model.thinking && model.thinking.toLowerCase() !== "off" ? ` (${model.thinking})` : "";
+  return ` · ${model.provider}:${model.id}${thinking}`;
+}
+
 function formatResultText(result: YooToolResult): string {
   if (result.error) return `yoo error: ${result.error}`;
 
@@ -1824,7 +1830,7 @@ function formatResultText(result: YooToolResult): string {
   }
 
   if (result.plan) {
-    lines.push("## yoo plan");
+    lines.push(`## yoo plan${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(`**Summary:** ${result.plan.summary}`);
     lines.push("");
@@ -1853,7 +1859,7 @@ function formatResultText(result: YooToolResult): string {
 
   if (result.review) {
     const icon = result.review.verdict === "pass" ? "✓" : result.review.verdict === "blocked" ? "✗" : "⚠";
-    lines.push(`## yoo review ${icon} ${result.review.verdict}`);
+    lines.push(`## yoo review ${icon} ${result.review.verdict}${formatModelSuffix(result.model)}`);
     lines.push("");
 
     if (result.review.truncated || (result.review.droppedFiles && result.review.droppedFiles.length > 0)) {
@@ -1917,7 +1923,7 @@ function formatResultText(result: YooToolResult): string {
   }
 
   if (result.suggest) {
-    lines.push("## yoo suggest");
+    lines.push(`## yoo suggest${formatModelSuffix(result.model)}`);
     lines.push("");
     for (const a of result.suggest.approaches) {
       lines.push(`### ${a.title}`);
@@ -1937,7 +1943,7 @@ function formatResultText(result: YooToolResult): string {
   }
 
   if (result.recommend) {
-    lines.push("## yoo recommend");
+    lines.push(`## yoo recommend${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(`**Next step:** ${result.recommend.nextStep}`);
     lines.push("");
@@ -1953,7 +1959,7 @@ function formatResultText(result: YooToolResult): string {
 
   if (result.test) {
     const icon = result.test.verdict === "pass" ? "✓" : result.test.verdict === "blocked" ? "✗" : "⚠";
-    lines.push(`## yoo test ${icon} ${result.test.verdict}`);
+    lines.push(`## yoo test ${icon} ${result.test.verdict}${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(result.test.summary);
     lines.push("");
@@ -1985,7 +1991,7 @@ function formatResultText(result: YooToolResult): string {
 
   if (result.security) {
     const icon = result.security.verdict === "pass" ? "✓" : "⚠";
-    lines.push(`## yoo security ${icon} ${result.security.verdict}`);
+    lines.push(`## yoo security ${icon} ${result.security.verdict}${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(result.security.summary);
     lines.push("");
@@ -2015,7 +2021,7 @@ function formatResultText(result: YooToolResult): string {
 
   if (result.judge) {
     const icon = result.judge.verdict === "pass" ? "✓" : result.judge.verdict === "blocked" ? "✗" : "⚠";
-    lines.push(`## yoo judge ${icon} ${result.judge.verdict}`);
+    lines.push(`## yoo judge ${icon} ${result.judge.verdict}${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(result.judge.summary);
     lines.push("");
@@ -2035,7 +2041,7 @@ function formatResultText(result: YooToolResult): string {
   }
 
   if (result.scan) {
-    lines.push("## yoo scan");
+    lines.push(`## yoo scan${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(formatConventions(result.scan.conventions));
     lines.push("");

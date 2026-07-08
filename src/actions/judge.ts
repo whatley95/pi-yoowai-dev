@@ -32,6 +32,7 @@ export async function executeYooJudge(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "judge", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
+  const modelProfile = { provider: modelConfig.provider, id: modelConfig.id, thinking: modelConfig.thinking };
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   const state = getState(cwd);
@@ -81,8 +82,9 @@ export async function executeYooJudge(
       action: "judge",
       error: "Failed to parse judgment from secondary model response.",
       cost,
+      model: modelProfile,
     };
   }
 
-  return { action: "judge", judge, cost };
+  return { action: "judge", judge, cost, model: modelProfile };
 }

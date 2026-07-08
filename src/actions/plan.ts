@@ -26,6 +26,7 @@ export async function executeYooPlan(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "plan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
   }
+  const modelProfile = { provider: modelConfig.provider, id: modelConfig.id, thinking: modelConfig.thinking };
 
   progress(1, STAGES.plan, "Loading project conventions…");
   const conventions = loadConventions(cwd);
@@ -61,9 +62,10 @@ export async function executeYooPlan(
       error: "Failed to parse plan from secondary model response.",
       plan: { todo: [task], acceptanceCriteria: [], summary: raw.slice(0, 200) },
       cost,
+      model: modelProfile,
     };
   }
 
   setPlan(cwd, plan);
-  return { action: "plan", plan, cost };
+  return { action: "plan", plan, cost, model: modelProfile };
 }
