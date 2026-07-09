@@ -160,17 +160,19 @@ export async function executeYooTest(
     };
   }
 
-  const originalFindingCount = test.findings.length;
-  const originalMissingCount = test.missingTests.length;
-  test.findings = test.findings.filter((f) => !f.file || changedFilesSet.has(f.file));
-  test.missingTests = test.missingTests.filter((m) => !m.file || changedFilesSet.has(m.file));
-  if (test.findings.length < originalFindingCount || test.missingTests.length < originalMissingCount) {
-    logEvent(cwd, "info", "Filtered out-of-scope test findings", {
-      originalFindings: originalFindingCount,
-      keptFindings: test.findings.length,
-      originalMissingTests: originalMissingCount,
-      keptMissingTests: test.missingTests.length,
-    });
+  if (changedFiles.length > 0) {
+    const originalFindingCount = test.findings.length;
+    const originalMissingCount = test.missingTests.length;
+    test.findings = test.findings.filter((f) => !f.file || changedFilesSet.has(f.file));
+    test.missingTests = test.missingTests.filter((m) => !m.file || changedFilesSet.has(m.file));
+    if (test.findings.length < originalFindingCount || test.missingTests.length < originalMissingCount) {
+      logEvent(cwd, "info", "Filtered out-of-scope test findings", {
+        originalFindings: originalFindingCount,
+        keptFindings: test.findings.length,
+        originalMissingTests: originalMissingCount,
+        keptMissingTests: test.missingTests.length,
+      });
+    }
   }
 
   return { action: "test", test, cost, model: modelProfile };

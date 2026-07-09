@@ -144,7 +144,7 @@ export async function executeYooSecurity(
     };
   }
 
-  if (changedFilesSet) {
+  if (changedFilesSet && changedFiles.length > 0) {
     const originalFindingCount = security.findings.length;
     security.findings = security.findings.filter((f) => !f.file || changedFilesSet.has(f.file));
     if (security.findings.length < originalFindingCount) {

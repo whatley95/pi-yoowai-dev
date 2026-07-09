@@ -330,18 +330,20 @@ export async function executeYooReview(
   }
 
   progress(8, STAGES.review, "Review response received");
-  const changedFilesSet = new Set(changedFiles);
-  const originalIssueCount = review.issues.length;
-  review.issues = review.issues.filter((issue) => {
-    if (!issue.file) return true;
-    return changedFilesSet.has(issue.file);
-  });
-  if (review.issues.length < originalIssueCount) {
-    logEvent(cwd, "info", "Filtered out-of-scope review issues", {
-      original: originalIssueCount,
-      kept: review.issues.length,
-      removed: originalIssueCount - review.issues.length,
+  if (changedFiles.length > 0) {
+    const changedFilesSet = new Set(changedFiles);
+    const originalIssueCount = review.issues.length;
+    review.issues = review.issues.filter((issue) => {
+      if (!issue.file) return true;
+      return changedFilesSet.has(issue.file);
     });
+    if (review.issues.length < originalIssueCount) {
+      logEvent(cwd, "info", "Filtered out-of-scope review issues", {
+        original: originalIssueCount,
+        kept: review.issues.length,
+        removed: originalIssueCount - review.issues.length,
+      });
+    }
   }
   recordIssues(cwd, review.issues);
 

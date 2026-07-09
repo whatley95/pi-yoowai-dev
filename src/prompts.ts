@@ -245,7 +245,8 @@ Rules:
 - Pay attention to pre-review command output (lint/test/typecheck). Failures there are real issues ONLY for files changed in this diff; ignore pre-existing warnings in unrelated files.
 - Memory shows past issues in the same files. If a past issue appears again, flag it as regression.
 - CRITICAL: Only flag issues you can see evidence for. If a property, method, template, or style exists in the provided full file contents, do NOT flag it as missing. When unsure, prefer "pass" or "low" severity over guessing.
-- Only flag issues in files that are part of this change (present in the diff or changed file list). Do NOT flag pre-existing problems in unrelated files.
+- When reviewing a code change (a diff is provided), only flag issues in files that are part of that change. Do NOT flag pre-existing problems in unrelated files.
+- When no diff is provided and the developer asks you to review a specific function/file, review exactly that requested scope.
 - Be strict but fair — flag real problems, not preferences`,
 
     user: `Review this code change. The developer says:\n\n${description}${vcsLine}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
@@ -405,8 +406,9 @@ Rules:
 - "findings" should include failing tests, brittle tests, missing assertions, or tests that do not verify the described behavior
 - "missingTests" should list concrete production files whose changed behavior lacks a corresponding test
 - Be specific and evidence-based; do not invent files or failures not shown in the test output or diff
-- Only flag test issues in files that are part of this change (present in the diff or changed file list). Do NOT flag pre-existing test failures or missing tests in unrelated files.
-- "missingTests" should list only production files whose behavior is changed by this diff and lack a corresponding test.
+- When reviewing a code change (a diff is provided), only flag test issues in files that are part of that change. Do NOT flag pre-existing test failures or missing tests in unrelated files.
+- When no diff is provided and the developer asks about a specific function/file, evaluate exactly that requested scope.
+- "missingTests" should list only production files whose behavior is changed by the diff and lack a corresponding test.
 - Respect project conventions when suggesting test file names or patterns`,
 
     user: `Review this change for test coverage and quality. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${testOutputBlock}${conventionsBlock}`,
@@ -451,7 +453,8 @@ Rules:
 - Each finding must include a specific, actionable remediation suggestion
 - Categories must be one of: secrets, injection, auth, access-control, validation, dependencies, crypto, logging, other
 - Do not flag speculative risks with no evidence in the provided diff or files
-- Only flag security findings in files that are part of this change (present in the diff or changed file list). Do NOT flag pre-existing vulnerabilities in unrelated files.
+- When auditing a code change (a diff is provided), only flag security findings in files that are part of that change. Do NOT flag pre-existing vulnerabilities in unrelated files.
+- When no diff is provided and the developer asks about a specific function/file, audit exactly that requested scope.
 - Pay special attention to: hardcoded secrets, SQL/command injection, unsafe eval, missing input validation, insecure auth, permissive CORS, dependency upgrades, and logging sensitive data`,
 
     user: `Audit this change for security issues. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${conventionsBlock}`,
