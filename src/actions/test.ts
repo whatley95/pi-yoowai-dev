@@ -19,6 +19,8 @@ import {
   createStreamProgressCallback,
 } from "./shared.js";
 import { getSessionContext } from "./review-helpers.js";
+import { getState } from "../session-state.js";
+import { planStepDescription } from "../types.js";
 import type { ProgressReporter } from "../progress.js";
 import type { YooToolResult, Conventions } from "../types.js";
 
@@ -76,6 +78,12 @@ export async function executeYooTest(
   };
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
+  const state = getState(cwd);
+  const currentStep =
+    state.plan && state.completedSteps < state.plan.todo.length
+      ? planStepDescription(state.plan.todo[state.completedSteps])
+      : undefined;
+
   progress(1, STAGES.test, "Collecting diff…");
   const { diff, changedFiles } = getDiff(cwd, {
     ...options,
@@ -125,7 +133,7 @@ export async function executeYooTest(
   });
   const fileContents = mapFileContentEntries(fileResult.entries);
 
-  const { system, user } = buildTestPrompt(description, diff, fileContents, testOutput, conventionsText, nativeJson);
+  const { system, user } = buildTestPrompt(description, diff, fileContents, testOutput, conventionsText, nativeJson, currentStep);
   progress(6, STAGES.test, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,

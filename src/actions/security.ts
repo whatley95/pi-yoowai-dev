@@ -21,6 +21,8 @@ import {
   createStreamProgressCallback,
 } from "./shared.js";
 import { getSessionContext } from "./review-helpers.js";
+import { getState } from "../session-state.js";
+import { planStepDescription } from "../types.js";
 import type { ProgressReporter } from "../progress.js";
 import type { YooToolResult } from "../types.js";
 
@@ -58,6 +60,12 @@ export async function executeYooSecurity(
     backend: resolveBackendType(modelConfig.provider, modelConfig),
   };
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
+
+  const state = getState(cwd);
+  const currentStep =
+    state.plan && state.completedSteps < state.plan.todo.length
+      ? planStepDescription(state.plan.todo[state.completedSteps])
+      : undefined;
 
   const sessionContext = getSessionContext(ctx);
   const conventions = loadConventions(cwd);
@@ -110,7 +118,7 @@ export async function executeYooSecurity(
   });
   const fileContents = mapFileContentEntries(fileResult.entries);
 
-  const { system, user } = buildSecurityPrompt(description, diff, fileContents, conventionsText, nativeJson);
+  const { system, user } = buildSecurityPrompt(description, diff, fileContents, conventionsText, nativeJson, currentStep);
   progress(4, STAGES.security, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,

@@ -374,6 +374,7 @@ function buildTestPromptImpl(
   testOutput: string,
   conventions?: string,
   nativeJson = false,
+  currentStep?: string,
 ): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
   const fileContentsBlock =
@@ -383,6 +384,7 @@ function buildTestPromptImpl(
   const testOutputBlock = testOutput
     ? `\n\n<test_output>\n${testOutput}\n</test_output>`
     : "\n\nNo test command output was provided. Analyze the diff statically for test coverage and quality.";
+  const currentStepBlock = currentStep ? `\n\nCurrent plan step being reviewed:\n${currentStep}` : "";
 
   return {
     system: `${COMMON_SYSTEM_PREFIX}
@@ -415,10 +417,11 @@ Rules:
 - Be specific and evidence-based; do not invent files or failures not shown in the test output or diff
 - When reviewing a code change (a diff is provided), only flag test issues in files that are part of that change. Do NOT flag pre-existing test failures or missing tests in unrelated files.
 - When no diff is provided and the developer asks about a specific function/file, evaluate exactly that requested scope.
+- If a current plan step is shown above, only evaluate test coverage relevant to that step. Do NOT flag missing tests for work from other plan steps.
 - "missingTests" should list only production files whose behavior is changed by the diff and lack a corresponding test.
 - Respect project conventions when suggesting test file names or patterns`,
 
-    user: `Review this change for test coverage and quality. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${testOutputBlock}${conventionsBlock}`,
+    user: `Review this change for test coverage and quality. The developer says:\n\n${description}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${testOutputBlock}${conventionsBlock}`,
   };
 }
 
@@ -428,12 +431,14 @@ function buildSecurityPromptImpl(
   fileContents: FileContentContext[],
   conventions?: string,
   nativeJson = false,
+  currentStep?: string,
 ): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
   const fileContentsBlock =
     fileContents.length > 0
       ? `\n\n<file_contents>\n${fileContents.map((f) => `--- ${f.file} (${f.mode}) ---\n${f.content}`).join("\n\n")}\n</file_contents>`
       : "";
+  const currentStepBlock = currentStep ? `\n\nCurrent plan step being audited:\n${currentStep}` : "";
 
   return {
     system: `${COMMON_SYSTEM_PREFIX}
@@ -462,9 +467,10 @@ Rules:
 - Do not flag speculative risks with no evidence in the provided diff or files
 - When auditing a code change (a diff is provided), only flag security findings in files that are part of that change. Do NOT flag pre-existing vulnerabilities in unrelated files.
 - When no diff is provided and the developer asks about a specific function/file, audit exactly that requested scope.
+- If a current plan step is shown above, only evaluate security risks relevant to that step. Do NOT flag missing security work from other plan steps.
 - Pay special attention to: hardcoded secrets, SQL/command injection, unsafe eval, missing input validation, insecure auth, permissive CORS, dependency upgrades, and logging sensitive data`,
 
-    user: `Audit this change for security issues. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${conventionsBlock}`,
+    user: `Audit this change for security issues. The developer says:\n\n${description}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${conventionsBlock}`,
   };
 }
 
