@@ -10,6 +10,7 @@ import { calculateReviewBudget, estimateTokens, type ReviewBudget } from "../tok
 import { getSessionCost, formatCost, reserveCost, releaseCost } from "../cost-tracker.js";
 import { logEvent } from "../logger.js";
 import { getState, markStepComplete, incrementReviewRounds, getProgress } from "../session-state.js";
+import { planStepDescription } from "../types.js";
 import { STAGES, secondaryModelLabel, recordCostWithBudget, mergeUsageCost } from "./shared.js";
 import {
   getSessionContext,
@@ -52,6 +53,10 @@ export async function executeYooReview(
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
   const state = getState(cwd);
+  const currentStep =
+    state.plan && state.completedSteps < state.plan.todo.length
+      ? planStepDescription(state.plan.todo[state.completedSteps])
+      : undefined;
 
   progress(1, STAGES.review, "Collecting diff…");
   const { diff, truncated, changedFiles, vcs } = getDiff(cwd, {
@@ -212,6 +217,7 @@ export async function executeYooReview(
         diff: fileDiffs[p.file] ?? "",
         vcs,
         criteria: state.plan?.acceptanceCriteria?.join("\n"),
+        currentStep,
         sessionContext,
         conventionsText,
         preReviewOutput,
@@ -304,6 +310,7 @@ export async function executeYooReview(
         diff: finalDiff,
         vcs,
         criteria: state.plan?.acceptanceCriteria?.join("\n"),
+        currentStep,
         sessionContext,
         conventionsText,
         preReviewOutput,

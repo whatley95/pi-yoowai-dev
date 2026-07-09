@@ -121,6 +121,7 @@ export interface ReviewBatchInput {
   diff: string;
   vcs?: string;
   criteria?: string;
+  currentStep?: string;
   sessionContext: string;
   conventionsText: string;
   preReviewOutput: string;
@@ -144,6 +145,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{ review:
     diff,
     vcs,
     criteria,
+    currentStep,
     sessionContext,
     conventionsText,
     preReviewOutput,
@@ -175,6 +177,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{ review:
     {
       vcs,
       criteria,
+      currentStep,
       sessionContext,
       conventionsText,
       preReviewOutput,

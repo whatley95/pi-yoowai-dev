@@ -162,6 +162,7 @@ function buildAdaptiveReviewPromptImpl(
   options: {
     vcs?: string;
     criteria?: string;
+    currentStep?: string;
     sessionContext?: string;
     conventionsText?: string;
     preReviewOutput?: string;
@@ -175,6 +176,7 @@ function buildAdaptiveReviewPromptImpl(
   const {
     vcs,
     criteria,
+    currentStep,
     sessionContext,
     conventionsText,
     preReviewOutput,
@@ -186,6 +188,7 @@ function buildAdaptiveReviewPromptImpl(
   } = options;
 
   const criteriaBlock = criteria ? `\n\n<acceptance_criteria>\n${criteria}\n</acceptance_criteria>` : "";
+  const currentStepBlock = currentStep ? `\n\nCurrent plan step being reviewed:\n${currentStep}` : "";
   const sessionBlock = sessionContext ? `\n\n<session_context>\n${sessionContext}\n</session_context>` : "";
   const conventionsBlock = conventionsText
     ? `\n\n<project_conventions>\n${conventionsText}\n</project_conventions>`
@@ -248,9 +251,10 @@ Rules:
 - CRITICAL: Only flag issues you can see evidence for. If a property, method, template, or style exists in the provided full file contents, do NOT flag it as missing. When unsure, prefer "pass" or "low" severity over guessing.
 - When reviewing a code change (a diff is provided), only flag issues in files that are part of that change. Do NOT flag pre-existing problems in unrelated files.
 - When no diff is provided and the developer asks you to review a specific function/file, review exactly that requested scope.
+- If a current plan step is shown above, only evaluate acceptance criteria that are relevant to that step. Do NOT flag work from other plan steps as missing.
 - Be strict but fair — flag real problems, not preferences`,
 
-    user: `Review this code change. The developer says:\n\n${description}${vcsLine}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
+    user: `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
   };
 }
 
