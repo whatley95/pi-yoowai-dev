@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
 import { getDiff } from "../diff-grabber.js";
 import { loadConventions, formatConventions, scanProjectConventions, gatherDeepScanSamples } from "../conventions.js";
+import { logEvent } from "../logger.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
@@ -123,6 +124,7 @@ export async function executeYooSecurity(
 
   progress(5, STAGES.security, "Parsing security audit…");
   const cost = recordCostWithBudget(cwd, usage);
+  const changedFilesSet = options.fullProject ? undefined : new Set(changedFiles);
   const security = parseStructuredResult(cwd, raw, {
     label: "Security result",
     validate: validateSecurityResult,
@@ -140,6 +142,18 @@ export async function executeYooSecurity(
       cost,
       model: modelProfile,
     };
+  }
+
+  if (changedFilesSet) {
+    const originalFindingCount = security.findings.length;
+    security.findings = security.findings.filter((f) => !f.file || changedFilesSet.has(f.file));
+    if (security.findings.length < originalFindingCount) {
+      logEvent(cwd, "info", "Filtered out-of-scope security findings", {
+        original: originalFindingCount,
+        kept: security.findings.length,
+        removed: originalFindingCount - security.findings.length,
+      });
+    }
   }
 
   return { action: "security", security, cost, model: modelProfile };

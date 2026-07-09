@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
 import { getDiff } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
+import { logEvent } from "../logger.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
@@ -138,6 +139,7 @@ export async function executeYooTest(
 
   progress(7, STAGES.test, "Parsing test result…");
   const cost = recordCostWithBudget(cwd, usage);
+  const changedFilesSet = new Set(changedFiles);
   const test = parseStructuredResult(cwd, raw, {
     label: "Test result",
     validate: validateTestResult,
@@ -156,6 +158,19 @@ export async function executeYooTest(
       cost,
       model: modelProfile,
     };
+  }
+
+  const originalFindingCount = test.findings.length;
+  const originalMissingCount = test.missingTests.length;
+  test.findings = test.findings.filter((f) => !f.file || changedFilesSet.has(f.file));
+  test.missingTests = test.missingTests.filter((m) => !m.file || changedFilesSet.has(m.file));
+  if (test.findings.length < originalFindingCount || test.missingTests.length < originalMissingCount) {
+    logEvent(cwd, "info", "Filtered out-of-scope test findings", {
+      originalFindings: originalFindingCount,
+      keptFindings: test.findings.length,
+      originalMissingTests: originalMissingCount,
+      keptMissingTests: test.missingTests.length,
+    });
   }
 
   return { action: "test", test, cost, model: modelProfile };

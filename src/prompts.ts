@@ -405,6 +405,8 @@ Rules:
 - "findings" should include failing tests, brittle tests, missing assertions, or tests that do not verify the described behavior
 - "missingTests" should list concrete production files whose changed behavior lacks a corresponding test
 - Be specific and evidence-based; do not invent files or failures not shown in the test output or diff
+- Only flag test issues in files that are part of this change (present in the diff or changed file list). Do NOT flag pre-existing test failures or missing tests in unrelated files.
+- "missingTests" should list only production files whose behavior is changed by this diff and lack a corresponding test.
 - Respect project conventions when suggesting test file names or patterns`,
 
     user: `Review this change for test coverage and quality. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${testOutputBlock}${conventionsBlock}`,
@@ -449,6 +451,7 @@ Rules:
 - Each finding must include a specific, actionable remediation suggestion
 - Categories must be one of: secrets, injection, auth, access-control, validation, dependencies, crypto, logging, other
 - Do not flag speculative risks with no evidence in the provided diff or files
+- Only flag security findings in files that are part of this change (present in the diff or changed file list). Do NOT flag pre-existing vulnerabilities in unrelated files.
 - Pay special attention to: hardcoded secrets, SQL/command injection, unsafe eval, missing input validation, insecure auth, permissive CORS, dependency upgrades, and logging sensitive data`,
 
     user: `Audit this change for security issues. The developer says:\n\n${description}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${conventionsBlock}`,
