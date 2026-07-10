@@ -71,7 +71,7 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | ------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `secondary`                    | object                                  | `{ provider, id, thinking? }` for the base secondary model                                                                          |
 | `taskModels`                   | object                                  | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `explain`)  |
-| `autoJudge`                    | boolean                                 | Run `yoo.judge` automatically when the last plan step passes review                                                                 |
+| `autoJudge`                    | boolean                                 | Run `yoo.judge` automatically when the last plan step passes review or is marked done via `/yoo-done`                               |
 | `preReviewCommands`            | string[]                                | Commands to run before each review; output is included in the review prompt                                                         |
 | `testCommand`                  | string                                  | Command to run for `/yoo test` analysis (e.g. `npm test`). Auto-detected from `package.json` if omitted                             |
 | `costBudgetUsd`                | number                                  | Maximum estimated session spend before yoo stops with an error. Negative values are treated as unset; `0` means no spend is allowed |
@@ -80,6 +80,10 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | `reviewMaxInputTokens`         | number                                  | Hard cap on review input tokens                                                                                                     |
 | `reviewStrategy`               | `"auto" \| "diff-only" \| "full-files"` | How to include changed file contents (default: `"auto"`)                                                                            |
 | `verifyByDefault`              | boolean                                 | If true, every yoo result asks the main agent to confirm the finding with evidence                                                  |
+| `selfVerify`                   | boolean                                 | Run a second verification pass on `yoo.review` and `yoo.judge` results (costs extra tokens)                                         |
+| `toolUseLoop`                  | boolean \| number                       | Let the secondary model use `read_file` and allowlisted `run_command` in a loop; number sets the max iterations                     |
+| `parallelReview`               | boolean \| number                       | Review multiple changed files in parallel; number sets concurrency (default: 3 when enabled)                                        |
+| `deepScan`                     | boolean \| number                       | Include code samples and build a symbol index during `yoo.scan`; number caps sample files                                           |
 | `secondary.contextWindow`      | number                                  | Override the model's context window                                                                                                 |
 | `secondary.maxOutputTokens`    | number                                  | Override the model's max output tokens                                                                                              |
 | `secondary.backend`            | `"sdk" \| "pi" \| "http"`              | Backend for model calls. `"sdk"` uses Pi's `pi-ai` provider layer (default); `"pi"` spawns the Pi CLI; `"http"` uses direct provider HTTP |
@@ -250,6 +254,7 @@ Recorded facts appear in `yoo_index({ topic: "learned" })`.
 | `/yoo recommend`                               | Get one concrete next step based on your current situation/plan                        |
 | `/yoo judge "auth refactor complete"`          | Final holistic review                                                                  |
 | `/yoo scan`                                    | Scan project conventions                                                               |
+| `/yoo scan-deep`                               | Deep scan with code samples and symbol index build                                     |
 | `/yoo test [description] [--command <cmd>]`    | Analyze test coverage and failures for current changes                                 |
 | `/yoo security [description] [--full-project]` | Security audit of current diff or sampled project files                                |
 | `/yoo-status`                                  | Detailed diagnostics: base + per-tool models, config, plan, VCS, conventions, cost     |
@@ -367,7 +372,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 - **Learned facts** — `yoo_learn` persists project-specific facts across sessions; surfaced by `yoo_index`
 - **Review memory** — previous issues per file are included so the model knows what was already fixed; memory is reset for each new Pi session
 - **Pre-review commands** — configured lint/test/typecheck output is included in the review prompt
-- **Cost tracking + budget** — estimated spend per call, session total, and optional hard budget
+- **Cost tracking + budget** — estimated spend per call, session total, optional hard budget, and wall-clock elapsed time in result headers
 - **Robust JSON parsing** — accepts Markdown analysis followed by a `## Result` fenced JSON block, unwraps wrapper objects like `{ "response": "..." }`, and falls back to markdown salvage without changing the configured thinking level
 - **One round-trip** — secondary model has no tools, pure judgment
 - **Supports OpenAI-compatible and Anthropic APIs** — 26 providers pre-configured for direct HTTP, plus any custom endpoint via `baseUrl`
