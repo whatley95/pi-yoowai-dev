@@ -22,7 +22,7 @@ import { executeYooExplain } from "../yoo-explain.js";
 import { handleYooSearchCommand } from "../yoo-search.js";
 import { handleYooSearchConfigCommand } from "../yoo-search-config.js";
 import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
-import { getState, markStepComplete, getProgress, dropSessionState } from "../session-state.js";
+import { getState, markStepComplete, getProgress, dropSessionState, markJudgeCompleted } from "../session-state.js";
 import { clearState } from "../plan-store.js";
 import { resetCost, getSessionCost, formatCost } from "../cost-tracker.js";
 import { clearMemory } from "../review-memory.js";
@@ -75,7 +75,9 @@ async function showYooStatus(ctx: ExtensionContext): Promise<void> {
     "",
     "Session:",
     `  Cost: ${formatCost(cost.costUsd)} (${cost.calls} call${cost.calls === 1 ? "" : "s"})`,
-    `  Review rounds this step: ${state.reviewRounds}`,
+    state.completedSteps < state.totalSteps
+      ? `  Review rounds this step: ${state.reviewRounds[state.completedSteps] ?? 0}`
+      : "  Review rounds: all steps complete",
     "",
     "Plan:",
     state.plan ? `  Summary: ${state.plan.summary}` : "  No active plan",
@@ -754,7 +756,7 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       const planProgress = getProgress(ctx.cwd);
       const situation =
         planProgress.total > 0
-          ? `Plan progress: ${planProgress.current}/${planProgress.total} steps completed. Current step: ${planProgress.nextStep ?? "none"}`
+          ? `Plan progress: ${planProgress.completed}/${planProgress.total} steps completed. Current step: ${planProgress.nextStep ?? "none"}`
           : "No active plan. Recommend a next step for this project.";
       const progress = createProgressReporter("recommend", ctx);
       const notifyProgress = (stage: number, total: number, message: string) => {
@@ -772,19 +774,20 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     description: "Mark the current yoo plan step complete and recommend the next step",
     handler: async (_args, ctx) => {
       const signal = undefined;
+      const config = loadHeyyooConfig(ctx.cwd);
       const planProgress = getProgress(ctx.cwd);
       if (planProgress.total === 0) {
         ctx.ui.notify("No active yoo plan. Start one with /yoo plan <task>.", "warn");
         return;
       }
-      if (planProgress.current >= planProgress.total) {
+      if (planProgress.completed >= planProgress.total) {
         ctx.ui.notify("All plan steps are already complete. Run /yoo judge for a final review.", "info");
         return;
       }
       markStepComplete(ctx.cwd);
       const newProgress = getProgress(ctx.cwd);
-      ctx.ui.notify(`Step ${planProgress.current + 1} marked complete.`, "info");
-      const situation = `Plan progress: ${newProgress.current}/${newProgress.total} steps completed. Current step: ${newProgress.nextStep ?? "none"}`;
+      ctx.ui.notify(`Step ${planProgress.completed + 1} marked complete.`, "info");
+      const situation = `Plan progress: ${newProgress.completed}/${newProgress.total} steps completed. Current step: ${newProgress.nextStep ?? "none"}`;
       const progress = createProgressReporter("recommend", ctx);
       const notifyProgress = (stage: number, total: number, message: string) => {
         progress(stage, total, message);
@@ -794,6 +797,32 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       clearYooStatus(ctx);
       const text = formatResultText(result);
       ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
+
+      if (
+        config.autoJudge &&
+        !getState(ctx.cwd).judgeCompleted &&
+        newProgress.completed === newProgress.total &&
+        newProgress.total > 0
+      ) {
+        const judgeNotify = (stage: number, _total: number, message: string) => {
+          ctx.ui.notify(`[${stage}/10] ${message}`, "info");
+        };
+        const judgeResult = await executeYooJudge(
+          ctx.cwd,
+          `All ${newProgress.total} plan steps completed.`,
+          signal,
+          judgeNotify,
+          ctx.sessionManager,
+        );
+        if (judgeResult.judge) {
+          markJudgeCompleted(ctx.cwd);
+          const judgeText = formatResultText(judgeResult);
+          ctx.ui.notify(judgeText.slice(0, 500), judgeResult.error ? "error" : "info");
+        } else if (judgeResult.error) {
+          markJudgeCompleted(ctx.cwd);
+          ctx.ui.notify(`Auto-judge failed: ${judgeResult.error}`, "error");
+        }
+      }
     },
   });
 

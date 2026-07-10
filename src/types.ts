@@ -152,8 +152,10 @@ export interface HeyyooSessionState {
   plan?: PlanResult;
   completedSteps: number;
   totalSteps: number;
-  reviewRounds: number;
+  reviewRounds: number[];
   reviewedSteps: boolean[];
+  /** Set after autoJudge has run for a completed plan, so it does not fire twice. */
+  judgeCompleted?: boolean;
 }
 
 export interface YooToolParams {

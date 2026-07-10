@@ -9,7 +9,13 @@ import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
 import { calculateReviewBudget, estimateTokens, type ReviewBudget } from "../token-budget.js";
 import { getSessionCost, formatCost, reserveCost, releaseCost } from "../cost-tracker.js";
 import { logEvent } from "../logger.js";
-import { getState, markStepComplete, incrementReviewRounds, getProgress } from "../session-state.js";
+import {
+  getState,
+  markStepComplete,
+  incrementReviewRounds,
+  getProgress,
+  markJudgeCompleted,
+} from "../session-state.js";
 import { planStepDescription } from "../types.js";
 import { STAGES, secondaryModelLabel, recordCostWithBudget, mergeUsageCost, toolLoopOptions } from "./shared.js";
 import {
@@ -401,12 +407,17 @@ export async function executeYooReview(
   if (review.consensus) {
     markStepComplete(cwd, true);
     const planProgress = getProgress(cwd);
-    review.planProgress = `${planProgress.current}/${planProgress.total} steps done`;
+    review.planProgress = `${planProgress.completed}/${planProgress.total} steps done`;
     if (planProgress.nextStep) {
       review.nextStep = planProgress.nextStep;
     }
 
-    if (config.autoJudge && planProgress.current === planProgress.total && planProgress.total > 0) {
+    if (
+      config.autoJudge &&
+      !state.judgeCompleted &&
+      planProgress.completed === planProgress.total &&
+      planProgress.total > 0
+    ) {
       progress(10, STAGES.review, "Auto-judging completed work…");
       const judgeProgress: ProgressReporter = (stage, _total, message) => {
         progress(STAGES.review, STAGES.review, `[judge] ${message}`);
@@ -420,17 +431,19 @@ export async function executeYooReview(
       );
       if (judgeResult.judge) {
         review.autoJudged = true;
+        markJudgeCompleted(cwd);
         const mergedCost =
           cost && judgeResult.cost ? mergeUsageCost(cost, judgeResult.cost) : (cost ?? judgeResult.cost);
         return { action: "review", review, judge: judgeResult.judge, cost: mergedCost, model: modelProfile };
       } else if (judgeResult.error) {
+        markJudgeCompleted(cwd);
         review.suggestions.push(`Auto-judge failed: ${judgeResult.error}`);
       }
     }
   } else {
     incrementReviewRounds(cwd);
     const updatedState = getState(cwd);
-    if (updatedState.reviewRounds >= 3) {
+    if ((updatedState.reviewRounds[updatedState.completedSteps] ?? 0) >= 3) {
       review.escalated = true;
       review.suggestions.push(
         "This step has failed review 3 times. Consider asking the user for guidance or trying a fundamentally different approach.",

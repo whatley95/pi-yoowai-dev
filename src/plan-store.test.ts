@@ -17,7 +17,7 @@ describe("plan-store", () => {
     const state: HeyyooSessionState = {
       completedSteps: 1,
       totalSteps: 2,
-      reviewRounds: 0,
+      reviewRounds: [],
       reviewedSteps: [true, false],
       plan: {
         summary: "Legacy plan",
@@ -34,7 +34,7 @@ describe("plan-store", () => {
     const state: HeyyooSessionState = {
       completedSteps: 0,
       totalSteps: 2,
-      reviewRounds: 0,
+      reviewRounds: [],
       reviewedSteps: [false, false],
       plan: {
         summary: "Rich plan",

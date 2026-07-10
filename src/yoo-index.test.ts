@@ -37,7 +37,7 @@ describe("yoo-index", () => {
     const state: HeyyooSessionState = {
       completedSteps: 1,
       totalSteps: 3,
-      reviewRounds: 0,
+      reviewRounds: [],
       reviewedSteps: [true, false, false],
       plan: {
         summary: "Add yoo index",

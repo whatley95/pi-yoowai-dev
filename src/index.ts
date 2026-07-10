@@ -110,7 +110,7 @@ export default function (pi: ExtensionAPI) {
       "Use yoo with test:true when you want a dedicated check for missing tests, failing tests, or low test quality. This is optional; yoo.review already catches many quality issues.",
       "Use yoo with security:true when the change involves auth, input handling, secrets, dependencies, or any security-sensitive area. Pass a description of the function or API to audit and scope it with files:[...] if needed.",
       "Use yoo with judge:true after completing all work for a final holistic review against the original plan.",
-      "Enable autoJudge in settings.json to automatically run judge when the last plan step passes review.",
+      "Enable autoJudge in settings.json to automatically run judge when the last plan step is completed (passes review or is marked done via /yoo-done).",
       "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
       "Use `verify: true` when a yoo finding is surprising, high-stakes, or unclear. The main agent must then confirm or refute the finding with evidence before acting.",
       "The secondary model should be a DIFFERENT model family than the main model to catch blind spots. Configure in settings.json under pi-heyyoo.secondary.",

@@ -7,7 +7,13 @@ const sessionStates = new Map<string, HeyyooSessionState>();
 export function getState(cwd: string): HeyyooSessionState {
   let state = sessionStates.get(cwd);
   if (!state) {
-    state = loadState(cwd) ?? { completedSteps: 0, totalSteps: 0, reviewRounds: 0, reviewedSteps: [] };
+    state = loadState(cwd) ?? {
+      completedSteps: 0,
+      totalSteps: 0,
+      reviewRounds: [],
+      reviewedSteps: [],
+      judgeCompleted: false,
+    };
     sessionStates.set(cwd, state);
   }
   return state;
@@ -18,8 +24,9 @@ export function setPlan(cwd: string, plan: PlanResult): void {
   state.plan = plan;
   state.totalSteps = plan.todo.length;
   state.completedSteps = 0;
-  state.reviewRounds = 0;
+  state.reviewRounds = new Array(plan.todo.length).fill(0);
   state.reviewedSteps = new Array(plan.todo.length).fill(false);
+  state.judgeCompleted = false;
   saveState(cwd, state);
 }
 
@@ -27,7 +34,6 @@ export function markStepComplete(cwd: string, reviewed = false): void {
   const state = getState(cwd);
   if (state.totalSteps > 0 && state.completedSteps < state.totalSteps) {
     state.completedSteps++;
-    state.reviewRounds = 0;
     state.reviewedSteps[state.completedSteps - 1] = reviewed;
     saveState(cwd, state);
   }
@@ -35,17 +41,19 @@ export function markStepComplete(cwd: string, reviewed = false): void {
 
 export function incrementReviewRounds(cwd: string): void {
   const state = getState(cwd);
-  state.reviewRounds++;
+  const idx = state.completedSteps;
+  while (state.reviewRounds.length <= idx) state.reviewRounds.push(0);
+  state.reviewRounds[idx]++;
   saveState(cwd, state);
 }
 
-export function getProgress(cwd: string): { current: number; total: number; nextStep?: string } {
+export function getProgress(cwd: string): { completed: number; total: number; nextStep?: string } {
   const state = getState(cwd);
-  const current = state.completedSteps;
+  const completed = state.completedSteps;
   const total = state.totalSteps;
-  const item = state.plan?.todo[current];
+  const item = state.plan?.todo[completed];
   const nextStep = item ? planStepDescription(item) : undefined;
-  return { current, total, nextStep };
+  return { completed, total, nextStep };
 }
 
 export function buildReviewHistory(cwd: string): string {
@@ -64,6 +72,12 @@ export function buildReviewHistory(cwd: string): string {
     }
   }
   return lines.join("\n");
+}
+
+export function markJudgeCompleted(cwd: string): void {
+  const state = getState(cwd);
+  state.judgeCompleted = true;
+  saveState(cwd, state);
 }
 
 export function dropSessionState(cwd: string): void {
