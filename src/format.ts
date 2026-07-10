@@ -22,17 +22,30 @@ export function formatModelSuffix(model?: StageProfile): string {
   return ` · ${model.provider}:${model.id}${thinking}${backend}`;
 }
 
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "0ms";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 export function formatResultText(result: YooToolResult): string {
   if (result.error) return `yoo error: ${result.error}`;
 
   const lines: string[] = [];
 
+  const metaParts: string[] = [];
   if (result.cost) {
     const inTokens = formatTokenCount(result.cost.estimatedInputTokens);
     const outTokens = formatTokenCount(result.cost.estimatedOutputTokens);
     const cost = formatCost(result.cost.estimatedCostUsd);
     const session = formatCost(result.cost.sessionCostUsd);
-    lines.push(`_${inTokens} in · ${outTokens} out · ${cost} (session ${session})_`);
+    metaParts.push(`${inTokens} in · ${outTokens} out · ${cost} (session ${session})`);
+  }
+  if (result.elapsedMs != null) {
+    metaParts.push(`took ${formatDuration(result.elapsedMs)}`);
+  }
+  if (metaParts.length > 0) {
+    lines.push(`_${metaParts.join(" · ")}_`);
     lines.push("");
   }
 

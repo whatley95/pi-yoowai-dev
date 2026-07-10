@@ -365,7 +365,7 @@ The extension stores per-project runtime data under `.pi/heyyoo/`:
 - The package is consumed by Pi, not by end-users directly. Pi resolves it as an extension via `"pi": { "extensions": ["./src/index.ts"] }` in `package.json`.
 - The `files` array publishes only `src/` and `README.md`.
 - Version bumps are done with `npm run bump:patch|minor|major`, which edits `package.json` in place.
-- CI runs `typecheck`, `lint`, `test`, and `format:check` on push and pull requests via `.github/workflows/ci.yml`. There are no Docker files or deployment scripts in this repository.
+- There are no CI workflows, Docker files, or deployment scripts in this repository.
 
 ---
 

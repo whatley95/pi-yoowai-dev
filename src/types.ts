@@ -187,6 +187,8 @@ export interface YooToolResult {
   security?: SecurityResult;
   error?: string;
   cost?: UsageCost;
+  /** Wall-clock time the yoo tool took to produce this result, in milliseconds. */
+  elapsedMs?: number;
   /** The secondary model that produced this result. */
   model?: StageProfile;
   inProgress?: boolean;

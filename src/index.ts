@@ -220,6 +220,7 @@ export default function (pi: ExtensionAPI) {
       const action = validation.action;
       const config = loadHeyyooConfig(ctx.cwd);
 
+      const start = Date.now();
       const progress = createProgressReporter(action, ctx, onUpdate);
       let result: YooToolResult;
 
@@ -295,6 +296,8 @@ export default function (pi: ExtensionAPI) {
       } finally {
         clearYooStatus(ctx);
       }
+
+      result.elapsedMs = Date.now() - start;
 
       const shouldVerify = p.verify ?? config.verifyByDefault ?? false;
       if (shouldVerify && !result.error) {
