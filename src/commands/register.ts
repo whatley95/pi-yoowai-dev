@@ -146,6 +146,7 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       const [subcommand, ...rest] = trimmed.split(/\s+/);
       const restText = rest.join(" ").trim();
       const signal = undefined;
+      const start = Date.now();
 
       const actionMap: Record<string, YooAction | "status"> = {
         plan: "plan",
@@ -245,6 +246,8 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       } finally {
         clearYooStatus(ctx);
       }
+
+      result.elapsedMs = Date.now() - start;
 
       const text = formatResultText(result);
       ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
