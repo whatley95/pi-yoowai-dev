@@ -1,4 +1,5 @@
-export type YooAction = "plan" | "review" | "suggest" | "recommend" | "judge" | "scan" | "test" | "security";
+export type YooAction =
+  "plan" | "review" | "suggest" | "recommend" | "judge" | "scan" | "test" | "security" | "done" | "planUpdate";
 
 /** Tasks that can have a per-model override in settings.json. Includes yoo tool actions plus separate tools like explain. */
 export type YooModelTask = YooAction | "explain";
@@ -89,6 +90,8 @@ export interface ReviewResult {
   truncated?: boolean;
   droppedFiles?: string[];
   contextLimited?: boolean;
+  planStale?: boolean;
+  completedSteps?: number;
 }
 
 export interface Approach {
@@ -156,6 +159,9 @@ export interface HeyyooSessionState {
   reviewedSteps: boolean[];
   /** Set after autoJudge has run for a completed plan, so it does not fire twice. */
   judgeCompleted?: boolean;
+  editsSinceLastReview: number;
+  editsSinceLastDone: number;
+  lastSteerAt?: number;
 }
 
 export interface YooToolParams {
@@ -167,6 +173,8 @@ export interface YooToolParams {
   scan?: boolean;
   test?: string;
   security?: string;
+  done?: string | number;
+  planUpdate?: string;
   files?: string[];
   exclude?: string[];
   revision?: string;
@@ -187,6 +195,7 @@ export interface YooToolResult {
   scan?: ScanResult;
   test?: TestResult;
   security?: SecurityResult;
+  done?: DoneResult;
   error?: string;
   cost?: UsageCost;
   /** Wall-clock time the yoo tool took to produce this result, in milliseconds. */
@@ -273,4 +282,12 @@ export interface ExplainResult {
   summary: string;
   details: string;
   relatedFiles?: string[];
+}
+
+export interface DoneResult {
+  completedStep: number;
+  totalSteps: number;
+  nextStep?: string;
+  allDone: boolean;
+  message: string;
 }

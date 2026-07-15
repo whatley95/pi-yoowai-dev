@@ -42,6 +42,8 @@ export const ReviewResultSchema = Type.Object(
     truncated: Type.Optional(Type.Boolean()),
     droppedFiles: Type.Optional(Type.Array(Type.String())),
     contextLimited: Type.Optional(Type.Boolean()),
+    planStale: Type.Optional(Type.Boolean()),
+    completedSteps: Type.Optional(Type.Number()),
   },
   { additionalProperties: false },
 );

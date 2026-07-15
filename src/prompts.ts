@@ -274,7 +274,9 @@ ${finalJsonBlock(
     { "severity": "medium", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
   ],
   "suggestions": ["improvement 1", "improvement 2"],
-  "consensus": false
+  "consensus": false,
+  "planStale": false,
+  "completedSteps": 1
 }`,
   nativeJson,
 )}
@@ -286,6 +288,8 @@ Rules:
 - "verdict" is "blocked" if the code is fundamentally broken or cannot work as described
 - "verdict" is "needs-work" for anything in between
 - "consensus" is true when verdict is "pass" AND issues is empty
+- Set "planStale": true if the current plan step contradicts the actual code and the code is internally consistent. Do not flag the code as wrong solely because it differs from the plan.
+- Set "completedSteps" to the number of plan steps (including the current step) that the diff fully completes. If only the current step is done, use 1.
 - Each issue must include a specific, actionable suggestion
 - "file" and "line" are optional but strongly preferred when you can identify the exact location
 - Respect the project conventions shown above; do NOT flag a pattern as wrong if it matches the conventions
@@ -628,8 +632,8 @@ You are performing a final holistic review of completed work before the develope
 ${REVIEW_RUBRIC}
 
 Additionally, check:
-6. PLAN COMPLETENESS: Does the completed work satisfy all items in the original plan? If the original plan contradicts the final code and the code is internally consistent, the plan is stale — judge the code on its own merits and note that the plan should be updated.
-7. REVIEW HISTORY: Look at the review_history below. Every plan step should have been reviewed and passed before judging. If ANY step was not reviewed, that is a blocking issue.
+6. PLAN COMPLETENESS: Does the completed work satisfy all items in the original plan that are addressed by the current code? If the original plan contradicts the final code and the code is internally consistent, the plan is stale — judge the code on its own merits and note that the plan should be updated.
+7. REVIEW HISTORY: Look at the review_history below. Completed plan steps should ideally have been reviewed, but unstarted or in-progress steps do not block the verdict. Only block if a completed step is unreviewed AND the code itself is suspect.
 8. COHERENCE: Do all pieces work together? Is there anything contradictory?
 
 ${finalJsonBlock(
@@ -640,7 +644,8 @@ ${finalJsonBlock(
   ],
   "suggestions": ["improvement 1"],
   "consensus": false,
-  "summary": "one-paragraph holistic assessment of the completed work"
+  "summary": "one-paragraph holistic assessment of the completed work",
+  "planStale": false
 }`,
   nativeJson,
 )}
@@ -649,11 +654,13 @@ Rules:
 - "verdict" must be one of: "pass", "needs-work", "blocked"
 - issue "severity" must be one of: "high", "medium", "low"
 - "consensus" is true only when verdict is "pass" AND issues is empty
+- Set "planStale": true if the original plan contradicts the final code and the code is internally consistent. Judge the code on its own merits and note that the plan should be updated.
 - Provide a real summary that captures the overall quality, not filler
 - Judge only against the original plan and acceptance criteria; do not introduce new requirements that were not part of the plan
 - If the original plan contradicts the actual code and the code is internally consistent, treat the plan as stale. Judge the code on its own merits and note that the plan should be updated.
-- If any plan step is incomplete or unreviewed, that's a medium-severity issue
-- Check the review_history — unreviewed steps are blocking
+- Judge the completed code on its own merits. If the current changes satisfy multiple plan steps at once, that is fine.
+- Unstarted or in-progress plan steps do not block a pass verdict. Only block if a completed step is unreviewed AND the code itself has issues.
+- You may note tracker gaps (unreviewed or unmarked steps) as a non-blocking observation, not as a blocking issue.
 - When the diff/file contents are truncated, do not treat missing context as a defect; judge only what is shown
 ${EVIDENCE_RULES}`,
 

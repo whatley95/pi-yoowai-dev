@@ -19,6 +19,8 @@ describe("plan-store", () => {
       totalSteps: 2,
       reviewRounds: [],
       reviewedSteps: [true, false],
+      editsSinceLastReview: 0,
+      editsSinceLastDone: 0,
       plan: {
         summary: "Legacy plan",
         todo: ["Step one", "Step two"],
@@ -36,6 +38,8 @@ describe("plan-store", () => {
       totalSteps: 2,
       reviewRounds: [],
       reviewedSteps: [false, false],
+      editsSinceLastReview: 0,
+      editsSinceLastDone: 0,
       plan: {
         summary: "Rich plan",
         todo: [

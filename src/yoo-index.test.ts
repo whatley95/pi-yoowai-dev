@@ -39,6 +39,8 @@ describe("yoo-index", () => {
       totalSteps: 3,
       reviewRounds: [],
       reviewedSteps: [true, false, false],
+      editsSinceLastReview: 0,
+      editsSinceLastDone: 0,
       plan: {
         summary: "Add yoo index",
         todo: ["Define types", "Implement function", "Add tests"],

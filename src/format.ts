@@ -97,6 +97,13 @@ export function formatResultText(result: YooToolResult): string {
       lines.push("");
     }
 
+    if (result.review.planStale) {
+      lines.push(
+        "⚠️ **Plan stale:** The current plan step contradicts the actual code. The code is trusted; consider updating the plan with `/yoo plan ...` or `/yoo-clear` and re-planning.",
+      );
+      lines.push("");
+    }
+
     if (result.review.issues.length > 0) {
       lines.push("### Issues");
       for (const issue of result.review.issues) {
@@ -265,6 +272,13 @@ export function formatResultText(result: YooToolResult): string {
       lines.push("");
     }
 
+    if (result.judge.planStale) {
+      lines.push(
+        "⚠️ **Plan stale:** The original plan contradicts the final code. The code is trusted; consider updating the plan with `/yoo plan ...` or `/yoo-clear` and re-planning.",
+      );
+      lines.push("");
+    }
+
     lines.push(result.judge.summary);
     lines.push("");
 
@@ -280,6 +294,24 @@ export function formatResultText(result: YooToolResult): string {
     if (result.judge.consensus) {
       lines.push("**Consensus:** Both agents agree — all work is complete and meets criteria.");
     }
+    lines.push(
+      "**Workflow tip:** If this change completed multiple plan steps, mark them done with `/yoo-done` so the tracker stays in sync for the next review/judge.",
+    );
+  }
+
+  if (result.done) {
+    const header = result.action === "planUpdate" ? "yoo plan update" : "yoo done";
+    lines.push(`## ${header}${formatModelSuffix(result.model)}`);
+    lines.push("");
+    lines.push(result.done.message);
+    lines.push(`**Progress:** ${result.done.completedStep}/${result.done.totalSteps} steps completed.`);
+    if (result.done.nextStep) {
+      lines.push(`**Next step:** ${result.done.nextStep}`);
+    }
+    if (result.done.allDone) {
+      lines.push("All steps are complete. Run `/yoo judge` for a final review.");
+    }
+    lines.push("");
   }
 
   if (result.scan) {

@@ -10,6 +10,7 @@ import { createProgressReporter, clearYooStatus } from "../progress.js";
 import { callSecondaryModel, clearPiSessionId } from "../secondary-model.js";
 import { formatTokenCount, secondaryModelLabel } from "../actions/shared.js";
 import { executeYooPlan } from "../actions/plan.js";
+import { executeYooPlanUpdate } from "../actions/plan-update.js";
 import { executeYooReview } from "../actions/review.js";
 import { executeYooSuggest } from "../actions/suggest.js";
 import { executeYooRecommend } from "../actions/recommend.js";
@@ -150,7 +151,7 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       const signal = undefined;
       const start = Date.now();
 
-      const actionMap: Record<string, YooAction | "status"> = {
+      const actionMap: Record<string, Exclude<YooAction, "done" | "planUpdate"> | "status"> = {
         plan: "plan",
         review: "review",
         suggest: "suggest",
@@ -823,6 +824,27 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           ctx.ui.notify(`Auto-judge failed: ${judgeResult.error}`, "error");
         }
       }
+    },
+  });
+
+  pi.registerCommand("yoo-plan-update", {
+    description: "Regenerate the active yoo plan from a new task description. Preserves already-completed progress.",
+    handler: async (args, ctx) => {
+      const signal = undefined;
+      const description = args.trim();
+      if (!description) {
+        ctx.ui.notify("Usage: /yoo-plan-update <new task description>", "warn");
+        return;
+      }
+      const progress = createProgressReporter("plan", ctx);
+      const notifyProgress = (stage: number, total: number, message: string) => {
+        progress(stage, total, message);
+        ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
+      };
+      const result = await executeYooPlanUpdate(ctx.cwd, description, signal, notifyProgress, ctx.sessionManager);
+      clearYooStatus(ctx);
+      const text = formatResultText({ action: "planUpdate", done: result });
+      ctx.ui.notify(text.slice(0, 500), result.allDone || result.totalSteps > 0 ? "info" : "warn");
     },
   });
 

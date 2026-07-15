@@ -964,10 +964,10 @@ describe("sdk backend", () => {
     assert.equal(receivedApiKey, "refreshed-oauth-key");
   });
 
-  it("sdk backend throws when model is not in Pi catalog", async () => {
+  it("sdk backend throws when model is not in Pi catalog and backend is explicit", async () => {
     const cwd = makeTempDir("yoo-sdk-no-catalog-");
     tmpDirs.push(cwd);
-    writeSettings(cwd, { provider: "opencode-go", id: "unknown-model", apiKey: "opencode-test" });
+    writeSettings(cwd, { provider: "opencode-go", id: "unknown-model", apiKey: "opencode-test", backend: "sdk" });
 
     setSdkGetModelOverride(() => undefined);
 
@@ -975,6 +975,24 @@ describe("sdk backend", () => {
       () => callSecondaryModel("opencode-go", "unknown-model", "system", "user", { cwd }),
       /not in Pi's built-in catalog/,
     );
+  });
+
+  it("auto-falls back to pi backend when sdk model is not in catalog", async () => {
+    const cwd = makeTempDir("yoo-sdk-fallback-pi-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "cursor", id: "composer-2.5" });
+
+    setSdkGetModelOverride(() => undefined);
+    const script = join(cwd, "fake-pi.js");
+    writeFileSync(
+      script,
+      `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"pi fallback ok"}],usage:{input:10,output:5,cost:0.0001}}}));`,
+      "utf-8",
+    );
+    setPiSpawnResolver(() => ({ command: process.execPath, prefixArgs: [script] }));
+
+    const { content } = await callSecondaryModel("cursor", "composer-2.5", "system", "user", { cwd });
+    assert.equal(content, "pi fallback ok");
   });
 
   it("sdk backend passes reasoning option when thinking is enabled", async () => {

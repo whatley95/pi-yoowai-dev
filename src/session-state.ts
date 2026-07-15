@@ -13,7 +13,11 @@ export function getState(cwd: string): HeyyooSessionState {
       reviewRounds: [],
       reviewedSteps: [],
       judgeCompleted: false,
+      editsSinceLastReview: 0,
+      editsSinceLastDone: 0,
     };
+    state.editsSinceLastReview ??= 0;
+    state.editsSinceLastDone ??= 0;
     sessionStates.set(cwd, state);
   }
   return state;
@@ -27,6 +31,9 @@ export function setPlan(cwd: string, plan: PlanResult): void {
   state.reviewRounds = new Array(plan.todo.length).fill(0);
   state.reviewedSteps = new Array(plan.todo.length).fill(false);
   state.judgeCompleted = false;
+  state.editsSinceLastReview = 0;
+  state.editsSinceLastDone = 0;
+  state.lastSteerAt = undefined;
   saveState(cwd, state);
 }
 
@@ -37,6 +44,17 @@ export function markStepComplete(cwd: string, reviewed = false): void {
     state.reviewedSteps[state.completedSteps - 1] = reviewed;
     saveState(cwd, state);
   }
+}
+
+export function markStepsComplete(cwd: string, count: number, reviewed = false): void {
+  const state = getState(cwd);
+  if (state.totalSteps === 0) return;
+  const target = Math.min(count, state.totalSteps);
+  while (state.completedSteps < target) {
+    state.completedSteps++;
+    state.reviewedSteps[state.completedSteps - 1] = reviewed;
+  }
+  saveState(cwd, state);
 }
 
 export function incrementReviewRounds(cwd: string): void {
@@ -78,6 +96,27 @@ export function markJudgeCompleted(cwd: string): void {
   const state = getState(cwd);
   state.judgeCompleted = true;
   saveState(cwd, state);
+}
+
+export function recordFileEdit(cwd: string): void {
+  const state = getState(cwd);
+  state.editsSinceLastReview++;
+  state.editsSinceLastDone++;
+}
+
+export function resetEditsSinceReview(cwd: string): void {
+  const state = getState(cwd);
+  state.editsSinceLastReview = 0;
+}
+
+export function resetEditsSinceDone(cwd: string): void {
+  const state = getState(cwd);
+  state.editsSinceLastDone = 0;
+}
+
+export function getEditTracker(cwd: string): { editsSinceLastReview: number; editsSinceLastDone: number } {
+  const state = getState(cwd);
+  return { editsSinceLastReview: state.editsSinceLastReview, editsSinceLastDone: state.editsSinceLastDone };
 }
 
 export function dropSessionState(cwd: string): void {

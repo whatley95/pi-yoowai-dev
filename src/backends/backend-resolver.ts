@@ -78,15 +78,25 @@ export async function resolveBackend(
   sdkModelInfo?: Partial<ModelInfo>;
   modelInfoOverride?: Partial<ModelInfo>;
 }> {
-  const useSdk = shouldUseSdkBackend(provider, secondary);
-  const backend = secondary?.backend ?? (secondary?.baseUrl ? "http" : useSdk ? "sdk" : "pi");
+  const explicitBackend = secondary?.backend;
+  const backend = explicitBackend ?? (secondary?.baseUrl ? "http" : "sdk");
+  const autoSelectedSdk = !explicitBackend && !secondary?.baseUrl;
 
   const modelInfoOverride = buildModelInfoOverride(secondary, modelInfo, model);
-  const sdkModelInfo = backend === "sdk" ? await resolveSdkModelInfo(provider, model, modelInfoOverride) : undefined;
+  let sdkModelInfo = backend === "sdk" ? await resolveSdkModelInfo(provider, model, modelInfoOverride) : undefined;
+
+  // If the backend was auto-selected and the model is not in Pi's built-in SDK
+  // catalog, fall back to the pi backend so extension-registered providers
+  // (e.g. pi-cursor-provider) can still be used.
+  let effectiveBackend: BackendType = backend;
+  if (backend === "sdk" && autoSelectedSdk && !sdkModelInfo) {
+    effectiveBackend = "pi";
+    sdkModelInfo = undefined;
+  }
 
   return {
-    backend,
-    apiInfo: backend === "http" ? resolveProviderApiInfo(provider, model, secondary) : undefined,
+    backend: effectiveBackend,
+    apiInfo: effectiveBackend === "http" ? resolveProviderApiInfo(provider, model, secondary) : undefined,
     sdkModelInfo,
     modelInfoOverride,
   };

@@ -1,6 +1,17 @@
 import type { YooToolParams, YooAction, YooModelTask } from "./types.js";
 
-export const YOO_ACTIONS: YooAction[] = ["plan", "review", "suggest", "recommend", "judge", "scan", "test", "security"];
+export const YOO_ACTIONS: YooAction[] = [
+  "plan",
+  "review",
+  "suggest",
+  "recommend",
+  "judge",
+  "scan",
+  "test",
+  "security",
+  "done",
+  "planUpdate",
+];
 export const YOO_MODEL_TASKS: YooModelTask[] = [...YOO_ACTIONS, "explain"];
 
 interface ValidatedParams {
@@ -25,13 +36,17 @@ export function validateYooToolParams(params: unknown): ValidationResult {
   const active = YOO_ACTIONS.filter((a) => {
     const value = p[a];
     if (a === "scan") return value === true;
+    if (a === "done" || a === "planUpdate") {
+      return value === true || typeof value === "number" || (typeof value === "string" && value.length > 0);
+    }
     return typeof value === "string" && value.length > 0;
   });
 
   if (active.length === 0) {
     return {
       ok: false,
-      error: "No action specified. Provide one of: plan, review, suggest, recommend, judge, scan, test, or security.",
+      error:
+        "No action specified. Provide one of: plan, review, suggest, recommend, judge, scan, test, security, done, or planUpdate.",
     };
   }
   if (active.length > 1) {
@@ -56,6 +71,8 @@ export function validateYooToolParams(params: unknown): ValidationResult {
     scan: action === "scan" ? true : undefined,
     test: action === "test" ? (p.test as string) : undefined,
     security: action === "security" ? (p.security as string) : undefined,
+    done: action === "done" ? (p.done === true ? "" : (p.done as string | number)) : undefined,
+    planUpdate: action === "planUpdate" ? (p.planUpdate === true ? "" : (p.planUpdate as string)) : undefined,
     files: stringArray(p.files),
     exclude: stringArray(p.exclude),
     revision: typeof p.revision === "string" ? p.revision : undefined,

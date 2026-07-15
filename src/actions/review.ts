@@ -11,7 +11,7 @@ import { getSessionCost, formatCost, reserveCost, releaseCost } from "../cost-tr
 import { logEvent } from "../logger.js";
 import {
   getState,
-  markStepComplete,
+  markStepsComplete,
   incrementReviewRounds,
   getProgress,
   markJudgeCompleted,
@@ -405,7 +405,9 @@ export async function executeYooReview(
   }
 
   if (review.consensus) {
-    markStepComplete(cwd, true);
+    const completedCount =
+      typeof review.completedSteps === "number" && review.completedSteps > 1 ? review.completedSteps : 1;
+    markStepsComplete(cwd, completedCount, true);
     const planProgress = getProgress(cwd);
     review.planProgress = `${planProgress.completed}/${planProgress.total} steps done`;
     if (planProgress.nextStep) {

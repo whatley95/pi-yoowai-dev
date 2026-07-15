@@ -35,6 +35,11 @@ export function setSdkGetModelOverride(fn: PiAiCompatModule["getModel"] | null):
   sdkOverrides.getModel = fn ?? undefined;
 }
 
+/** Test hook: clear the OAuth API-key cache. */
+export function clearSdkOAuthCache(): void {
+  oauthApiKeyCache.clear();
+}
+
 /** Test hook: override OAuth API-key resolution. */
 export function setSdkOAuthResolverOverride(
   fn:
@@ -46,6 +51,8 @@ export function setSdkOAuthResolverOverride(
 ): void {
   oauthResolverOverride = fn ?? undefined;
 }
+
+const oauthApiKeyCache = new Map<string, { credential: Record<string, unknown>; apiKey: string }>();
 
 export async function getPiAiCompat(): Promise<PiAiCompatModule> {
   if (sdkOverrides.streamSimple || sdkOverrides.getModel) {
@@ -66,7 +73,7 @@ export async function getPiAiCompat(): Promise<PiAiCompatModule> {
   return import("@earendil-works/pi-ai/compat");
 }
 
-async function resolveOAuthApiKey(
+async function fetchOAuthApiKey(
   provider: string,
   credential: Record<string, unknown>,
 ): Promise<{ apiKey: string; newCredentials?: Record<string, unknown> } | undefined> {
@@ -80,6 +87,21 @@ async function resolveOAuthApiKey(
   } catch {
     return undefined;
   }
+}
+
+async function resolveOAuthApiKey(
+  provider: string,
+  credential: Record<string, unknown>,
+): Promise<{ apiKey: string; newCredentials?: Record<string, unknown> } | undefined> {
+  const cached = oauthApiKeyCache.get(provider);
+  if (cached && JSON.stringify(cached.credential) === JSON.stringify(credential)) {
+    return { apiKey: cached.apiKey };
+  }
+  const result = await fetchOAuthApiKey(provider, credential);
+  if (result) {
+    oauthApiKeyCache.set(provider, { credential, apiKey: result.apiKey });
+  }
+  return result;
 }
 
 function persistRefreshedCredential(provider: string, credential: Record<string, unknown>): void {

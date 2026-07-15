@@ -38,6 +38,8 @@ export function loadState(cwd: string): HeyyooSessionState | null {
       reviewRounds: Array.isArray(data.reviewRounds) ? data.reviewRounds : [],
       reviewedSteps,
       judgeCompleted: typeof data.judgeCompleted === "boolean" ? data.judgeCompleted : false,
+      editsSinceLastReview: typeof data.editsSinceLastReview === "number" ? data.editsSinceLastReview : 0,
+      editsSinceLastDone: typeof data.editsSinceLastDone === "number" ? data.editsSinceLastDone : 0,
     };
   } catch (err) {
     logEvent(cwd, "warn", "Failed to load yoo plan state", { error: err instanceof Error ? err.message : String(err) });
@@ -79,6 +81,8 @@ export function saveState(cwd: string, state: HeyyooSessionState): void {
           reviewRounds: state.reviewRounds,
           reviewedSteps: state.reviewedSteps,
           judgeCompleted: state.judgeCompleted === true,
+          editsSinceLastReview: state.editsSinceLastReview ?? 0,
+          editsSinceLastDone: state.editsSinceLastDone ?? 0,
         },
         null,
         2,

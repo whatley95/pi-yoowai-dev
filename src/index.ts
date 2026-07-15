@@ -24,7 +24,14 @@ import {
   verifyLearnedFactsDeep,
   formatVerificationReport,
 } from "./yoo-learn.js";
-import { dropSessionState } from "./session-state.js";
+import {
+  dropSessionState,
+  getEditTracker,
+  getState,
+  recordFileEdit,
+  resetEditsSinceDone,
+  resetEditsSinceReview,
+} from "./session-state.js";
 import { secondaryModelLabel } from "./actions/shared.js";
 import { executeYooPlan } from "./actions/plan.js";
 import { executeYooReview } from "./actions/review.js";
@@ -34,10 +41,18 @@ import { executeYooSuggest } from "./actions/suggest.js";
 import { executeYooRecommend } from "./actions/recommend.js";
 import { executeYooJudge } from "./actions/judge.js";
 import { executeYooScan } from "./actions/scan.js";
+import { executeYooDone } from "./actions/done.js";
+import { executeYooPlanUpdate } from "./actions/plan-update.js";
 import { executeYooIndex, formatIndexResult, validateYooIndexParams } from "./yoo-index.js";
 import { executeYooExplain, validateYooExplainParams } from "./yoo-explain.js";
 import { registerYooCommands } from "./commands/register.js";
 import { formatResultText } from "./format.js";
+
+function isFileWriteTool(toolName: string): boolean {
+  const writeLike =
+    /^(write|edit|apply|create|patch|modify|append|prepend|rename|delete|remove|rm)|(?:File|Edit|Path)$/i;
+  return writeLike.test(toolName);
+}
 
 const loopStates = new Map<string, LoopDetectionState>();
 function getLoopState(cwd: string): LoopDetectionState {
@@ -87,8 +102,32 @@ export default function (pi: ExtensionAPI) {
       if (loop && shouldSendSteer(state, loop)) {
         pi.sendUserMessage(loop.message, { deliverAs: "steer" });
       }
+
+      const e = event as Record<string, unknown> | undefined;
+      const toolName = typeof e?.toolName === "string" ? e.toolName : "";
+      if (isFileWriteTool(toolName)) {
+        recordFileEdit(ctx.cwd);
+        const editState = getEditTracker(ctx.cwd);
+        const now = Date.now();
+        const sessionState = getState(ctx.cwd);
+        const lastSteer = sessionState.lastSteerAt ?? 0;
+        if ((editState.editsSinceLastReview >= 3 || editState.editsSinceLastDone >= 3) && now - lastSteer > 30_000) {
+          sessionState.lastSteerAt = now;
+          const reminders: string[] = [];
+          if (editState.editsSinceLastDone >= 3) {
+            reminders.push("call `yoo({ done: true })` to mark completed plan steps done");
+          }
+          if (editState.editsSinceLastReview >= 3) {
+            reminders.push("call `yoo({ review: '...' })` to review the changes");
+          }
+          pi.sendUserMessage(
+            `WORKFLOW REMINDER: you have made ${editState.editsSinceLastDone} file edit(s) without updating the plan tracker. Please ${reminders.join(" and ")}.`,
+            { deliverAs: "steer" },
+          );
+        }
+      }
     } catch {
-      // best-effort loop detection
+      // best-effort loop detection and workflow reminders
     }
   });
 
@@ -110,11 +149,14 @@ export default function (pi: ExtensionAPI) {
       "Use yoo with test:true when you want a dedicated check for missing tests, failing tests, or low test quality. This is optional; yoo.review already catches many quality issues.",
       "Use yoo with security:true when the change involves auth, input handling, secrets, dependencies, or any security-sensitive area. Pass a description of the function or API to audit and scope it with files:[...] if needed.",
       "Use yoo with judge:true after completing all work for a final holistic review against the original plan.",
+      "Use yoo with done:true to mark the current plan step complete. Use it after finishing a step so the tracker stays in sync.",
+      "Use yoo with planUpdate:'<new task description>' when the original plan no longer matches the implementation. The plan is regenerated and already-completed progress is preserved.",
       "Enable autoJudge in settings.json to automatically run judge when the last plan step is completed (passes review or is marked done via /yoo-done).",
+
       "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
       "Use `verify: true` when a yoo finding is surprising, high-stakes, or unclear. The main agent must then confirm or refute the finding with evidence before acting.",
       "The secondary model should be a DIFFERENT model family than the main model to catch blind spots. Configure in settings.json under pi-heyyoo.secondary.",
-      "Only one action (plan/review/suggest/recommend/judge/scan/test/security) per call. Do not combine them.",
+      "Only one action (plan/review/suggest/recommend/judge/scan/test/security/done/planUpdate) per call. Do not combine them.",
       "When stuck, confused, or looping, stop and use a yoo tool. Do not spin in place or guess.",
     ],
     parameters: Type.Object({
@@ -161,6 +203,18 @@ export default function (pi: ExtensionAPI) {
         Type.String({
           description:
             "Provide a description of the change to audit it for security issues such as secrets, injection, and auth flaws.",
+        }),
+      ),
+      done: Type.Optional(
+        Type.Union([Type.Boolean(), Type.String(), Type.Number()], {
+          description:
+            "Mark yoo plan step(s) complete. Pass true/empty string for the current step, a positive number to mark up to that step, 'all' for all steps, or a description to record what was completed.",
+        }),
+      ),
+      planUpdate: Type.Optional(
+        Type.Union([Type.Boolean(), Type.String()], {
+          description:
+            "Regenerate the active yoo plan from a new task description when the original plan no longer matches the implementation. Already-completed progress is preserved.",
         }),
       ),
       files: Type.Optional(
@@ -285,9 +339,19 @@ export default function (pi: ExtensionAPI) {
             signal,
             progress,
           );
+        } else if (p.done !== undefined) {
+          result = { action: "done", done: executeYooDone(ctx.cwd, p.done) };
+        } else if (p.planUpdate !== undefined) {
+          result = {
+            action: "planUpdate",
+            done: await executeYooPlanUpdate(ctx.cwd, p.planUpdate, signal, progress, ctx.sessionManager),
+          };
         } else {
           result = await executeYooScan(ctx.cwd, signal, progress, ctx.sessionManager);
         }
+
+        if (p.review) resetEditsSinceReview(ctx.cwd);
+        if (p.done !== undefined) resetEditsSinceDone(ctx.cwd);
       } catch (err) {
         logEvent(ctx.cwd, "error", `yoo tool ${action} failed`, {
           error: err instanceof Error ? err.message : String(err),
