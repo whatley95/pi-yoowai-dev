@@ -201,3 +201,10 @@ declare module "@earendil-works/pi-ai/providers/all" {
   export function getBuiltinModels(provider: string): Model<Api>[];
   export function getBuiltinProviders(): string[];
 }
+
+declare module "@earendil-works/pi-ai/oauth" {
+  export function getOAuthApiKey(
+    provider: string,
+    credentials: Record<string, Record<string, unknown> | undefined>,
+  ): Promise<{ apiKey: string; newCredentials?: Record<string, unknown> } | undefined>;
+}

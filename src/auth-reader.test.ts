@@ -1,6 +1,10 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { resolveApiKey } from "./auth-reader.js";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolveApiKey, readRawAuthEntry } from "./auth-reader.js";
+import { getAgentDir, setAgentDirForTests } from "./pi-paths.js";
 
 const ENV_KEYS = [
   "ANTHROPIC_API_KEY",
@@ -12,8 +16,14 @@ const ENV_KEYS = [
   "GEMINI_API_KEY",
 ];
 
+function makeTempDir(prefix: string): string {
+  return mkdtempSync(join(tmpdir(), prefix));
+}
+
 describe("auth-reader", () => {
   const savedEnv: Record<string, string | undefined> = {};
+  const originalAgentDir = getAgentDir();
+  let tempAgentDir: string | undefined;
 
   beforeEach(() => {
     for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
@@ -24,6 +34,15 @@ describe("auth-reader", () => {
       if (savedEnv[k] === undefined) delete process.env[k];
       else process.env[k] = savedEnv[k];
     }
+    if (tempAgentDir) {
+      try {
+        rmSync(tempAgentDir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+      tempAgentDir = undefined;
+    }
+    setAgentDirForTests(() => originalAgentDir);
   });
 
   it("returns configKey directly when it is a plain string", () => {
@@ -88,5 +107,20 @@ describe("auth-reader", () => {
   it("returns undefined for unknown provider with no configKey", () => {
     for (const k of ENV_KEYS) delete process.env[k];
     assert.equal(resolveApiKey("unknown-provider"), undefined);
+  });
+
+  it("reads raw OAuth credential from auth.json", () => {
+    tempAgentDir = makeTempDir("pi-heyyoo-auth-");
+    mkdirSync(tempAgentDir, { recursive: true });
+    writeFileSync(
+      join(tempAgentDir, "auth.json"),
+      JSON.stringify({ "openai-codex": { type: "oauth", accessToken: "oauth-token" } }),
+      "utf-8",
+    );
+    setAgentDirForTests(() => tempAgentDir!);
+
+    const entry = readRawAuthEntry("openai-codex");
+    assert.deepEqual(entry, { type: "oauth", accessToken: "oauth-token" });
+    assert.equal(resolveApiKey("openai-codex"), undefined);
   });
 });

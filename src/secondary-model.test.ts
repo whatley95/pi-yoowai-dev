@@ -14,6 +14,11 @@ import {
   setSdkGetModelOverride,
   setSdkStreamSimpleOverride,
 } from "./secondary-model.js";
+import { setSdkOAuthResolverOverride } from "./backends/sdk-backend.js";
+import { setAgentDirForTests, getAgentDir } from "./pi-paths.js";
+
+const originalAgentDir = getAgentDir();
+let tempAgentDirs: string[] = [];
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -28,6 +33,22 @@ function writeSettings(cwd: string, secondary: Record<string, unknown>, extra: R
     "utf-8",
   );
 }
+
+function writeAuthJson(agentDir: string, auth: Record<string, unknown>): void {
+  writeFileSync(join(agentDir, "auth.json"), JSON.stringify(auth, null, 2), "utf-8");
+}
+
+after(() => {
+  for (const dir of tempAgentDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
+  tempAgentDirs = [];
+  setAgentDirForTests(() => originalAgentDir);
+});
 
 describe("secondary-model backends", () => {
   const originalFetch = global.fetch;
@@ -49,7 +70,9 @@ describe("secondary-model backends", () => {
     setPiSpawnResolver(null);
     setSdkGetModelOverride(null);
     setSdkStreamSimpleOverride(null);
+    setSdkOAuthResolverOverride(null);
     global.fetch = originalFetch;
+    setAgentDirForTests(() => originalAgentDir);
   });
 
   it("uses pi backend when backend: pi is configured", async () => {
@@ -799,6 +822,8 @@ describe("sdk backend", () => {
   afterEach(() => {
     setSdkGetModelOverride(null);
     setSdkStreamSimpleOverride(null);
+    setSdkOAuthResolverOverride(null);
+    setAgentDirForTests(() => originalAgentDir);
   });
 
   after(() => {
@@ -911,6 +936,32 @@ describe("sdk backend", () => {
     const { content } = await callSecondaryModel("openai", "gpt-4o-mini", "system", "user", { cwd });
     assert.equal(content, "sdk explicit ok");
     assert.ok(sdkCalled);
+  });
+
+  it("sdk backend resolves OAuth API key for openai-codex", async () => {
+    const cwd = makeTempDir("yoo-sdk-oauth-");
+    const agentDir = makeTempDir("yoo-sdk-oauth-agent-");
+    tmpDirs.push(cwd);
+    tempAgentDirs.push(agentDir);
+    mkdirSync(agentDir, { recursive: true });
+    writeAuthJson(agentDir, { "openai-codex": { type: "oauth", accessToken: "old-token" } });
+    setAgentDirForTests(() => agentDir);
+    writeSettings(cwd, { provider: "openai-codex", id: "gpt-5.6-terra", backend: "sdk" });
+
+    let receivedApiKey: string | undefined;
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    setSdkOAuthResolverOverride(async () => ({
+      apiKey: "refreshed-oauth-key",
+      newCredentials: { accessToken: "new-token", expiresAt: 1234567890 },
+    }));
+    setSdkStreamSimpleOverride((_model, _context, options) => {
+      receivedApiKey = options?.apiKey;
+      return fakeSdkStream(fakeSdkAssistantMessage("codex ok"));
+    });
+
+    const { content } = await callSecondaryModel("openai-codex", "gpt-5.6-terra", "system", "user", { cwd });
+    assert.equal(content, "codex ok");
+    assert.equal(receivedApiKey, "refreshed-oauth-key");
   });
 
   it("sdk backend throws when model is not in Pi catalog", async () => {

@@ -18,6 +18,11 @@ export function getAgentDir(): string {
   return getAgentDirImpl();
 }
 
+/** Test hook: override the agent directory used for auth/settings resolution. */
+export function setAgentDirForTests(fn: () => string): void {
+  getAgentDirImpl = fn;
+}
+
 export function getConfigDirName(): string {
   return configDirNameImpl;
 }

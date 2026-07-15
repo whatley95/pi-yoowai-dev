@@ -19,26 +19,34 @@ const ALLOWED_COMMANDS = new Set([
   "echo",
 ]);
 
+export function readRawAuthEntry(provider: string): Record<string, unknown> | undefined {
+  const authPath = join(getAgentDir(), "auth.json");
+  if (!existsSync(authPath)) return undefined;
+  try {
+    const raw = readFileSync(authPath, "utf-8");
+    const auth = JSON.parse(raw) as Record<string, unknown>;
+    const entry = auth[provider];
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      return entry as Record<string, unknown>;
+    }
+  } catch {
+    /* ignore parse errors */
+  }
+  return undefined;
+}
+
 export function resolveApiKey(provider: string, configKey?: string): string | undefined {
   if (configKey) {
     return resolveKeyValue(configKey);
   }
 
-  const authPath = join(getAgentDir(), "auth.json");
-  if (existsSync(authPath)) {
-    try {
-      const raw = readFileSync(authPath, "utf-8");
-      const auth = JSON.parse(raw) as Record<string, unknown>;
-      const entry = auth[provider];
-      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
-        const e = entry as Record<string, unknown>;
-        if (e.type === "api_key" && typeof e.key === "string") {
-          return resolveKeyValue(e.key);
-        }
-      }
-    } catch {
-      /* ignore parse errors — fall back to env */
+  const entry = readRawAuthEntry(provider);
+  if (entry) {
+    if (entry.type === "api_key" && typeof entry.key === "string") {
+      return resolveKeyValue(entry.key);
     }
+    // OAuth credentials are handled by resolveOAuthApiKey, not here.
+    return undefined;
   }
 
   const envVar = providerToEnvVar(provider);
