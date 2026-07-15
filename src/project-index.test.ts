@@ -78,6 +78,19 @@ export interface Config {
     assert.ok(!files.includes("src/data.json"));
   });
 
+  it("reports index stats", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "b.ts"), "export const b = 2;", "utf-8");
+
+    const index = buildProjectIndex(cwd);
+    assert.ok(index.stats);
+    assert.equal(index.stats?.scanned, 2);
+    assert.equal(index.stats?.indexed, 2);
+    assert.equal(index.stats?.symbols, 2);
+    assert.equal(index.stats?.skipped, 0);
+  });
+
   it("cleans up temp dir", () => {
     rmSync(cwd, { recursive: true, force: true });
   });

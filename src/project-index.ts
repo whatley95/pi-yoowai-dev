@@ -22,6 +22,12 @@ export interface FileIndex {
 export interface ProjectIndex {
   generatedAt: string;
   files: FileIndex[];
+  stats?: {
+    scanned: number;
+    indexed: number;
+    skipped: number;
+    symbols: number;
+  };
 }
 
 const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
@@ -62,6 +68,13 @@ function isValidProjectIndex(value: unknown): value is ProjectIndex {
     if (typeof file.file !== "string") return false;
     if (!Array.isArray(file.symbols)) return false;
   }
+  if (v.stats && typeof v.stats === "object" && !Array.isArray(v.stats)) {
+    const s = v.stats as Record<string, unknown>;
+    if (typeof s.scanned !== "number") return false;
+    if (typeof s.indexed !== "number") return false;
+    if (typeof s.skipped !== "number") return false;
+    if (typeof s.symbols !== "number") return false;
+  }
   return true;
 }
 
@@ -85,13 +98,20 @@ export function buildProjectIndex(cwd: string): ProjectIndex {
   const index: ProjectIndex = {
     generatedAt: new Date().toISOString(),
     files: [],
+    stats: { scanned: files.length, indexed: 0, skipped: 0, symbols: 0 },
   };
 
   for (const rel of files) {
     const filePath = `${cwd}/${rel}`;
     const fileIndex = indexFile(cwd, filePath, rel);
-    if (fileIndex && fileIndex.symbols.length > 0) {
-      index.files.push(fileIndex);
+    if (fileIndex) {
+      if (fileIndex.symbols.length > 0) {
+        index.files.push(fileIndex);
+        index.stats!.indexed += 1;
+        index.stats!.symbols += fileIndex.symbols.length;
+      }
+    } else {
+      index.stats!.skipped += 1;
     }
   }
 
@@ -269,8 +289,15 @@ export function formatIndexSummary(index: ProjectIndex, query?: string): string 
       lines.push(`  ... and ${matches.length - 20} more symbols`);
     }
   }
-  if (lines.length === 0) return q ? `No symbols match "${query}".` : "No symbols indexed.";
-  return `Indexed ${totalSymbols} symbol(s) across ${index.files.length} file(s):\n` + lines.join("\n");
+  const stats = index.stats;
+  const statsLine = stats
+    ? `Scanned ${stats.scanned} file(s), indexed ${stats.indexed} file(s) with ${stats.symbols} symbol(s)` +
+      (stats.skipped > 0 ? `, skipped ${stats.skipped} file(s).` : ".")
+    : `Indexed ${totalSymbols} symbol(s) across ${index.files.length} file(s).`;
+  if (lines.length === 0) {
+    return q ? `${statsLine}\n\nNo symbols match "${query}".` : `${statsLine}\n\nNo symbols indexed.`;
+  }
+  return `${statsLine}\n` + lines.join("\n");
 }
 
 export function inferPublicApi(index: ProjectIndex, maxEntries = 50): string[] {

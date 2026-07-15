@@ -295,6 +295,7 @@ Rules:
 - When reviewing a code change (a diff is provided), only flag issues in files that are part of that change. Do NOT flag pre-existing problems in unrelated files.
 - When no diff is provided and the developer asks you to review a specific function/file, review exactly that requested scope.
 - If a current plan step is shown above, only evaluate acceptance criteria that are relevant to that step. Do NOT flag work from other plan steps as missing.
+- If the current plan step contradicts the actual code (e.g., describes a different endpoint, method, parameter, or design than what is implemented), treat the plan as stale. Trust the code and note that the plan should be updated. Do not flag the code as wrong solely because it differs from the plan.
 - Be strict but fair — flag real problems, not preferences
 ${EVIDENCE_RULES}`,
 
@@ -494,6 +495,7 @@ Rules:
 - When reviewing a code change (a diff is provided), only flag test issues in files that are part of that change. Do NOT flag pre-existing test failures or missing tests in unrelated files.
 - When no diff is provided and the developer asks about a specific function/file, evaluate exactly that requested scope.
 - If a current plan step is shown above, only evaluate test coverage relevant to that step. Do NOT flag missing tests for work from other plan steps.
+- If the current plan step contradicts the actual code (e.g., describes a different endpoint, method, parameter, or design than what is implemented), treat the plan as stale. Trust the code and note that the plan should be updated. Do not flag the code as wrong solely because it differs from the plan.
 - "missingTests" should list only production files whose behavior is changed by the diff and lack a corresponding test.
 - Respect project conventions when suggesting test file names or patterns
 ${EVIDENCE_RULES}`,
@@ -545,6 +547,7 @@ Rules:
 - When auditing a code change (a diff is provided), only flag security findings in files that are part of that change. Do NOT flag pre-existing vulnerabilities in unrelated files.
 - When no diff is provided and the developer asks about a specific function/file, audit exactly that requested scope.
 - If a current plan step is shown above, only evaluate security risks relevant to that step. Do NOT flag missing security work from other plan steps.
+- If the current plan step contradicts the actual code (e.g., describes a different endpoint, method, parameter, or design than what is implemented), treat the plan as stale. Trust the code and note that the plan should be updated. Do not flag the code as wrong solely because it differs from the plan.
 - Pay special attention to: hardcoded secrets, SQL/command injection, unsafe eval, missing input validation, insecure auth, permissive CORS, dependency upgrades, and logging sensitive data
 ${EVIDENCE_RULES}`,
 
