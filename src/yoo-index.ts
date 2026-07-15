@@ -66,6 +66,7 @@ export interface IndexResult {
   logs?: string[];
   index?: ProjectIndex;
   indexSummary?: string;
+  indexUpdated?: boolean;
   learned?: LearnedFact[];
   learnedSummary?: string;
 }
@@ -101,7 +102,9 @@ export function executeYooIndex(cwd: string, params: YooIndexParams): IndexResul
     try {
       const index = buildProjectIndex(cwd);
       saveProjectIndex(cwd, index);
+      result.indexUpdated = true;
     } catch (err) {
+      result.indexUpdated = false;
       logEvent(cwd, "warn", "yoo_index update failed", {
         error: err instanceof Error ? err.message : String(err),
       });
@@ -163,6 +166,12 @@ function filterText(text: string, query: string): string {
 export function formatIndexResult(result: IndexResult): string {
   const parts: string[] = [];
   parts.push(`# yoo index (${result.topic})`);
+
+  if (result.indexUpdated === true) {
+    parts.push("\n_Index updated successfully._");
+  } else if (result.indexUpdated === false) {
+    parts.push("\n_Index update failed (see logs for details)._");
+  }
 
   if (result.conventions) {
     parts.push("\n## Project conventions\n");

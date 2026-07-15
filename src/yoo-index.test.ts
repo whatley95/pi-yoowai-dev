@@ -135,6 +135,10 @@ describe("yoo-index", () => {
     assert.ok(result.index, "should return built index");
     assert.ok(result.indexSummary, "should include index summary");
     assert.match(result.indexSummary!, /demo/);
+    assert.equal(result.indexUpdated, true);
+
+    const text = formatIndexResult(result);
+    assert.match(text, /Index updated successfully/);
   });
 
   it("returns learned facts", () => {
