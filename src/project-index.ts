@@ -1,10 +1,35 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import * as ts from "typescript";
+import type * as TS from "typescript";
 import { filterSourceFiles, listTrackedFiles } from "./conventions.js";
 import { logEvent } from "./logger.js";
 import { getProjectConfigPath } from "./pi-paths.js";
 import type { Conventions } from "./types.js";
+
+/**
+ * TypeScript compiler API, loaded lazily on first use. A missing or broken
+ * typescript install then degrades project indexing with a logged warning
+ * instead of failing extension startup at import time (which would take down
+ * every yoo command). Mirrors the lazy duck-duck-scrape import in
+ * doc-fetcher.ts.
+ */
+let tsModule: typeof import("typescript") | null = null;
+try {
+  tsModule = await import("typescript");
+} catch {
+  tsModule = null;
+}
+
+let warnedTsMissing = false;
+function getTs(cwd: string): typeof import("typescript") | null {
+  if (!tsModule && !warnedTsMissing) {
+    warnedTsMissing = true;
+    logEvent(cwd, "warn", "typescript not installed; project indexing disabled", {
+      hint: "run `npm install` in the extension directory to enable symbol indexing",
+    });
+  }
+  return tsModule;
+}
 
 export interface SymbolInfo {
   name: string;
@@ -146,8 +171,10 @@ function buildFileIndex(cwd: string, filePath: string, relPath: string, cached?:
     if (content.length > MAX_FILE_BYTES) {
       return { file: relPath, symbols: [], mtime };
     }
-    const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true, getScriptKind(relPath));
-    return { file: relPath, symbols: extractSymbols(sourceFile), mtime };
+    const ts = getTs(cwd);
+    if (!ts) return undefined;
+    const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true, getScriptKind(ts, relPath));
+    return { file: relPath, symbols: extractSymbols(ts, sourceFile), mtime };
   } catch (err) {
     logEvent(cwd, "warn", "Failed to index file", {
       file: relPath,
@@ -157,7 +184,7 @@ function buildFileIndex(cwd: string, filePath: string, relPath: string, cached?:
   }
 }
 
-function getScriptKind(fileName: string): ts.ScriptKind {
+function getScriptKind(ts: typeof import("typescript"), fileName: string): TS.ScriptKind {
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".tsx")) return ts.ScriptKind.TSX;
   if (lower.endsWith(".jsx")) return ts.ScriptKind.JSX;
@@ -165,17 +192,17 @@ function getScriptKind(fileName: string): ts.ScriptKind {
   return ts.ScriptKind.JS;
 }
 
-function isExported(node: ts.Node): boolean {
-  const modifiers = (node as ts.HasModifiers).modifiers;
+function isExported(ts: typeof import("typescript"), node: TS.Node): boolean {
+  const modifiers = (node as TS.HasModifiers).modifiers;
   return modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
 }
 
-function extractSymbols(sourceFile: ts.SourceFile): SymbolInfo[] {
+function extractSymbols(ts: typeof import("typescript"), sourceFile: TS.SourceFile): SymbolInfo[] {
   const symbols: SymbolInfo[] = [];
 
-  function addSymbol(name: string, kind: string, node: ts.Node, includeSignature = false): void {
+  function addSymbol(name: string, kind: string, node: TS.Node, includeSignature = false): void {
     const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-    const exported = isExported(node);
+    const exported = isExported(ts, node);
     const signature = includeSignature ? extractSignature(sourceFile, node) : undefined;
     const symbol: SymbolInfo = { name, kind, line, exported };
     if (signature) {
@@ -184,7 +211,7 @@ function extractSymbols(sourceFile: ts.SourceFile): SymbolInfo[] {
     symbols.push(symbol);
   }
 
-  function visit(node: ts.Node): void {
+  function visit(node: TS.Node): void {
     if (ts.isFunctionDeclaration(node) && node.name) {
       addSymbol(node.name.text, "function", node, true);
       return;
@@ -233,7 +260,7 @@ function extractSymbols(sourceFile: ts.SourceFile): SymbolInfo[] {
   return symbols;
 }
 
-function extractSignature(sourceFile: ts.SourceFile, node: ts.Node): string | undefined {
+function extractSignature(sourceFile: TS.SourceFile, node: TS.Node): string | undefined {
   try {
     const text = node.getText(sourceFile);
     const firstLine = text.split(/\r?\n/)[0] ?? text;

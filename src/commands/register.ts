@@ -11,6 +11,7 @@ import { callSecondaryModel, clearPiSessionId } from "../secondary-model.js";
 import { formatTokenCount, secondaryModelLabel } from "../actions/shared.js";
 import { executeYooPlan } from "../actions/plan.js";
 import { executeYooPlanUpdate } from "../actions/plan-update.js";
+import { clearReviewCache } from "../review-cache.js";
 import { executeYooReview } from "../actions/review.js";
 import { executeYooSuggest } from "../actions/suggest.js";
 import { executeYooRecommend } from "../actions/recommend.js";
@@ -215,7 +216,7 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
             result = await executeYooJudge(ctx.cwd, restText || "all done", signal, notifyProgress, ctx.sessionManager);
             break;
           case "scan": {
-            const deep = restText.includes("--deep");
+            const deep = restText.includes("--deep") ? true : undefined;
             result = await executeYooScan(ctx.cwd, signal, notifyProgress, ctx.sessionManager, deep);
             break;
           }
@@ -747,6 +748,7 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       clearConventions(ctx.cwd);
       clearLearnedFacts(ctx.cwd);
       clearPromptCache();
+      clearReviewCache(ctx.cwd);
       ctx.ui.notify(
         "yoo plan, state, cost, memory, conventions, learned facts, loop history, and inherited session cleared.",
         "info",

@@ -193,6 +193,7 @@ The `yoo` tool is called by the main agent during development:
 | `yoo({ review: "wrote middleware", untracked: true })`                | After each step                | Includes untracked (new) files in the review                        |
 | `yoo({ suggest: "how to..." })`                                       | When stuck or asked a question | Returns alternative approaches with pros/cons                       |
 | `yoo({ suggest: "...", docs: ["react"] })`                            | When stuck or asked a question | Includes configured docs in the suggestion prompt                   |
+> **Diff scope:** by default `review`, `judge`, and `done` diff against `HEAD` and include untracked files, so they see staged, unstaged, and new files without you running `git add` first. Pass `revision`/`since` to scope to a commit range, or `untracked: false` to limit to tracked changes.
 
 | `yoo({ recommend: "what next" })`                                     | When unsure                    | Recommends next concrete step                                       |
 | `yoo({ recommend: "...", docs: ["pi"] })`                             | When unsure                    | Includes configured docs in the recommendation prompt               |

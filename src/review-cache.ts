@@ -59,8 +59,24 @@ function prune(cache: CacheFile): void {
   }
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return "[" + value.map((v) => stableStringify(v)).join(",") + "]";
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return "{" + keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",") + "}";
+}
+
 export function buildCacheKey(action: string, payload: Record<string, unknown>): string {
-  const canonical = JSON.stringify(payload, Object.keys(payload).sort());
+  // Recursively sort keys so nested objects (modelProfile, options) serialize
+  // deterministically. A plain array replacer would apply only at the top level
+  // and serialize nested objects to {}, making the key ignore the model and
+  // returning a stale cached verdict after /yoo-model switches models.
+  const canonical = stableStringify(payload);
   return createHash("sha256").update(`${action}:${canonical}`).digest("hex").slice(0, 32);
 }
 

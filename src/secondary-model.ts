@@ -1,6 +1,6 @@
 import { resolveApiKey } from "./auth-reader.js";
 import { loadHeyyooConfig, resolveTaskModel } from "./config.js";
-import { formatCost, getSessionCost, getReservedCost } from "./cost-tracker.js";
+import { formatCost, getSessionCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveModelInfo } from "./model-registry.js";
 import { executeToolLoop } from "./tool-loop.js";
@@ -138,7 +138,7 @@ async function runSingleAttempt(
       const estimatedInputTokens = estimateTokens(systemPrompt + userPrompt);
       const estimatedOutputTokens = thinkingEnabledForBudget ? (modelInfoForBudget?.maxOutputTokens ?? 8192) : 2048;
       const projectedCost = estimateCost(provider, model, estimatedInputTokens, estimatedOutputTokens);
-      const sessionCost = getSessionCost(cwd).costUsd + getReservedCost(cwd);
+      const sessionCost = getSessionCost(cwd).costUsd;
       if (sessionCost + projectedCost > budgetUsd) {
         throw new Error(
           `yoo call would exceed cost budget: projected ${formatCost(sessionCost + projectedCost)} / ${formatCost(budgetUsd)}. ` +

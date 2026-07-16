@@ -10,10 +10,11 @@ import {
 } from "../session-state.js";
 import { callSecondaryModel } from "../secondary-model.js";
 import { buildStepVerificationPrompt, parseStepVerificationResponse } from "../prompts.js";
+import { recordCostWithBudget } from "./shared.js";
 import { logEvent } from "../logger.js";
 import type { DoneResult } from "../types.js";
 
-function parseDoneTarget(value: string | number | undefined): { targetStep?: number; label: string } {
+function parseDoneTarget(value: string | number | undefined): { targetStep?: number; label: string; error?: string } {
   if (value === undefined || value === "") {
     return { label: "current" };
   }
@@ -25,10 +26,13 @@ function parseDoneTarget(value: string | number | undefined): { targetStep?: num
     return { targetStep: Number.MAX_SAFE_INTEGER, label: "all" };
   }
   const num = Number(trimmed);
-  if (!Number.isNaN(num) && num > 0) {
+  if (!Number.isNaN(num) && num > 0 && Number.isInteger(num)) {
     return { targetStep: num, label: trimmed };
   }
-  return { label: value };
+  return {
+    label: value,
+    error: `Invalid done target: "${value}". Use a step number, "all", or omit it to mark the current step.`,
+  };
 }
 
 export async function executeYooDone(cwd: string, value?: string | number, signal?: AbortSignal): Promise<DoneResult> {
@@ -51,7 +55,16 @@ export async function executeYooDone(cwd: string, value?: string | number, signa
   }
 
   const config = loadHeyyooConfig(cwd);
-  const { targetStep, label } = parseDoneTarget(value);
+  const { targetStep, label, error } = parseDoneTarget(value);
+  if (error) {
+    return {
+      completedStep: before.completed,
+      totalSteps: before.total,
+      allDone: false,
+      verified: undefined,
+      message: error,
+    };
+  }
   const state = getState(cwd);
   const currentStepIndex = state.completedSteps;
   const stepDescription =
@@ -61,33 +74,39 @@ export async function executeYooDone(cwd: string, value?: string | number, signa
         : (state.plan.todo[currentStepIndex] as { description: string }).description
       : "";
 
+  let verified: boolean | undefined = undefined;
   if (config.verifyDoneClaims !== false && getEditTracker(cwd).editsSinceLastDone > 0 && stepDescription) {
     try {
-      const { diff } = getDiff(cwd, { maxDiffChars: config.reviewMaxDiffChars });
+      const { diff } = getDiff(cwd, { maxDiffChars: config.reviewMaxDiffChars, untracked: true, revision: "HEAD" });
       const modelConfig = resolveTaskModel(config, "done");
       if (modelConfig.provider && modelConfig.id) {
         const { system, user } = buildStepVerificationPrompt(stepDescription, diff);
-        const { content: raw } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
+        const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
           signal,
           thinking: modelConfig.thinking,
           cwd,
           task: "done",
           structuredOutput: true,
         });
-        const verification = parseStepVerificationResponse(raw);
-        if (verification && !verification.satisfied) {
-          return {
-            completedStep: before.completed,
-            totalSteps: before.total,
-            nextStep: before.nextStep ?? undefined,
-            allDone: false,
-            verified: false,
-            verificationReason: verification.reason,
-            message: `Step ${before.completed + 1} does not appear to be complete: ${verification.reason}. Continue working or run yoo.review to confirm.`,
-          };
+        recordCostWithBudget(cwd, usage);
+        const parsed = parseStepVerificationResponse(raw);
+        if (parsed) {
+          verified = parsed.satisfied;
+          if (!parsed.satisfied) {
+            return {
+              completedStep: before.completed,
+              totalSteps: before.total,
+              nextStep: before.nextStep ?? undefined,
+              allDone: false,
+              verified: false,
+              verificationReason: parsed.reason,
+              message: `Step ${before.completed + 1} does not appear to be complete: ${parsed.reason}. Continue working or run yoo.review to confirm.`,
+            };
+          }
         }
       }
     } catch (err) {
+      if (signal?.aborted) throw err;
       logEvent(cwd, "warn", "Done-claim verification failed; allowing step to advance", {
         error: err instanceof Error ? err.message : String(err),
       });
@@ -107,7 +126,7 @@ export async function executeYooDone(cwd: string, value?: string | number, signa
     totalSteps: after.total,
     nextStep: after.nextStep ?? undefined,
     allDone: after.completed >= after.total,
-    verified: true,
+    verified,
     message:
       targetStep !== undefined
         ? `Marked steps up to ${label} complete (${after.completed}/${after.total}).`

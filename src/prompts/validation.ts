@@ -245,12 +245,33 @@ function tryParseJson(text: string): unknown | undefined {
   }
 }
 
+function isPlausiblePayload(schema: Parameters<typeof Value.Cast>[0], data: unknown): boolean {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  const required = (schema as { required?: string[] }).required;
+  const keys = Object.keys(data as Record<string, unknown>);
+  if (required && required.length > 0) {
+    // The payload already carries at least one required field, so it is the
+    // right shape (just possibly messy) and worth normalizing via Cast.
+    return required.some((r) => r in (data as Record<string, unknown>));
+  }
+  // No required fields declared: reject an empty object so `{}` can't be
+  // Cast-filled into a valid-but-empty result.
+  return keys.length > 0;
+}
+
 function castOrNull<T>(schema: Parameters<typeof Value.Cast>[0], data: unknown): T | null {
   try {
     // Prefer a plain Check when the data already matches; Cast can fail or mutate unexpectedly
     // on some provider responses (e.g., extra fields, proxy objects).
     if (Value.Check(schema, data)) {
       return data as T;
+    }
+    // Don't Cast-fill a fundamentally wrong-shaped payload (e.g. `{}` or an
+    // unrelated object): Value.Cast would insert empty defaults and validate it
+    // as an all-empty result, masking the parse failure from markdown salvage.
+    // Only normalize when the payload is plausibly the right shape.
+    if (!isPlausiblePayload(schema, data)) {
+      return null;
     }
     const cast = Value.Cast(schema, data);
     if (Value.Check(schema, cast)) {

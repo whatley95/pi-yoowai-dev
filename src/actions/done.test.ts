@@ -39,7 +39,8 @@ test("executeYooDone advances current step when verification is disabled", async
   recordFileEdit(cwd);
   const result = await executeYooDone(cwd);
   assert.equal(result.completedStep, 1);
-  assert.equal(result.verified, true);
+  // Verification is disabled, so `verified` must not be claimed as true.
+  assert.equal(result.verified, undefined);
 });
 
 test("executeYooDone advances when there are no edits since last done", async () => {
@@ -48,5 +49,6 @@ test("executeYooDone advances when there are no edits since last done", async ()
   setPlan(cwd, plan);
   const result = await executeYooDone(cwd);
   assert.equal(result.completedStep, 1);
-  assert.equal(result.verified, true);
+  // No edits since last done means verification is skipped, so `verified` is not claimed.
+  assert.equal(result.verified, undefined);
 });

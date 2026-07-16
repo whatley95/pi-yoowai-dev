@@ -9,7 +9,7 @@ import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-mod
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
-import { calculateReviewBudget } from "../token-budget.js";
+import { calculateReviewBudget, estimateTokens } from "../token-budget.js";
 import { buildTestPrompt, validateTestResult, getTestValidationErrors, salvageTestFromMarkdown } from "../prompts.js";
 import {
   STAGES,
@@ -134,9 +134,17 @@ export async function executeYooTest(
   });
   const fileContents = mapFileContentEntries(fileResult.entries);
 
+  const systemPromptEstimate = 1000;
+  const remainingForDiff = Math.max(
+    0,
+    budget.availableInputTokens - fileResult.totalTokens - systemPromptEstimate,
+  );
+  const diffTokens = estimateTokens(diff);
+  const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
+
   const { system, user } = buildTestPrompt(
     description,
-    diff,
+    finalDiff,
     fileContents,
     testOutput,
     conventionsText,

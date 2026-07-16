@@ -363,7 +363,12 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (p.review) resetEditsSinceReview(ctx.cwd);
-        if (p.done !== undefined) resetEditsSinceDone(ctx.cwd);
+        // Only clear the done-edit counter when the step actually advanced. A
+        // failed verification returns early without advancing, so clearing here
+        // would let the next retry bypass the verification gate entirely.
+        if (p.done !== undefined && !(result.done && result.done.verified === false)) {
+          resetEditsSinceDone(ctx.cwd);
+        }
       } catch (err) {
         logEvent(ctx.cwd, "error", `yoo tool ${action} failed`, {
           error: err instanceof Error ? err.message : String(err),

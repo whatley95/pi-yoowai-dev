@@ -272,15 +272,15 @@ export function salvageSuggestFromMarkdown(raw: string): import("../types.js").S
 
   const approaches: import("../types.js").Approach[] = [];
   const headingRegex = /^#{2,3}\s+(.+)$/gm;
-  const headings: Array<{ title: string; index: number }> = [];
+  const headings: Array<{ title: string; index: number; len: number }> = [];
   let match: RegExpExecArray | null;
   while ((match = headingRegex.exec(text)) !== null) {
-    headings.push({ title: match[1].trim(), index: match.index });
+    headings.push({ title: match[1].trim(), index: match.index, len: match[0].length });
   }
 
   if (headings.length > 0) {
     for (let i = 0; i < headings.length; i++) {
-      const start = headings[i].index + headings[i].title.length + 1;
+      const start = headings[i].index + headings[i].len;
       const end = i < headings.length - 1 ? headings[i + 1].index : text.length;
       const section = text.slice(start, end).trim();
       const paragraphs = section.split(/\n\s*\n/).map((p) => p.trim());
@@ -292,8 +292,7 @@ export function salvageSuggestFromMarkdown(raw: string): import("../types.js").S
       let bullet: RegExpExecArray | null;
       while ((bullet = bulletRegex.exec(section)) !== null) {
         const line = bullet[1].trim();
-        const lower = line.toLowerCase();
-        if (lower.startsWith("con") || lower.startsWith("downside") || lower.startsWith("disadvantage")) {
+        if (isCon(line)) {
           cons.push(line);
         } else {
           pros.push(line);
@@ -326,6 +325,17 @@ export function salvageSuggestFromMarkdown(raw: string): import("../types.js").S
 
   if (approaches.length === 0) return null;
   return { approaches };
+}
+
+function isCon(line: string): boolean {
+  const lower = line.toLowerCase().trim();
+  if (lower.startsWith("downside") || lower.startsWith("disadvantage") || lower.startsWith("contra")) {
+    return true;
+  }
+  // Match the bare word "con"/"cons" or a "con:"/"cons:" label, but require a
+  // word boundary so prefixes like "configurable"/"consistent"/"convenient"
+  // (which are pros, not cons) are not misclassified.
+  return /^(con|cons)\b/i.test(lower);
 }
 
 export function salvageRecommendFromMarkdown(raw: string): import("../types.js").RecommendResult | null {

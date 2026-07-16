@@ -61,6 +61,8 @@ export async function executeYooJudge(
   progress(1, STAGES.judge, "Collecting diff and conventions…");
   const { diff, truncated, changedFiles } = getDiff(cwd, {
     maxDiffChars: config.reviewMaxDiffChars,
+    untracked: true,
+    revision: "HEAD",
   });
 
   const conventions = loadConventions(cwd);
