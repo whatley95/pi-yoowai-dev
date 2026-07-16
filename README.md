@@ -344,6 +344,29 @@ Logged events include secondary model errors, parse failures (with a raw respons
 
 ## Process flow
 
+```mermaid
+flowchart TD
+    A[yoo.plan<br/>create plan] --> B[yoo.scan<br/>learn conventions]
+    B --> C{Plan active?}
+    C -->|yes| D[Implement current step]
+    C -->|no| Z[Done]
+    D --> E[yoo.done<br/>mark step complete]
+    E -->|verified against diff| F[yoo.review<br/>review changes]
+    F -->|needs-work| G[Fix issues]
+    F -->|pass| H[Tracker auto-advances]
+    G --> F
+    H --> I{More steps?}
+    I -->|yes| D
+    I -->|no| J[yoo.judge<br/>final review]
+    J -->|pass| K[Judge auto-syncs tracker]
+    J -->|plan stale| L[yoo.planUpdate<br/>regenerate plan]
+    K --> Z
+    L --> D
+    J -->|needs-work| G
+```
+
+Typical tool sequence:
+
 ```
 yoo.plan("refactor auth")
   → Plan: 5 steps, 4 acceptance criteria
@@ -353,10 +376,11 @@ yoo.scan()
 
 [implement step 1]
 
-yoo.done()                                        # mark step 1 complete
+yoo.done()                                        # verified against diff
 yoo.review("wrote verifySession middleware")
   → git diff → secondary model
   → verdict: "needs-work" — 2 issues found
+  → Suggested fix plan generated
   → Progress: 1/5 steps done
 
   [fix issues...]
@@ -368,7 +392,7 @@ yoo.review("fixed error handling")
 
   [implement steps 2–5 in one edit]
 
-yoo.done("all")                                   # mark remaining steps complete
+yoo.done("all")                                   # verified against diff
 yoo.review("migrated all routes")
   → verdict: "pass" — consensus ✓
   → Progress: 5/5 steps done
@@ -377,6 +401,7 @@ yoo.review("migrated all routes")
 yoo.judge("auth refactor complete")
   → final review against plan + review history
   → verdict: "pass" — all work complete ✓
+  → Tracker auto-synced to 5/5
 ```
 
 If the implementation diverges from the original plan, yoo flags the plan as stale in review/judge output and you can regenerate it with `yoo({ planUpdate: "..." })` or `/yoo-plan-update`. The tracker resets cleanly when a new plan is created.
