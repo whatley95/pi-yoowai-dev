@@ -22,8 +22,8 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 
 | Command                | Purpose                                                                                              |
 | ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| `/yoo`                 | Run an action or show status: `/yoo <plan|review|suggest|recommend|judge|scan|test|security|status> [args]`. |
-| `/yoo-status`, `/yoo-info` | Detailed diagnostics; `/yoo-info` is an alias for `/yoo-status`.                                  |
+| `/yoo`                 | Run an action or show status: `/yoo <plan|review|suggest|recommend|judge|scan|test|security|status> [args]`; `scan` accepts `--deep`. |
+| `/yoo-status`          | Detailed diagnostics (config, plan, VCS, conventions, cost).                                     |
 | `/yoo-model`           | Interactively pick the secondary model (optionally per tool) and write it to `~/.pi/agent/settings.json`. |
 | `/yoo-config`          | View/edit pi-heyyoo settings: `/yoo-config <get|set|list> [key] [value]` or shorthand `/yoo-config <provider.model>`. |
 | `/yoo-clear`           | Clear the active plan, state, cost, memory, conventions, learned facts, loop history, and inherited session. |
@@ -37,8 +37,9 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 | `/yoo-done`            | Mark the current plan step complete and recommend the next step.                                     |
 | `/yoo-logs`            | Show recent yoo error/event log entries for this project.                                            |
 | `/yoo-test`            | Test connectivity to the configured secondary model(s); an optional task name scopes the check.     |
-| `/yoo-scan`            | Alias for `/yoo scan` — scan project conventions.                                                    |
-| `/yoo-scan-deep`       | Run `/yoo scan` with deep source-file sampling.                                                      |
+| `/yoo-scan`            | Deprecated alias for `/yoo scan`; prints a warning and will be removed in a future release.       |
+| `/yoo-scan-deep`       | Deprecated alias for `/yoo scan --deep`; prints a warning and will be removed in a future release. |
+| `/yoo-info`            | Deprecated alias for `/yoo-status`; prints a warning and will be removed in a future release.     |
 | `/yoo-backend`         | Switch the secondary model backend: `sdk` (default), `pi`, or `http`.                                |
 
 ---
@@ -75,8 +76,13 @@ pi-heyyoo/
     ├── config.ts         # Load merged global + project config; resolve secondary settings and task-model overrides
     ├── secondary-model.ts# Entry point for model calls; key resolution, budget, backend dispatch, tool-loop
     ├── auth-reader.ts    # Resolve API keys from auth.json / env / commands (with !command, $ENV indirection)
-    ├── prompts.ts        # Prompt builders and JSON result validators/salvagers
+    ├── prompts.ts        # Re-export barrel for prompts/ (keeps existing ./prompts.js import paths stable)
+    ├── prompts/          # Prompt code, split by concern (one-way deps: salvage → validation)
+    │   ├── builders.ts   #   System/user prompt builders per action + prompt cache/memoization
+    │   ├── validation.ts #   parseJsonResponse, JSON validators, validation-error getters
+    │   └── salvage.ts    #   Markdown salvagers for non-JSON model responses
     ├── diff-grabber.ts   # Git/SVN diff collection and VCS info
+    ├── file-write-tools.ts # Explicit set of Pi tool names that mutate files (drives edit tracking)
     ├── file-loader.ts    # Load changed file contents within token budget
     ├── token-budget.ts   # Calculate per-action review token budgets
     ├── model-registry.ts # Known secondary model context windows and output limits
@@ -150,7 +156,8 @@ pi-heyyoo/
   - `backend-resolver.ts` — Picks the backend and resolves SDK catalog metadata for token budgets.
   - `provider-api.ts` / `shared.ts` / `index.ts` — backend interface/types, shared helpers, and the backend registry.
 - **`auth-reader.ts`** — Reads `~/.pi/agent/auth.json`, then falls back to environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.). Supports `!command`, `$ENV`, and `${ENV}` key indirection.
-- **`prompts.ts`** — Builds system/user prompts for each action and validates/salvages the JSON the model returns.
+- **`prompts.ts` / `prompts/`** — `prompts.ts` is a pure re-export barrel so existing `./prompts.js` imports keep working. `prompts/builders.ts` builds the system/user prompts for each action (plus prompt caching/memoization), `prompts/validation.ts` parses and validates the JSON the model returns (`parseJsonResponse`, `validate*Result`, `get*ValidationErrors`), and `prompts/salvage.ts` salvages results from markdown when the model does not return JSON. Dependencies are one-way: salvage → validation.
+- **`file-write-tools.ts`** — Explicit set of Pi tool names that mutate project files (`isFileWriteTool`); `index.ts` uses it to track edits for review/done reminders. `file-write-tools.test.ts` pins the known names so a Pi tool rename fails loudly instead of silently changing behavior.
 - **`diff-grabber.ts`** — Uses `git diff` / `svn diff`. Supports `files`, `exclude`, `revision`, `since`, `untracked`. Truncates diffs to ~6,000 chars.
 - **`file-loader.ts`** — Loads changed file contents within the token budget.
 - **`token-budget.ts` / `model-registry.ts`** — Model context/output limits and per-action review token budgets.
@@ -162,7 +169,7 @@ pi-heyyoo/
 - **`cost-tracker.ts`** — Estimates, records, reserves/releases, and budgets secondary-model spend.
 - **`loop-detector.ts`** — Watches recent tool calls and emits a steer message when `yoo.review`/`yoo.judge` repeats without real edits.
 - **`tool-loop.ts`** — Lets the secondary model request `read_file`/`run_command` tools to answer questions, with path-security and pre-review guards.
-- **`pre-review.ts`** — Runs configured pre-review shell commands (interpreter commands restricted to relative scripts; inline-eval flags rejected) and formats output.
+- **`pre-review.ts`** — Runs configured pre-review shell commands (interpreter commands restricted to relative scripts; inline-eval flags rejected) and formats output. On Windows, allowlisted commands that only exist as `.cmd` shims (npm, npx, tsc, eslint, ...) fall back to a sanitized `cmd.exe` invocation (`%`, `^`, and `"` are rejected so the shell cannot reinterpret anything).
 - **`render.ts`** — TUI call/result rendering for Pi.
 - **`progress.ts`** — Status/progress reporting helpers for the Pi TUI.
 - **`path-security.ts`** — Validates safe relative paths (path-traversal guard) for project file access.
@@ -200,6 +207,7 @@ All commands run from the repository root.
 | `npm test`             | Run the Node test runner against `src/**/*.test.ts`. |
 | `npm run format`       | Run Prettier to format `src/`.                       |
 | `npm run format:check` | Check Prettier formatting without writing.           |
+| `npm run prepublishOnly` | Runs typecheck + lint + tests automatically before `npm publish`. |
 | `npm run bump`         | Bump patch version in `package.json`.                |
 | `npm run bump:patch`   | Same as `npm run bump`.                              |
 | `npm run bump:minor`   | Bump minor version.                                  |
@@ -365,7 +373,8 @@ The extension stores per-project runtime data under `.pi/heyyoo/`:
 - The package is consumed by Pi, not by end-users directly. Pi resolves it as an extension via `"pi": { "extensions": ["./src/index.ts"] }` in `package.json`.
 - The `files` array publishes only `src/` and `README.md`.
 - Version bumps are done with `npm run bump:patch|minor|major`, which edits `package.json` in place.
-- There are no CI workflows, Docker files, or deployment scripts in this repository.
+- CI runs in `.github/workflows/ci.yml`: on every push to `main` and every PR, it runs `npm ci`, typecheck, lint, `format:check`, and tests on `ubuntu-latest` and `windows-latest` (Node 22; the test glob requires Node ≥ 22). `npm publish` is additionally gated by the local `prepublishOnly` script. `.gitattributes` pins LF line endings so prettier and diffs behave the same on every platform.
+- There are no Docker files or deployment scripts in this repository.
 
 ---
 
@@ -374,5 +383,5 @@ The extension stores per-project runtime data under `.pi/heyyoo/`:
 - The previous `AGENTS.md` did not exist; this file was created from the actual project contents.
 - Do not assume a build step. Changes are validated with `npm run typecheck` and `npm run lint`.
 - When editing source, keep the kebab-case filenames, `.js` relative imports, and `node:` prefix for built-ins.
-- If you change validation schemas or tool parameters, also update the corresponding prompt builders and validators in `src/prompts.ts`.
+- If you change validation schemas or tool parameters, also update the corresponding prompt builders and validators in `src/prompts/` (`builders.ts`, `validation.ts`).
 - The `.pi/cdev/map.yaml` file is auto-generated metadata; do not hand-edit it unless asked.

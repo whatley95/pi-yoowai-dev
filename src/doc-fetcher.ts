@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import * as dds from "duck-duck-scrape";
+import type * as dds from "duck-duck-scrape";
 import { resolveApiKey } from "./auth-reader.js";
 import { getProjectConfigPath } from "./pi-paths.js";
 import { logEvent } from "./logger.js";
@@ -19,7 +19,17 @@ const FILE_MODE = 0o600;
 
 type SearchFn = typeof dds.search;
 
-let searchFn: SearchFn = dds.search;
+/**
+ * Default DuckDuckGo search, imported lazily on first use. A broken or
+ * outdated duck-duck-scrape install then degrades /yoo-search with a logged
+ * warning instead of breaking extension startup at import time.
+ */
+const defaultSearchFn: SearchFn = async (query, options) => {
+  const dds = await import("duck-duck-scrape");
+  return dds.search(query, options);
+};
+
+let searchFn: SearchFn = defaultSearchFn;
 
 /** Replace the DuckDuckGo search function for tests. */
 export function setSearchFnForTests(fn: SearchFn): void {
@@ -28,7 +38,7 @@ export function setSearchFnForTests(fn: SearchFn): void {
 
 /** Restore the real DuckDuckGo search function. */
 export function resetSearchFnForTests(): void {
-  searchFn = dds.search;
+  searchFn = defaultSearchFn;
 }
 
 type BraveSearchResult = {
@@ -207,7 +217,8 @@ async function searchDuckDuckGo(
   maxCharsPerResult: number,
 ): Promise<string | null> {
   logEvent(cwd, "info", "Performing DuckDuckGo web search", { query });
-  const results = await searchFn(query, { safeSearch: dds.SafeSearchType.STRICT });
+  // SafeSearchType.STRICT from duck-duck-scrape, inlined so the package stays lazy-loaded.
+  const results = await searchFn(query, { safeSearch: 0 as dds.SafeSearchType });
   if (!results.results || results.results.length === 0) {
     logEvent(cwd, "info", "DuckDuckGo web search returned no results", { query });
     return null;

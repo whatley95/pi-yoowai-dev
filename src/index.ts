@@ -48,12 +48,7 @@ import { executeYooIndex, formatIndexResult, validateYooIndexParams } from "./yo
 import { executeYooExplain, validateYooExplainParams } from "./yoo-explain.js";
 import { registerYooCommands } from "./commands/register.js";
 import { formatResultText } from "./format.js";
-
-function isFileWriteTool(toolName: string): boolean {
-  const writeLike =
-    /^(write|edit|apply|create|patch|modify|append|prepend|rename|delete|remove|rm)|(?:File|Edit|Path)$/i;
-  return writeLike.test(toolName);
-}
+import { isFileWriteTool } from "./file-write-tools.js";
 
 const loopStates = new Map<string, LoopDetectionState>();
 function getLoopState(cwd: string): LoopDetectionState {
@@ -67,25 +62,34 @@ function getLoopState(cwd: string): LoopDetectionState {
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
-    // Scope volatile yoo state to this Pi session so plans/memory/cost do not
-    // leak across unrelated sessions on the same project.
+    // Probe sessionManager once; it may be unavailable in some Pi versions.
+    let sessionId: string | undefined;
     try {
-      const sessionId = ctx.sessionManager.getSessionId();
-      setSessionId(ctx.cwd, sessionId);
-      // Clean up stale per-session directories from previous sessions.
-      pruneSessionDirs(ctx.cwd, sessionId);
+      sessionId = ctx.sessionManager.getSessionId();
     } catch {
       /* ignore if sessionManager is unavailable */
     }
 
+    if (sessionId) {
+      // Scope volatile yoo state to this Pi session so plans/memory/cost do not
+      // leak across unrelated sessions on the same project.
+      try {
+        setSessionId(ctx.cwd, sessionId);
+        // Clean up stale per-session directories from previous sessions.
+        pruneSessionDirs(ctx.cwd, sessionId);
+      } catch {
+        /* best-effort session scoping */
+      }
+      // Make OpenCode session-aware so it can use sticky provider routing.
+      try {
+        setPiSessionId(ctx.cwd, sessionId);
+      } catch {
+        /* best-effort session scoping */
+      }
+    }
+
     // cost.json tracks estimated spend for the current Pi session.
     resetCost(ctx.cwd);
-    // Make OpenCode session-aware so it can use sticky provider routing.
-    try {
-      setPiSessionId(ctx.cwd, ctx.sessionManager.getSessionId());
-    } catch {
-      /* ignore if sessionManager is unavailable */
-    }
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {

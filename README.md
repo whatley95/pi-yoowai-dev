@@ -63,6 +63,17 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
 
 If no secondary model is configured, yoo returns an error. Configure `pi-heyyoo.secondary` in settings.json or use `/yoo-model` to pick one interactively. You can also set a different model per yoo tool with `taskModels` or `/yoo-model`.
 
+**Cost tip:** high-frequency, low-stakes calls do not need a flagship model. Reserve the strong model for `plan`, `review`, and `judge`, and route routine work like `done` (step verification) and `scan` (convention extraction) to a cheap model with thinking off:
+
+```json
+"taskModels": {
+  "done": { "provider": "deepseek", "id": "deepseek-chat", "thinking": "off" },
+  "scan": { "provider": "deepseek", "id": "deepseek-chat", "thinking": "off" }
+}
+```
+
+Check `/yoo-index cost` (or `.pi/heyyoo/cost.json`) first to see where your spend actually goes, then tune.
+
 Structured tools let the secondary model write brief Markdown analysis, but the final machine-readable result must be a fenced JSON block under `## Result`. The configured `thinking` level is passed through unchanged for each tool, including per-tool `taskModels` overrides; yoo does not silently cap or turn off thinking after parse failures.
 
 ### Options
@@ -70,7 +81,7 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | Option                         | Type                                    | Description                                                                                                                         |
 | ------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `secondary`                    | object                                  | `{ provider, id, thinking? }` for the base secondary model                                                                          |
-| `taskModels`                   | object                                  | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `explain`)  |
+| `taskModels`                   | object                                  | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `planUpdate`, `explain`) |
 | `autoJudge`                    | boolean                                 | Run `yoo.judge` automatically when the last plan step passes review or is marked done via `/yoo-done`                               |
 | `preReviewCommands`            | string[]                                | Commands to run before each review; output is included in the review prompt                                                         |
 | `testCommand`                  | string                                  | Command to run for `/yoo test` analysis (e.g. `npm test`). Auto-detected from `package.json` if omitted                             |
@@ -252,26 +263,37 @@ Recorded facts appear in `yoo_index({ topic: "learned" })`.
 
 ## Commands
 
+### Core workflow
+
+| Command                                       | What it does                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------- |
+| `/yoo`                                        | Compact status card: version, model, plan, VCS, cost, conventions         |
+| `/yoo plan refactor auth middleware`          | Create a plan from the terminal                                           |
+| `/yoo review "wrote verifySession"`           | Review current changes                                                    |
+| `/yoo suggest "redis vs in-memory sessions?"` | Get alternative approaches with pros/cons                                 |
+| `/yoo recommend`                              | Get one concrete next step based on your current situation/plan           |
+| `/yoo judge "auth refactor complete"`         | Final holistic review                                                     |
+| `/yoo scan`                                   | Scan project conventions                                                  |
+| `/yoo scan --deep`                            | Deep scan with code samples and symbol index build                        |
+| `/yoo-next`                                   | Recommend the next step based on the active plan                          |
+| `/yoo-done [description]`                     | Mark the current plan step complete and recommend the next step           |
+| `/yoo-done 3`                                 | Mark steps 1–3 complete                                                   |
+| `/yoo-done all`                               | Mark all steps complete                                                   |
+| `/yoo-plan-update <new task description>`     | Regenerate the active plan; already-completed progress is preserved       |
+
+### Utilities and diagnostics
+
 | Command                                        | What it does                                                                           |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `/yoo`                                         | Compact status card: version, model, plan, VCS, cost, conventions                      |
-| `/yoo plan refactor auth middleware`           | Create a plan from the terminal                                                        |
-| `/yoo review "wrote verifySession"`            | Review current changes                                                                 |
-| `/yoo suggest "redis vs in-memory sessions?"`  | Get alternative approaches with pros/cons                                              |
-| `/yoo recommend`                               | Get one concrete next step based on your current situation/plan                        |
-| `/yoo judge "auth refactor complete"`          | Final holistic review                                                                  |
-| `/yoo scan`                                    | Scan project conventions                                                               |
-| `/yoo scan-deep`                               | Deep scan with code samples and symbol index build                                     |
 | `/yoo test [description] [--command <cmd>]`    | Analyze test coverage and failures for current changes                                 |
 | `/yoo security [description] [--full-project]` | Security audit of current diff or sampled project files                                |
 | `/yoo-status`                                  | Detailed diagnostics: base + per-tool models, config, plan, VCS, conventions, cost     |
-| `/yoo-info`                                    | Alias for `/yoo-status`                                                                |
 | `/yoo-index [topic] [--update]`                | Read stored yoo context (plan, memory, conventions, cost, logs, index, learned)        |
 | `/yoo-explain <target> [--files ...]`          | Explain code, error, or file with the secondary model                                  |
 | `/yoo-search <query>`                          | Search the web via DuckDuckGo (requires `docs.webSearch.enabled`)                      |
 | `/yoo-learn <fact> [--category <cat>]`         | Record a persistent project fact                                                       |
 | `/yoo-learn --verify [--query <keyword>]`      | Check stored facts against the current codebase                                        |
-| `/yoo-learn --verify --deep [--query <keyword>]` | Check stored facts with the secondary model                                            |
+| `/yoo-learn --verify --deep [--query <keyword>]` | Check stored facts with the secondary model                                          |
 | `/yoo-model`                                   | Interactively pick the base or per-tool model; shows current provider/model/thinking   |
 | `/yoo-model <provider> [filter]`               | Pre-select provider and optionally filter the model list                               |
 | `/yoo-config`                                  | Show current `pi-heyyoo` settings                                                      |
@@ -281,13 +303,18 @@ Recorded facts appear in `yoo_index({ topic: "learned" })`.
 | `/yoo-test`                                    | Test connectivity; prints a per-model summary with latency, tokens, cost, and totals   |
 | `/yoo-backend <sdk\|pi\|http>`                 | Switch secondary model backend (default: `sdk`)                                        |
 | `/yoo-clear`                                   | Clear the current session's plan, state, cost, memory, and conventions                 |
-| `/yoo-next`                                    | Recommend the next step based on the active plan                                       |
-| `/yoo-done [description]`                      | Mark the current plan step complete and recommend the next step                        |
-| `/yoo-done 3`                                  | Mark steps 1–3 complete                                                                |
-| `/yoo-done all`                                | Mark all steps complete                                                                |
-| `/yoo-plan-update <new task description>`      | Regenerate the active plan; already-completed progress is preserved                    |
 | `/yoo-logs`                                    | Show recent error/event log entries for this project                                   |
 | `/yoo-clear-logs`                              | Clear the yoo error/event log for this project                                         |
+
+### Deprecated aliases
+
+These still work but print a deprecation warning and will be removed in a future release:
+
+| Command         | Use instead       |
+| --------------- | ----------------- |
+| `/yoo-info`     | `/yoo-status`     |
+| `/yoo-scan`     | `/yoo scan`       |
+| `/yoo-scan-deep`| `/yoo scan --deep` |
 
 ### Review command options
 
