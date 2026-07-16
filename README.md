@@ -351,12 +351,10 @@ sequenceDiagram
     participant Yoo as yoo extension
     participant SM as Secondary model
 
-    rect rgb(230, 245, 255)
-        MA->>Yoo: yoo.plan("refactor auth")
-        Yoo->>SM: generate plan + acceptance criteria
-        SM-->>Yoo: todo list
-        Yoo-->>MA: Plan: 5 steps
-    end
+    MA->>Yoo: yoo.plan("refactor auth")
+    Yoo->>SM: generate plan + acceptance criteria
+    SM-->>Yoo: todo list
+    Yoo-->>MA: Plan: 5 steps
 
     MA->>Yoo: yoo.scan()
     Yoo->>SM: learn conventions
@@ -385,20 +383,18 @@ sequenceDiagram
         end
     end
 
-    rect rgb(255, 245, 230)
-        MA->>Yoo: yoo.judge("...")
-        Yoo->>SM: holistic final review
-        SM-->>Yoo: verdict + completedStepIds
-        alt pass
-            Yoo->>Yoo: auto-sync tracker
-            Yoo-->>MA: all done ✓
-        else plan stale
-            Yoo-->>MA: plan stale — run yoo.planUpdate
-            MA->>Yoo: yoo.planUpdate("...")
-            Yoo-->>MA: updated plan
-        else needs-work
-            Yoo-->>MA: fix remaining issues
-        end
+    MA->>Yoo: yoo.judge("...")
+    Yoo->>SM: holistic final review
+    SM-->>Yoo: verdict + completedStepIds
+    alt pass
+        Yoo->>Yoo: auto-sync tracker
+        Yoo-->>MA: all done ✓
+    else plan stale
+        Yoo-->>MA: plan stale — run yoo.planUpdate
+        MA->>Yoo: yoo.planUpdate("...")
+        Yoo-->>MA: updated plan
+    else needs-work
+        Yoo-->>MA: fix remaining issues
     end
 ```
 
