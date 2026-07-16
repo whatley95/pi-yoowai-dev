@@ -29,6 +29,7 @@ import { executeYooJudge } from "./judge.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { validateReviewResult, getReviewValidationErrors, salvageReviewFromMarkdown } from "../prompts.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
+import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
 import type { ProgressReporter } from "../progress.js";
 import type { YooToolResult, ReviewResult, UsageCost } from "../types.js";
 
@@ -81,6 +82,37 @@ export async function executeYooReview(
   }
 
   const memoryContext = getPastIssuesForFiles(cwd, changedFiles);
+
+  const cacheable = !config.preReviewCommands || config.preReviewCommands.length === 0;
+  const cacheKey = cacheable
+    ? buildCacheKey("review", {
+        diff,
+        description,
+        modelProfile,
+        currentStep,
+        options,
+        reviewMaxDiffChars: config.reviewMaxDiffChars,
+        reviewStrategy: config.reviewStrategy,
+        reviewFullFileThresholdLines: config.reviewFullFileThresholdLines,
+        parallelReview: config.parallelReview,
+        selfVerify: config.selfVerify,
+        conventionsText,
+        memoryContext,
+      })
+    : undefined;
+
+  if (cacheable && cacheKey) {
+    const cached = getCachedReview(cwd, cacheKey);
+    if (cached) {
+      progress(3, STAGES.review, "Using cached review result…");
+      return {
+        action: "review",
+        review: cached.review,
+        model: cached.model,
+        cost: cached.cost,
+      };
+    }
+  }
 
   progress(3, STAGES.review, "Calculating token budget…");
   const baseBudget = calculateReviewBudget(
@@ -402,6 +434,10 @@ export async function executeYooReview(
     review.suggestions.push(
       "Verdict was downgraded from 'blocked' to 'needs-work' because the review context was incomplete (truncated diff or omitted files); the review is inconclusive.",
     );
+  }
+
+  if (cacheable && cacheKey) {
+    setCachedResult(cwd, "review", cacheKey, { review, model: modelProfile, cost });
   }
 
   if (review.consensus) {
