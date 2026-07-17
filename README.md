@@ -533,7 +533,9 @@ SDK backend defaults mirror the main Pi agent: `cacheRetention: "short"`, `maxRe
 
 **Credential resolution:** The SDK backend first uses pi-heyyoo's own key lookup (`secondary.apiKey` → `~/.pi/agent/auth.json` → environment variables → `!command` execution). OAuth credentials stored by Pi's `/login` command (e.g. OpenAI Codex, GitHub Copilot, Anthropic Claude Pro/Max) are detected by their `type: "oauth"` entry and resolved/refreshed via the `pi-ai` SDK's `getOAuthApiKey`. If no explicit credential is found, it falls back to the SDK's own credential resolution. This means yoo often works without any extra key configuration if the main Pi agent is already set up.
 
-**Transient-failure fallback:** If the SDK backend fails with a retryable provider error (5xx, rate limit, network timeout), pi-heyyoo automatically falls back to the `pi` backend once before giving up.
+**Extension-registered providers.** Providers added by Pi extensions (e.g. [`pi-provider-kimi-code`](https://github.com/Leechael/pi-provider-kimi-code) for `kimi-coding`) may not be resolvable by the SDK backend even though they appear in Pi's catalog. If the SDK fails with "No API key for provider", pi-heyyoo now automatically falls back to the `pi` backend so the extension can supply its credentials. You can also force the `pi` backend for these providers by setting `backend: "pi"`.
+
+**Transient-failure fallback:** If the SDK backend fails with a retryable provider error (5xx, rate limit, network timeout, or missing API key), pi-heyyoo automatically falls back to the `pi` backend once before giving up.
 
 **Streaming progress:** For SDK backend calls, generated text is streamed to the TUI so long `suggest`, `plan`, `review`, and other operations show live progress instead of waiting silently.
 

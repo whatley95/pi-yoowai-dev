@@ -995,6 +995,28 @@ describe("sdk backend", () => {
     assert.equal(content, "pi fallback ok");
   });
 
+  it("auto-falls back to pi backend when sdk reports missing API key", async () => {
+    const cwd = makeTempDir("yoo-sdk-missing-key-fallback-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "kimi-coding", id: "k3" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    setSdkStreamSimpleOverride(() => {
+      throw new Error("No API key for provider: kimi-coding");
+    });
+
+    const script = join(cwd, "fake-pi-kimi.js");
+    writeFileSync(
+      script,
+      `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"pi kimi ok"}],usage:{input:10,output:5,cost:0.0001}}}));`,
+      "utf-8",
+    );
+    setPiSpawnResolver(() => ({ command: process.execPath, prefixArgs: [script] }));
+
+    const { content } = await callSecondaryModel("kimi-coding", "k3", "system", "user", { cwd });
+    assert.equal(content, "pi kimi ok");
+  });
+
   it("sdk backend passes reasoning option when thinking is enabled", async () => {
     const cwd = makeTempDir("yoo-sdk-reasoning-");
     tmpDirs.push(cwd);

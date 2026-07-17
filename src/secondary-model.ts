@@ -54,6 +54,12 @@ function isRetryableBackendError(err: unknown): boolean {
   );
 }
 
+function isMissingApiKeyError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes("no api key") || msg.includes("api key not found") || msg.includes("missing api key");
+}
+
 type ModelAttempt = {
   provider: string;
   model: string;
@@ -207,9 +213,9 @@ async function runSingleAttempt(
         opts.structuredOutput,
       );
     } catch (err) {
-      if (backend === "sdk" && isRetryableBackendError(err)) {
+      if (backend === "sdk" && (isRetryableBackendError(err) || isMissingApiKeyError(err))) {
         if (cwd) {
-          logEvent(cwd, "warn", "SDK backend failed with retryable error; falling back to pi backend", {
+          logEvent(cwd, "warn", "SDK backend failed; falling back to pi backend", {
             provider,
             model,
             thinking,
