@@ -20,8 +20,21 @@ export async function verifyResult<T>(
     salvage?: (raw: string) => T | null;
   },
 ): Promise<{ result: T; usage: UsageCost }> {
-  const originalContext = `${options.originalSystem}\n\n${options.originalUser}`;
-  const originalResult = JSON.stringify(options.result, null, 2);
+  const originalContextRaw = `${options.originalSystem}\n\n${options.originalUser}`;
+  const originalResultRaw = JSON.stringify(options.result, null, 2);
+  // Self-verification re-sends the full original context + result. For the
+  // largest reviews that overflows the model context and the verify call fails
+  // deterministically, so cap both inputs before building the prompt.
+  const MAX_VERIFY_CONTEXT_CHARS = 120_000;
+  const MAX_VERIFY_RESULT_CHARS = 40_000;
+  const originalContext =
+    originalContextRaw.length > MAX_VERIFY_CONTEXT_CHARS
+      ? originalContextRaw.slice(0, MAX_VERIFY_CONTEXT_CHARS) + "\n... (original context truncated for verification)"
+      : originalContextRaw;
+  const originalResult =
+    originalResultRaw.length > MAX_VERIFY_RESULT_CHARS
+      ? originalResultRaw.slice(0, MAX_VERIFY_RESULT_CHARS) + "\n... (original result truncated for verification)"
+      : originalResultRaw;
   const { system, user } = buildVerifyPrompt(originalContext, originalResult, options.task);
 
   const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
@@ -50,12 +63,8 @@ export async function verifyResult<T>(
     validationErrors: parsed ? options.validationErrors(parsed) : [],
   };
   logEvent(cwd, "warn", `Self-verification of ${options.task} produced invalid JSON; keeping original result`, details);
-
-  const salvaged = options.salvage?.(raw) ?? null;
-  if (salvaged) {
-    return { result: salvaged, usage };
-  }
-
+  // Keep the already-valid original result rather than replacing it with a
+  // lossy keyword salvage of the (invalid) re-verification output.
   return { result: options.result, usage };
 }
 

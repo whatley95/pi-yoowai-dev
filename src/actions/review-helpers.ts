@@ -68,7 +68,7 @@ export async function runWithConcurrencyLimit<T>(
   limit: number,
   signal?: AbortSignal,
 ): Promise<ConcurrencyOutcome<T>[]> {
-  const results: ConcurrencyOutcome<T>[] = new Array(tasks.length);
+  const results: (ConcurrencyOutcome<T> | undefined)[] = new Array(tasks.length);
   let nextIndex = 0;
   async function worker() {
     while (nextIndex < tasks.length) {
@@ -86,7 +86,9 @@ export async function runWithConcurrencyLimit<T>(
     workers.push(worker());
   }
   await Promise.all(workers);
-  return results;
+  // Workers stop early on abort, leaving unstarted slots as holes. Fill them so
+  // callers iterating outcomes don't hit a TypeError on undefined elements.
+  return results.map((r) => r ?? { ok: false, error: new Error("aborted") });
 }
 
 export function mergeReviewResults(results: ReviewResult[]): ReviewResult {

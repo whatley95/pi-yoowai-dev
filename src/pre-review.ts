@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { logEvent } from "./logger.js";
 import { resolveProjectPath } from "./path-security.js";
 
@@ -21,6 +21,7 @@ const ALLOWED_COMMANDS = new Set([
   "cypress",
   "playwright",
   "git",
+  "svn",
   "cargo",
   "go",
   "python",
@@ -71,14 +72,7 @@ export async function runPreReviewCommands(cwd: string, commands: string[]): Pro
         if (program === "npx") {
           validateNpxArgs(args);
         }
-        const output = execFileSync(program, args, {
-          cwd,
-          encoding: "utf-8",
-          maxBuffer: 1024 * 1024,
-          timeout: 60000,
-          stdio: ["pipe", "pipe", "pipe"],
-          windowsHide: true,
-        });
+        const output = execProgram(program, args, cwd);
         return { command, output: truncateOutput(output), exitCode: 0 };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -105,6 +99,37 @@ export function formatPreReviewOutput(results: PreReviewOutput[]): string {
     lines.push(r.output || "(no output)");
   }
   return lines.join("\n");
+}
+
+function execProgram(program: string, args: string[], cwd: string): string {
+  const options: ExecFileSyncOptionsWithStringEncoding = {
+    cwd,
+    encoding: "utf-8",
+    maxBuffer: 1024 * 1024,
+    timeout: 60000,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  };
+  try {
+    return execFileSync(program, args, options);
+  } catch (err) {
+    if (process.platform !== "win32" || (err as { code?: string }).code !== "ENOENT") {
+      throw err;
+    }
+    // Windows runs npm-style shims (npm, npx, pnpm, tsc, eslint, ...) as .cmd
+    // files, which execFileSync cannot launch directly. Fall back to cmd.exe
+    // with a conservatively sanitized command line: the allowlist check still
+    // applies, and the remaining cmd.exe-sensitive characters (% ^ ") are
+    // rejected outright so nothing is reinterpreted by the shell.
+    const parts = [program, ...args];
+    if (parts.some((part) => /[%^"]/.test(part))) {
+      throw new Error(`Pre-review command uses characters not supported on Windows: ${parts.join(" ")}`, {
+        cause: err,
+      });
+    }
+    const commandLine = parts.map((part) => (/\s/.test(part) ? `"${part}"` : part)).join(" ");
+    return execFileSync(commandLine, { ...options, shell: true });
+  }
 }
 
 function parseCommand(command: string): { program: string; args: string[] } {

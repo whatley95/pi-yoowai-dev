@@ -32,6 +32,14 @@ describe("pre-review", () => {
     assert.ok(results[0].exitCode !== 0);
   });
 
+  it("allows svn commands", async () => {
+    const results = await runPreReviewCommands(process.cwd(), ["svn status"]);
+    assert.equal(results.length, 1);
+    // The svn binary may not be installed on every machine, but the command
+    // must pass the allowlist regardless.
+    assert.doesNotMatch(results[0].output, /not in the allowlist/);
+  });
+
   it("rejects interpreter inline-eval flags", async () => {
     const results = await runPreReviewCommands(process.cwd(), ["node -e console.log(1)"]);
     assert.equal(results.length, 1);

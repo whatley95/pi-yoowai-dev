@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import * as ts from "typescript";
+import type * as TS from "typescript";
 import { resolveProjectPath } from "./path-security.js";
 import { estimateTokens } from "./token-budget.js";
+import { logEvent } from "./logger.js";
 
 const DEFAULT_MAX_TOKENS = 1000;
 const MAX_DECLARATION_LINES = 30;
@@ -11,7 +12,27 @@ export interface AstContextOptions {
   maxTokens?: number;
 }
 
+/**
+ * TypeScript compiler API, loaded lazily on first use. A missing or broken
+ * typescript install then disables the AST context with a logged warning
+ * instead of failing extension startup at import time. Mirrors the lazy
+ * duck-duck-scrape import in doc-fetcher.ts.
+ */
+let tsModule: typeof import("typescript") | null = null;
+try {
+  tsModule = await import("typescript");
+} catch {
+  tsModule = null;
+}
+
 export function buildAstContext(cwd: string, changedFiles: string[], options: AstContextOptions = {}): string {
+  const ts = tsModule;
+  if (!ts) {
+    logEvent(cwd, "warn", "typescript not installed; AST context disabled", {
+      hint: "run `npm install` in the extension directory to enable import-aware context",
+    });
+    return "";
+  }
   const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
   const configPath = ts.findConfigFile(cwd, ts.sys.fileExists);
   if (!configPath || !existsSync(configPath)) {
@@ -38,7 +59,7 @@ export function buildAstContext(cwd: string, changedFiles: string[], options: As
     const sourceFile = program.getSourceFile(absPath);
     if (!sourceFile) continue;
 
-    visitSourceFile(sourceFile, checker, seen, snippets, maxTokens, totalTokens);
+    visitSourceFile(ts, sourceFile, checker, seen, snippets, maxTokens, totalTokens);
     totalTokens = snippets.reduce((sum, s) => sum + estimateTokens(s), 0);
     if (totalTokens >= maxTokens) break;
   }
@@ -48,8 +69,9 @@ export function buildAstContext(cwd: string, changedFiles: string[], options: As
 }
 
 function visitSourceFile(
-  sourceFile: ts.SourceFile,
-  checker: ts.TypeChecker,
+  ts: typeof import("typescript"),
+  sourceFile: TS.SourceFile,
+  checker: TS.TypeChecker,
   seen: Set<string>,
   snippets: string[],
   maxTokens: number,
@@ -57,7 +79,7 @@ function visitSourceFile(
 ): void {
   let totalTokens = initialTokens;
 
-  function visit(node: ts.Node): void {
+  function visit(node: TS.Node): void {
     if (totalTokens >= maxTokens) return;
 
     if (ts.isImportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
@@ -65,7 +87,7 @@ function visitSourceFile(
       const clause = node.importClause;
       if (!clause) return;
 
-      const identifiers: ts.Identifier[] = [];
+      const identifiers: TS.Identifier[] = [];
       if (clause.name) identifiers.push(clause.name);
       if (clause.namedBindings) {
         if (ts.isNamedImports(clause.namedBindings)) {
@@ -104,7 +126,7 @@ function visitSourceFile(
   visit(sourceFile);
 }
 
-function getDeclarationText(node: ts.Node, importName: string, moduleSpecifier: string): string | undefined {
+function getDeclarationText(node: TS.Node, importName: string, moduleSpecifier: string): string | undefined {
   const sourceFile = node.getSourceFile();
   const start = node.getStart(sourceFile);
   const end = node.getEnd();

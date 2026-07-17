@@ -6,7 +6,7 @@ import { logEvent } from "../logger.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
-import { calculateReviewBudget } from "../token-budget.js";
+import { calculateReviewBudget, estimateTokens } from "../token-budget.js";
 import {
   buildSecurityPrompt,
   validateSecurityResult,
@@ -77,7 +77,10 @@ export async function executeYooSecurity(
 
   if (options.fullProject) {
     progress(1, STAGES.security, "Collecting project files…");
-    const scanResult = conventions ? { conventions, files: conventions.entryPoints } : scanProjectConventions(cwd);
+    // Scan the project fresh for a broad sample rather than relying on cached
+    // conventions.entryPoints, which can be a single file and would otherwise
+    // shrink a "project-wide" audit to ~1 file.
+    const scanResult = scanProjectConventions(cwd);
     const samples = gatherDeepScanSamples(cwd, scanResult.files, 10);
     changedFiles = samples.map((s) => s.file);
     diff = `Project-wide security scan of ${changedFiles.length} sampled file(s).`;
@@ -119,9 +122,17 @@ export async function executeYooSecurity(
   });
   const fileContents = mapFileContentEntries(fileResult.entries);
 
+  const systemPromptEstimate = 1000;
+  const remainingForDiff = Math.max(
+    0,
+    budget.availableInputTokens - fileResult.totalTokens - systemPromptEstimate,
+  );
+  const diffTokens = estimateTokens(diff);
+  const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
+
   const { system, user } = buildSecurityPrompt(
     description,
-    diff,
+    finalDiff,
     fileContents,
     conventionsText,
     nativeJson,

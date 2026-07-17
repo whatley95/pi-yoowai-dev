@@ -56,10 +56,12 @@ export function formatTokenCount(n: number): string {
 
 export function toolLoopOptions(config: HeyyooConfig): { enableToolLoop: boolean; maxToolIterations?: number } {
   if (!config.toolUseLoop) return { enableToolLoop: false };
-  return {
-    enableToolLoop: true,
-    maxToolIterations: typeof config.toolUseLoop === "number" ? config.toolUseLoop : undefined,
-  };
+  // A numeric value <= 0 is not a valid iteration count. Treat it as "use the
+  // default" rather than disabling the loop (which would otherwise return the
+  // prompt verbatim as the model response).
+  const maxToolIterations =
+    typeof config.toolUseLoop === "number" && config.toolUseLoop > 0 ? config.toolUseLoop : undefined;
+  return { enableToolLoop: true, maxToolIterations };
 }
 
 export function parseStructuredResult<T>(

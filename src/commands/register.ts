@@ -11,6 +11,7 @@ import { callSecondaryModel, clearPiSessionId } from "../secondary-model.js";
 import { formatTokenCount, secondaryModelLabel } from "../actions/shared.js";
 import { executeYooPlan } from "../actions/plan.js";
 import { executeYooPlanUpdate } from "../actions/plan-update.js";
+import { clearReviewCache } from "../review-cache.js";
 import { executeYooReview } from "../actions/review.js";
 import { executeYooSuggest } from "../actions/suggest.js";
 import { executeYooRecommend } from "../actions/recommend.js";
@@ -139,7 +140,7 @@ async function showYooStatus(ctx: ExtensionContext): Promise<void> {
 export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, LoopDetectionState>): void {
   pi.registerCommand("yoo", {
     description:
-      "Run a yoo action or show status. Usage: /yoo [plan|review|suggest|recommend|judge|scan|test|security|status] [args]",
+      "Run a yoo action or show status. Usage: /yoo [plan|review|suggest|recommend|judge|scan|test|security|status] [args] — 'scan' accepts --deep for deep source-file sampling",
     handler: async (args, ctx) => {
       const trimmed = args.trim();
       if (!trimmed) {
@@ -214,9 +215,11 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           case "judge":
             result = await executeYooJudge(ctx.cwd, restText || "all done", signal, notifyProgress, ctx.sessionManager);
             break;
-          case "scan":
-            result = await executeYooScan(ctx.cwd, signal, notifyProgress, ctx.sessionManager);
+          case "scan": {
+            const deep = restText.includes("--deep") ? true : undefined;
+            result = await executeYooScan(ctx.cwd, signal, notifyProgress, ctx.sessionManager, deep);
             break;
+          }
           case "test": {
             const { description, command, options: testOptions } = parseTestCommandArgs(restText);
             result = await executeYooTest(
@@ -596,8 +599,9 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   });
 
   pi.registerCommand("yoo-info", {
-    description: "Alias for /yoo-status",
+    description: "Deprecated alias for /yoo-status",
     handler: async (_args, ctx) => {
+      ctx.ui.notify("/yoo-info is deprecated; use /yoo-status instead.", "warn");
       await showYooStatus(ctx);
     },
   });
@@ -744,6 +748,7 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       clearConventions(ctx.cwd);
       clearLearnedFacts(ctx.cwd);
       clearPromptCache();
+      clearReviewCache(ctx.cwd);
       ctx.ui.notify(
         "yoo plan, state, cost, memory, conventions, learned facts, loop history, and inherited session cleared.",
         "info",
@@ -1090,8 +1095,9 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   });
 
   pi.registerCommand("yoo-scan", {
-    description: "Alias for /yoo scan — scan project conventions",
+    description: "Deprecated alias for /yoo scan — scan project conventions",
     handler: async (_args, ctx) => {
+      ctx.ui.notify("/yoo-scan is deprecated; use /yoo scan instead.", "warn");
       const signal = undefined;
       const progress = createProgressReporter("scan", ctx);
       const notifyProgress = (stage: number, total: number, message: string) => {
@@ -1117,8 +1123,9 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   });
 
   pi.registerCommand("yoo-scan-deep", {
-    description: "Run /yoo scan with deep source-file sampling enabled",
+    description: "Deprecated alias for /yoo scan --deep",
     handler: async (_args, ctx) => {
+      ctx.ui.notify("/yoo-scan-deep is deprecated; use /yoo scan --deep instead.", "warn");
       const signal = undefined;
       const progress = createProgressReporter("scan", ctx);
       const notifyProgress = (stage: number, total: number, message: string) => {

@@ -72,7 +72,11 @@ export async function executeYooReview(
       : undefined;
 
   progress(1, STAGES.review, "Collecting diff…");
-  const diffOptions = { ...options, maxDiffChars: config.reviewMaxDiffChars };
+  const diffOptions = {
+    ...options,
+    maxDiffChars: config.reviewMaxDiffChars,
+    untracked: options.untracked ?? true,
+  };
   const vcsInfo = getVcsInfo(cwd);
   const lastReviewed = getLastReviewedCommit(cwd);
   const canUseIncremental =
@@ -82,10 +86,14 @@ export async function executeYooReview(
     !diffOptions.revision &&
     !diffOptions.since &&
     !diffOptions.files?.length &&
-    !diffOptions.exclude?.length &&
-    !diffOptions.untracked;
+    !diffOptions.exclude?.length;
   if (canUseIncremental) {
     diffOptions.since = lastReviewed;
+  } else if (!diffOptions.revision && !diffOptions.since) {
+    // Default to reviewing everything pending (staged + unstaged + untracked)
+    // instead of bare `git diff`, which hides staged changes and new files
+    // (e.g. after `git add` before review, or a "create file X" step).
+    diffOptions.revision = "HEAD";
   }
   const { diff, truncated, changedFiles, vcs } = getDiff(cwd, diffOptions);
   const relatedContext =
@@ -313,6 +321,7 @@ export async function executeYooReview(
         (acc, s) => (acc && s.usage ? mergeUsageCost(acc, s.usage) : s.usage),
         undefined,
       );
+      if (cost) cost = recordCostWithBudget(cwd, cost);
       finalDiffTruncated = truncated;
       finalDroppedFiles = [...fileResult.dropped, ...skippedDueToTruncation];
 
@@ -631,22 +640,31 @@ export async function executeYooReview(
       const judgeProgress: ProgressReporter = (stage, _total, message) => {
         progress(STAGES.review, STAGES.review, `[judge] ${message}`);
       };
-      const judgeResult = await executeYooJudge(
-        cwd,
-        `All ${planProgress.total} plan steps completed.`,
-        signal,
-        judgeProgress,
-        ctx.sessionManager,
-      );
-      if (judgeResult.judge) {
-        review.autoJudged = true;
-        markJudgeCompleted(cwd);
-        const mergedCost =
-          cost && judgeResult.cost ? mergeUsageCost(cost, judgeResult.cost) : (cost ?? judgeResult.cost);
-        return { action: "review", review, judge: judgeResult.judge, cost: mergedCost, model: modelProfile };
-      } else if (judgeResult.error) {
-        markJudgeCompleted(cwd);
-        review.suggestions.push(`Auto-judge failed: ${judgeResult.error}`);
+      try {
+        const judgeResult = await executeYooJudge(
+          cwd,
+          `All ${planProgress.total} plan steps completed.`,
+          signal,
+          judgeProgress,
+          ctx.sessionManager,
+        );
+        if (judgeResult.judge) {
+          review.autoJudged = true;
+          markJudgeCompleted(cwd);
+          const mergedCost =
+            cost && judgeResult.cost ? mergeUsageCost(cost, judgeResult.cost) : (cost ?? judgeResult.cost);
+          return { action: "review", review, judge: judgeResult.judge, cost: mergedCost, model: modelProfile };
+        } else if (judgeResult.error) {
+          markJudgeCompleted(cwd);
+          review.suggestions.push(`Auto-judge failed: ${judgeResult.error}`);
+        }
+      } catch (err) {
+        logEvent(cwd, "warn", "Auto-judge failed; keeping review result", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        review.suggestions.push(
+          `Auto-judge failed: ${err instanceof Error ? err.message : String(err)}. The review result is still available.`,
+        );
       }
     }
   } else {

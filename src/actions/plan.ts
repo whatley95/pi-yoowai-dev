@@ -13,8 +13,9 @@ import {
   parseStructuredResult,
   createStreamProgressCallback,
 } from "./shared.js";
+import { logEvent } from "../logger.js";
 import type { ProgressReporter } from "../progress.js";
-import type { YooToolResult } from "../types.js";
+import type { YooToolResult, UsageCost } from "../types.js";
 
 export async function executeYooPlan(
   cwd: string,
@@ -43,14 +44,30 @@ export async function executeYooPlan(
 
   progress(2, STAGES.plan, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const { system, user } = buildPlanPrompt(task, conventionsText, snapshotText);
-  const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
-    signal,
-    thinking: modelConfig.thinking,
-    cwd,
-    sessionManager,
-    task: "plan",
-    onStreamProgress: createStreamProgressCallback(progress, 2, STAGES.plan),
-  });
+  let raw: string;
+  let usage: UsageCost;
+  try {
+    const result = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
+      signal,
+      thinking: modelConfig.thinking,
+      cwd,
+      sessionManager,
+      task: "plan",
+      structuredOutput: true,
+      onStreamProgress: createStreamProgressCallback(progress, 2, STAGES.plan),
+    });
+    raw = result.content;
+    usage = result.usage;
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    logEvent(cwd, "error", "yoo tool plan failed", { error: msg });
+    return {
+      action: "plan",
+      error: `Secondary model unavailable: ${msg.slice(0, 200)}. Try again or configure a different model via /yoo-model.`,
+      model: modelProfile,
+    };
+  }
 
   progress(3, STAGES.plan, "Parsing plan…");
   const cost = recordCostWithBudget(cwd, usage);
