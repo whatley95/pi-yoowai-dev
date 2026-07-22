@@ -15,7 +15,13 @@ import { resolveModelInfo } from "../model-registry.js";
 import { estimateTokens } from "../token-budget.js";
 import { buildProjectIndex, saveProjectIndex, enrichConventionsFromIndex } from "../project-index.js";
 import { logEvent } from "../logger.js";
-import { STAGES, secondaryModelLabel, recordCostWithBudget, createStreamProgressCallback } from "./shared.js";
+import {
+  STAGES,
+  secondaryModelLabel,
+  recordCostWithBudget,
+  createStreamProgressCallback,
+  continuationMeta,
+} from "./shared.js";
 import type { ProgressReporter } from "../progress.js";
 import type { YooToolResult } from "../types.js";
 
@@ -88,7 +94,12 @@ export async function executeYooScan(
       : "";
 
   progress(2, STAGES.scan, `Calling ${secondaryModelLabel(modelConfig)}…`);
-  const { content: raw, usage } = await callSecondaryModel(
+  const {
+    content: raw,
+    usage,
+    rounds,
+    truncated: finalTruncated,
+  } = await callSecondaryModel(
     modelConfig.provider,
     modelConfig.id,
     system,
@@ -151,5 +162,6 @@ export async function executeYooScan(
     scan: { conventions, files: localScan.files },
     cost: recordCostWithBudget(cwd, usage),
     model: modelProfile,
+    continuation: continuationMeta(rounds, finalTruncated ?? false),
   };
 }

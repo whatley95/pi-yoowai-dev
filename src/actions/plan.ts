@@ -12,6 +12,7 @@ import {
   recordCostWithBudget,
   parseStructuredResult,
   createStreamProgressCallback,
+  continuationMeta,
 } from "./shared.js";
 import { logEvent } from "../logger.js";
 import type { ProgressReporter } from "../progress.js";
@@ -47,6 +48,8 @@ export async function executeYooPlan(
   const { system, user } = buildPlanPrompt(task, conventionsText, snapshotText);
   let raw: string;
   let usage: UsageCost;
+  let rounds: number | undefined;
+  let finalTruncated: boolean | undefined;
   try {
     const result = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
       signal,
@@ -59,6 +62,8 @@ export async function executeYooPlan(
     });
     raw = result.content;
     usage = result.usage;
+    rounds = result.rounds;
+    finalTruncated = result.truncated;
   } catch (err) {
     if (signal?.aborted) throw err;
     const msg = err instanceof Error ? err.message : String(err);
@@ -94,5 +99,11 @@ export async function executeYooPlan(
   }
 
   setPlan(cwd, plan);
-  return { action: "plan", plan, cost, model: modelProfile };
+  return {
+    action: "plan",
+    plan,
+    cost,
+    model: modelProfile,
+    continuation: continuationMeta(rounds, finalTruncated ?? false),
+  };
 }

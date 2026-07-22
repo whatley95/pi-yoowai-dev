@@ -74,7 +74,7 @@ export async function callSecondaryModel(
   systemPrompt: string,
   userPrompt: string,
   options: CallSecondaryModelOptions = {},
-): Promise<{ content: string; usage: UsageCost }> {
+): Promise<{ content: string; usage: UsageCost; rounds?: number; truncated?: boolean }> {
   const { thinking: optionsThinking, cwd, task } = options;
   const config = cwd ? loadHeyyooConfig(cwd) : undefined;
   const effectiveSecondary = config && task ? resolveTaskModel(config, task) : config?.secondary;
@@ -126,7 +126,7 @@ async function runSingleAttempt(
   options: CallSecondaryModelOptions,
   config: HeyyooConfig | undefined,
   cwd: string | undefined,
-): Promise<{ content: string; usage: UsageCost }> {
+): Promise<{ content: string; usage: UsageCost; rounds?: number; truncated?: boolean }> {
   const { provider, model, thinking, secondary } = attempt;
 
   const { backend, apiInfo, sdkModelInfo, modelInfoOverride } = await resolveBackend(
@@ -265,7 +265,8 @@ async function runSingleAttempt(
     // NOTE: The tool-loop path is intentionally excluded from continuation handling.
     // It manages its own multi-turn flow (tool requests/results) and decides when the
     // final structured result is complete, so length-truncation continuation does not apply.
-    return executeToolLoop(cwd, systemPrompt, userPrompt, options, doCall, options.maxToolIterations);
+    const result = await executeToolLoop(cwd, systemPrompt, userPrompt, options, doCall, options.maxToolIterations);
+    return { ...result, rounds: 0 };
   }
 
   const maxContinuations =
@@ -315,13 +316,13 @@ async function callWithContinuation(
   ) => Promise<{ content: string; usage: UsageCost; truncated?: boolean }>,
   maxContinuations: number,
   costBudgetUsd: number | undefined,
-): Promise<{ content: string; usage: UsageCost }> {
+): Promise<{ content: string; usage: UsageCost; rounds: number; truncated: boolean }> {
   const {
     content: firstContent,
     usage: firstUsage,
     truncated: firstTruncated,
   } = await doCall(systemPrompt, userPrompt, options);
-  if (!firstTruncated) return { content: firstContent, usage: firstUsage };
+  if (!firstTruncated) return { content: firstContent, usage: firstUsage, rounds: 0, truncated: false };
 
   return runContinuationLoop(
     cwd,
@@ -354,12 +355,14 @@ async function runContinuationLoop(
   combined: string,
   totalUsage: UsageCost,
   truncated: boolean,
-): Promise<{ content: string; usage: UsageCost }> {
+): Promise<{ content: string; usage: UsageCost; rounds: number; truncated: boolean }> {
   // Capture the session cost once at the start; the action executor records cost
   // AFTER callSecondaryModel returns, so getSessionCost won't reflect in-flight calls.
   // We track the continuation's own accumulated cost via totalUsage.estimatedCostUsd.
   const sessionCostAtStart = cwd ? getSessionCost(cwd).costUsd : 0;
+  let rounds = 0;
   for (let i = 0; i < maxContinuations && truncated; i++) {
+    rounds++;
     // Re-check the cost budget between rounds so continuation cannot silently
     // exceed costBudgetUsd (the pre-check in runSingleAttempt only estimates one call).
     if (cwd && costBudgetUsd !== undefined && costBudgetUsd >= 0) {
@@ -372,7 +375,8 @@ async function runContinuationLoop(
           inFlightCostUsd: formatCost(inFlightCost),
           budgetUsd: formatCost(costBudgetUsd),
         });
-        return { content: combined, usage: totalUsage };
+        return { content: combined, usage: totalUsage, rounds: rounds - 1, truncated: true };
+        // stopCause: budget-exceeded
       }
     }
 
@@ -401,7 +405,8 @@ async function runContinuationLoop(
           error: err instanceof Error ? err.message : String(err),
         });
       }
-      return { content: combined, usage: totalUsage };
+      return { content: combined, usage: totalUsage, rounds: rounds - 1, truncated: true };
+      // stopCause: error
     }
     const nextContent = nextResult.content ?? "";
     if (nextContent.trim().length === 0) {
@@ -416,6 +421,18 @@ async function runContinuationLoop(
     combined += deduped;
     truncated = nextResult.truncated ?? false;
     totalUsage = mergeUsageCost(totalUsage, nextResult.usage);
+
+    if (cwd) {
+      logEvent(cwd, "info", "Continuation round complete", {
+        provider,
+        model,
+        round: i + 1,
+        charsAppended: deduped.length,
+        stillTruncated: truncated,
+        stopReason: truncated ? "continuing" : "complete",
+        cumulativeCost: formatCost(totalUsage.estimatedCostUsd),
+      });
+    }
 
     // No-progress guard: if this round added almost nothing after dedup, stop
     // to avoid burning the remaining rounds for no gain.
@@ -440,7 +457,7 @@ async function runContinuationLoop(
       max: maxContinuations,
     });
   }
-  return { content: combined, usage: totalUsage };
+  return { content: combined, usage: totalUsage, rounds, truncated };
 }
 
 /** Remove a leading prefix of `previous` from `next` so continuation content is not duplicated.

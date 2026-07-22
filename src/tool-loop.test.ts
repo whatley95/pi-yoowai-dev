@@ -123,4 +123,50 @@ describe("executeToolLoop", () => {
     const secondUser = calls[1].user;
     assert.equal(secondUser.includes("not in the allowlist"), true);
   });
+
+  it("resumes a truncated final response and stitches the tail", async () => {
+    let callCount = 0;
+    const callModel = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return { content: '{"verdict": "pa', usage: zeroUsage(), truncated: true };
+      }
+      return { content: 'ss"}', usage: zeroUsage(), truncated: false };
+    };
+
+    const result = await executeToolLoop(cwd, "system", "user", {}, callModel, 1);
+    assert.equal(result.content, '{"verdict": "pass"}');
+    assert.equal(result.truncated, false);
+    assert.equal(callCount, 2);
+  });
+
+  it("deduplicates a resumed tail that repeats the original ending", async () => {
+    let callCount = 0;
+    const callModel = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return { content: '{"verdict": "pass', usage: zeroUsage(), truncated: true };
+      }
+      return { content: 'ss" and more', usage: zeroUsage(), truncated: false };
+    };
+
+    const result = await executeToolLoop(cwd, "system", "user", {}, callModel, 1);
+    assert.equal(result.content, '{"verdict": "pass" and more');
+    assert.equal(callCount, 2);
+  });
+
+  it("skips resume when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let callCount = 0;
+    const callModel = async () => {
+      callCount++;
+      return { content: '{"verdict": "pa', usage: zeroUsage(), truncated: true };
+    };
+
+    const result = await executeToolLoop(cwd, "system", "user", { signal: controller.signal }, callModel, 1);
+    assert.equal(result.content, '{"verdict": "pa');
+    assert.equal(result.truncated, true);
+    assert.equal(callCount, 1);
+  });
 });

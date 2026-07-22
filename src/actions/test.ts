@@ -18,6 +18,7 @@ import {
   parseStructuredResult,
   createStreamProgressCallback,
   toolLoopOptions,
+  continuationMeta,
 } from "./shared.js";
 import { getSessionContext } from "./review-helpers.js";
 import { getState } from "../session-state.js";
@@ -149,7 +150,12 @@ export async function executeYooTest(
     currentStep,
   );
   progress(6, STAGES.test, `Calling ${secondaryModelLabel(modelConfig)}…`);
-  const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
+  const {
+    content: raw,
+    usage,
+    rounds,
+    truncated: finalTruncated,
+  } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,
     thinking: modelConfig.thinking,
     cwd,
@@ -198,5 +204,11 @@ export async function executeYooTest(
     }
   }
 
-  return { action: "test", test, cost, model: modelProfile };
+  return {
+    action: "test",
+    test,
+    cost,
+    model: modelProfile,
+    continuation: continuationMeta(rounds, finalTruncated ?? false),
+  };
 }

@@ -21,7 +21,14 @@ import {
   setLastReviewedCommit,
 } from "../session-state.js";
 import { planStepDescription } from "../types.js";
-import { STAGES, secondaryModelLabel, recordCostWithBudget, mergeUsageCost, toolLoopOptions } from "./shared.js";
+import {
+  STAGES,
+  secondaryModelLabel,
+  recordCostWithBudget,
+  mergeUsageCost,
+  toolLoopOptions,
+  continuationMeta,
+} from "./shared.js";
 import {
   getSessionContext,
   runWithConcurrencyLimit,
@@ -210,6 +217,8 @@ export async function executeYooReview(
   let finalDiffTruncated = false;
   let finalDroppedFiles: string[] = [];
   let usedHunkChunking = false;
+  let continuationRounds = 0;
+  let continuationTruncated = false;
 
   if (filesWithDiff.length === 1 && diffLikelyTruncated && strategy !== "diff-only") {
     progress(7, STAGES.review, "Diff is large; splitting into hunks for review…");
@@ -295,17 +304,22 @@ export async function executeYooReview(
           nativeJson,
           ...toolLoopOptions(config),
         });
-        return { review: result.review, usage: result.usage };
+        return { review: result.review, usage: result.usage, rounds: result.rounds, truncated: result.truncated };
       });
 
-      let outcomes: ConcurrencyOutcome<{ review: ReviewResult; usage: UsageCost }>[];
+      let outcomes: ConcurrencyOutcome<{
+        review: ReviewResult;
+        usage: UsageCost;
+        rounds?: number;
+        truncated?: boolean;
+      }>[];
       try {
         outcomes = await runWithConcurrencyLimit(hunkTasks, maxConcurrency, signal);
       } finally {
         releaseCost(cwd, projectedCost);
       }
 
-      const successes: { review: ReviewResult; usage: UsageCost }[] = [];
+      const successes: { review: ReviewResult; usage: UsageCost; rounds?: number; truncated?: boolean }[] = [];
       const failures: string[] = [];
       for (const outcome of outcomes) {
         if (outcome.ok) successes.push(outcome.value);
@@ -324,6 +338,8 @@ export async function executeYooReview(
       if (cost) cost = recordCostWithBudget(cwd, cost);
       finalDiffTruncated = truncated;
       finalDroppedFiles = [...fileResult.dropped, ...skippedDueToTruncation];
+      continuationRounds = successes.reduce((sum, s) => sum + (s.rounds ?? 0), 0);
+      continuationTruncated = successes.some((s) => s.truncated);
 
       if (failures.length > 0) {
         review.suggestions.unshift(`Review failed for ${failures.length} hunk(s): ${failures.join("; ")}`);
@@ -437,17 +453,35 @@ export async function executeYooReview(
         nativeJson,
         ...toolLoopOptions(config),
       });
-      return { review: result.review, usage: result.usage, dropped: p.fileResult.dropped };
+      return {
+        review: result.review,
+        usage: result.usage,
+        dropped: p.fileResult.dropped,
+        rounds: result.rounds,
+        truncated: result.truncated,
+      };
     });
 
-    let outcomes: ConcurrencyOutcome<{ review: ReviewResult; usage: UsageCost; dropped: string[] }>[];
+    let outcomes: ConcurrencyOutcome<{
+      review: ReviewResult;
+      usage: UsageCost;
+      dropped: string[];
+      rounds?: number;
+      truncated?: boolean;
+    }>[];
     try {
       outcomes = await runWithConcurrencyLimit(tasks, maxConcurrency, signal);
     } finally {
       releaseCost(cwd, projectedCost);
     }
 
-    const successes: { review: ReviewResult; usage: UsageCost; dropped: string[] }[] = [];
+    const successes: {
+      review: ReviewResult;
+      usage: UsageCost;
+      dropped: string[];
+      rounds?: number;
+      truncated?: boolean;
+    }[] = [];
     const failures: string[] = [];
     for (const outcome of outcomes) {
       if (outcome.ok) {
@@ -469,6 +503,8 @@ export async function executeYooReview(
     finalDroppedFiles = Array.from(new Set(successes.flatMap((s) => s.dropped).concat(skippedDueToTruncation)));
     if (finalDroppedFiles.length > 0) review.droppedFiles = finalDroppedFiles;
     finalDiffTruncated = truncated || successes.some((s) => s.review.truncated);
+    continuationRounds = successes.reduce((sum, s) => sum + (s.rounds ?? 0), 0);
+    continuationTruncated = successes.some((s) => s.truncated);
 
     if (failures.length > 0) {
       review.suggestions.unshift(`Review failed for ${failures.length} file(s): ${failures.join("; ")}`);
@@ -542,6 +578,8 @@ export async function executeYooReview(
     }
     review = result.review;
     cost = recordCostWithBudget(cwd, result.usage);
+    continuationRounds = result.rounds ?? 0;
+    continuationTruncated = result.truncated ?? false;
 
     if (config.selfVerify) {
       progress(8, STAGES.review, "Self-verifying review result…");
@@ -653,7 +691,14 @@ export async function executeYooReview(
           markJudgeCompleted(cwd);
           const mergedCost =
             cost && judgeResult.cost ? mergeUsageCost(cost, judgeResult.cost) : (cost ?? judgeResult.cost);
-          return { action: "review", review, judge: judgeResult.judge, cost: mergedCost, model: modelProfile };
+          return {
+            action: "review",
+            review,
+            judge: judgeResult.judge,
+            cost: mergedCost,
+            model: modelProfile,
+            continuation: continuationMeta(continuationRounds, continuationTruncated),
+          };
         } else if (judgeResult.error) {
           markJudgeCompleted(cwd);
           review.suggestions.push(`Auto-judge failed: ${judgeResult.error}`);
@@ -682,5 +727,11 @@ export async function executeYooReview(
   if (vcsInfo.type === "git" && vcsInfo.revision && review.verdict !== "blocked") {
     setLastReviewedCommit(cwd, vcsInfo.revision);
   }
-  return { action: "review", review, cost, model: modelProfile };
+  return {
+    action: "review",
+    review,
+    cost,
+    model: modelProfile,
+    continuation: continuationMeta(continuationRounds, continuationTruncated),
+  };
 }

@@ -44,6 +44,34 @@ import { planStepDescription } from "../types.js";
 import type { SecondaryModelConfig, YooToolResult, YooModelTask, YooAction } from "../types.js";
 import type { LoopDetectionState } from "../loop-detector.js";
 
+export function computeThinkingLevels(
+  modelDetails:
+    | {
+        reasoning?: boolean;
+        thinkingLevelMap?: Partial<Record<string, string | null>>;
+      }
+    | undefined,
+  canonicalLevels: readonly string[],
+): string[] {
+  if (modelDetails?.reasoning === false) {
+    return ["off"];
+  }
+  const map = modelDetails?.thinkingLevelMap;
+  const hasMap = map && typeof map === "object" && Object.keys(map).length > 0;
+  if (!hasMap) {
+    return [...canonicalLevels];
+  }
+  const supported = new Set<string>();
+  for (const [level, value] of Object.entries(map!)) {
+    if (level === "off" || value === null || value === undefined) {
+      continue;
+    }
+    supported.add(level);
+  }
+  supported.add("off");
+  return canonicalLevels.filter((l) => supported.has(l));
+}
+
 async function showYooStatus(ctx: ExtensionContext): Promise<void> {
   const config = loadHeyyooConfig(ctx.cwd);
   const state = getState(ctx.cwd);
@@ -438,6 +466,15 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           getAll?(): Array<{ id: string; provider: string }>;
           getProviderAuthStatus(provider: string): { configured: boolean };
           hasConfiguredAuth(model: { provider: string }): boolean;
+          getModel?(
+            provider: string,
+            id: string,
+          ):
+            | {
+                reasoning?: boolean;
+                thinkingLevelMap?: Partial<Record<string, string | null>>;
+              }
+            | undefined;
         };
 
         if (!registry || typeof registry.getAvailable !== "function") {
@@ -554,7 +591,14 @@ export function registerYooCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         const modelId = modelIdPicked.replace(/ ✓ current$/, "");
 
         // 4. Pick thinking level.
-        const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+        // Prefer the model's advertised supported levels from the Pi SDK catalog.
+        const canonicalThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+        const modelDetails = typeof registry.getModel === "function" ? registry.getModel(provider, modelId) : undefined;
+        const thinkingLevels = computeThinkingLevels(modelDetails, canonicalThinkingLevels);
+        if (thinkingLevels.length === 0) {
+          ctx.ui.notify(`Model ${provider}:${modelId} does not advertise any thinking levels.`, "warn");
+          return;
+        }
         const thinkingItems = thinkingLevels.map((t) => `${t}${t === effectiveThinking ? " ✓ current" : ""}`);
         const thinkingPicked = await ctx.ui.select("Pick thinking level:", thinkingItems);
         if (!thinkingPicked) return;

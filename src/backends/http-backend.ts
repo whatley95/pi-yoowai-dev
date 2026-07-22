@@ -473,11 +473,13 @@ function modelSupportsAnthropicThinking(provider: string, model: string): boolea
     // Anthropic extended-thinking models.
     "claude-sonnet-4-5",
     "claude-opus-4-5",
+    "claude-fable-5",
     "claude-3-7-sonnet",
     "claude-3.7-sonnet",
     "anthropic/claude-3-7-sonnet",
     "anthropic/claude-sonnet-4-5",
     "anthropic/claude-opus-4-5",
+    "anthropic/claude-fable-5",
     // opencode-go models that use the Anthropic messages API and support budget-based thinking.
     "opencode-go:qwen3.7-max",
     "opencode-go:qwen3.7-plus",
@@ -486,6 +488,7 @@ function modelSupportsAnthropicThinking(provider: string, model: string): boolea
     "opencode:claude-haiku-4-5",
     "opencode:claude-opus-4-1",
     "opencode:claude-opus-4-5",
+    "opencode:claude-fable-5",
   ]);
   if (thinkingModels.has(lc)) return true;
   const baseModel = modelLc.replace(/-\d{8}$/, "").replace(/-latest$/, "");
@@ -497,21 +500,32 @@ function modelSupportsAnthropicThinking(provider: string, model: string): boolea
   return false;
 }
 
+const ADAPTIVE_THINKING_PROVIDERS = new Set(["anthropic", "opencode", "opencode-go", "openrouter"]);
+
 function usesAdaptiveThinking(provider: string, model: string): boolean {
-  // Models that require adaptive thinking (type: "adaptive") instead of a token budget.
-  return `${provider}:${model}`.toLowerCase() === "opencode:claude-fable-5";
+  // Adaptive thinking (type: "adaptive") is currently specific to Anthropic's
+  // Claude Fable 5 and providers that proxy the Anthropic messages API. Limit the
+  // match to known providers so arbitrary custom endpoints are not forced onto
+  // the adaptive path just because their model id happens to contain "claude-fable-5".
+  const providerLc = provider.toLowerCase();
+  if (!ADAPTIVE_THINKING_PROVIDERS.has(providerLc)) return false;
+  return model.toLowerCase() === "claude-fable-5";
 }
 
-function anthropicEffortFromThinking(level: string): "low" | "medium" | "high" | "xhigh" {
+// Maps pi-heyyoo's canonical thinking levels to Anthropic's adaptive-thinking
+// `output_config.effort` values. These values are provider-specific; this mapping
+// targets the current Anthropic adaptive models (Claude Fable 5 and later).
+function anthropicEffortFromThinking(level: string): "low" | "medium" | "high" | "xhigh" | "max" {
   switch (level?.toLowerCase()) {
     case "minimal":
     case "low":
       return "low";
     case "high":
+      return "high";
     case "xhigh":
       return "xhigh";
     case "max":
-      return "xhigh";
+      return "max";
     default:
       return "medium";
   }
@@ -533,6 +547,7 @@ function reasoningEffortFromThinking(level: string): "low" | "medium" | "high" {
       return "low";
     case "high":
     case "xhigh":
+    case "max":
       return "high";
     default:
       return "medium";
@@ -556,6 +571,7 @@ function thinkingBudget(level: string): number {
     medium: 1024,
     high: 2048,
     xhigh: 4096,
+    max: 8192,
   };
   return budgets[level?.toLowerCase()] ?? 1024;
 }

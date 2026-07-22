@@ -3,7 +3,7 @@ import { loadHeyyooConfig } from "../config.js";
 import { logEvent } from "../logger.js";
 import { parseJsonResponse, getJsonParseError } from "../prompts.js";
 import type { ProgressReporter } from "../progress.js";
-import type { UsageCost, SecondaryModelConfig, HeyyooConfig } from "../types.js";
+import type { UsageCost, SecondaryModelConfig, HeyyooConfig, YooToolResult } from "../types.js";
 
 export const STAGES = {
   plan: 3,
@@ -36,6 +36,15 @@ export function createStreamProgressCallback(
 export function recordCostWithBudget(cwd: string, usage: UsageCost): UsageCost {
   const config = loadHeyyooConfig(cwd);
   return recordCost(cwd, usage, config.costBudgetUsd);
+}
+
+/** Build continuation metadata for YooToolResult from callSecondaryModel's rounds
+ *  return value. Returns undefined when no continuation occurred. */
+export function continuationMeta(rounds: number | undefined, truncated: boolean): YooToolResult["continuation"] {
+  if (!rounds || rounds === 0) {
+    return truncated ? { rounds: 0, status: "truncated-after-cap" } : undefined;
+  }
+  return { rounds, status: truncated ? "truncated-after-cap" : "stitched" };
 }
 
 export function mergeUsageCost(a: UsageCost, b: UsageCost): UsageCost {
@@ -97,4 +106,49 @@ export function parseStructuredResult<T>(
 
   logEvent(cwd, "warn", `Failed to parse ${options.label.toLowerCase()} from secondary model response`, details);
   return null;
+}
+
+const POST_STITCH_RETRY_PROMPT =
+  "Continue your previous response exactly where it left off. Do not repeat what you already wrote; output only the remaining content. If the response was already complete, output nothing.";
+
+/** Remove a leading prefix shared with `previous` from `next` so a retry that
+ *  re-emits the tail of the original response does not duplicate it. */
+function stripRetryOverlap(previous: string, next: string): string {
+  const maxOverlap = Math.min(previous.length, next.length, 200);
+  for (let len = maxOverlap; len > 0; len--) {
+    if (previous.endsWith(next.slice(0, len))) {
+      return next.slice(len);
+    }
+  }
+  return next;
+}
+
+/** When a stitched (multi-round continuation) response fails to parse, issue
+ *  one retry continuation asking the model to produce the valid tail. Returns
+ *  the re-stitched raw content on success, or null if the retry failed. */
+export async function retryStitchedParse(
+  cwd: string,
+  raw: string,
+  signal: AbortSignal | undefined,
+  callModel: (prompt: string) => Promise<{ content: string; usage: UsageCost }>,
+): Promise<{ raw: string; usage: UsageCost } | null> {
+  if (signal?.aborted) throw new Error("Aborted");
+  const tail = raw.slice(-2000);
+  const prompt = `${POST_STITCH_RETRY_PROMPT}\n\n=== Last content (do not repeat) ===\n${tail}`;
+  try {
+    const { content, usage } = await callModel(prompt);
+    if (content.trim().length === 0) {
+      logEvent(cwd, "info", "Post-stitch validation retry returned no additional content", {});
+      return { raw, usage };
+    }
+    const deduped = stripRetryOverlap(raw, content);
+    logEvent(cwd, "info", "Post-stitch validation retry returned content", { appendedChars: deduped.length });
+    return { raw: raw + deduped, usage };
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    logEvent(cwd, "warn", "Post-stitch validation retry failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
 }

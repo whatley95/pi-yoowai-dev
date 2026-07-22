@@ -44,6 +44,16 @@ export function formatResultText(result: YooToolResult): string {
   if (result.elapsedMs != null) {
     metaParts.push(`took ${formatDuration(result.elapsedMs)}`);
   }
+  if (result.continuation) {
+    const { rounds, status } = result.continuation;
+    const statusText =
+      status === "stitched"
+        ? `✓ stitched (${rounds} rounds)`
+        : rounds === 0
+          ? "⚠ truncated after cap"
+          : `⚠ truncated after cap (${rounds} rounds)`;
+    metaParts.push(statusText);
+  }
   if (metaParts.length > 0) {
     lines.push(`_${metaParts.join(" · ")}_`);
     lines.push("");

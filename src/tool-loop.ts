@@ -97,10 +97,11 @@ function formatToolResult(request: ToolRequest, result: ToolResult): string {
   return `\n\n## Tool result: ${description}\n${body}\n\nYou may request another tool or produce the final structured JSON result.`;
 }
 
-// NOTE: The tool-loop path is intentionally excluded from length-truncation continuation
-// handling (see callWithContinuation in secondary-model.ts). The tool-loop manages its own
-// multi-turn flow (tool requests/results) and decides when the final structured result is
-// complete, so length-truncation continuation does not apply here.
+// NOTE: The tool-loop path is intentionally excluded from full continuation handling
+// (see callWithContinuation in secondary-model.ts). The tool-loop manages its own
+// multi-turn flow (tool requests/results). However, when the final model response
+// is length-truncated (hit its output-token cap), a single resume-call continuation
+// is issued so the last structured result is not silently truncated.
 export async function executeToolLoop(
   cwd: string,
   systemPrompt: string,
@@ -110,9 +111,9 @@ export async function executeToolLoop(
     system: string,
     user: string,
     opts: CallSecondaryModelOptions,
-  ) => Promise<{ content: string; usage: UsageCost }>,
+  ) => Promise<{ content: string; usage: UsageCost; truncated?: boolean }>,
   maxToolIterations = DEFAULT_MAX_ITERATIONS,
-): Promise<{ content: string; usage: UsageCost }> {
+): Promise<{ content: string; usage: UsageCost; truncated?: boolean }> {
   const toolInstruction = buildToolInstruction(maxToolIterations);
   const augmentedSystem = `${toolInstruction}\n\n${systemPrompt}`;
 
@@ -120,12 +121,21 @@ export async function executeToolLoop(
   let totalUsage: UsageCost | undefined;
 
   for (let i = 0; i <= maxToolIterations; i++) {
-    const { content, usage } = await callModel(augmentedSystem, currentUser, options);
+    const { content, usage, truncated } = await callModel(augmentedSystem, currentUser, options);
     totalUsage = totalUsage ? mergeUsageCost(totalUsage, usage) : usage;
 
     const request = parseToolRequest(content);
     if (!request) {
-      return { content, usage: totalUsage };
+      return toolLoopWrapTruncated(
+        cwd,
+        augmentedSystem,
+        currentUser,
+        options,
+        callModel,
+        content,
+        totalUsage,
+        truncated,
+      );
     }
 
     logEvent(cwd, "info", "Tool loop request", {
@@ -138,9 +148,22 @@ export async function executeToolLoop(
     if (i >= maxToolIterations) {
       currentUser +=
         "\n\nYou have reached the maximum number of tool requests. Please produce the final structured JSON result now without additional tools.";
-      const final = await callModel(augmentedSystem, currentUser, options);
-      totalUsage = mergeUsageCost(totalUsage, final.usage);
-      return { content: final.content, usage: totalUsage };
+      const {
+        content: finalContent,
+        usage: finalUsage,
+        truncated: finalTruncated,
+      } = await callModel(augmentedSystem, currentUser, options);
+      totalUsage = mergeUsageCost(totalUsage, finalUsage);
+      return toolLoopWrapTruncated(
+        cwd,
+        augmentedSystem,
+        currentUser,
+        options,
+        callModel,
+        finalContent,
+        totalUsage,
+        finalTruncated,
+      );
     }
 
     const result = await executeTool(cwd, request);
@@ -155,8 +178,77 @@ export async function executeToolLoop(
     currentUser += formatToolResult(request, result);
   }
 
-  return {
-    content: currentUser,
-    usage: totalUsage ?? { estimatedInputTokens: 0, estimatedOutputTokens: 0, estimatedCostUsd: 0, sessionCostUsd: 0 },
-  };
+  // All loop iterations return early; this path is unreachable.
+  throw new Error("executeToolLoop reached an unreachable state");
+}
+
+/** Remove a leading prefix of `previous` from `next` so continuation content is
+ *  not duplicated. Mirrors the deduplication used by callWithContinuation in
+ *  secondary-model.ts without introducing a circular dependency. */
+function stripToolLoopOverlap(previous: string, next: string): string {
+  const maxOverlap = Math.min(previous.length, next.length, 200);
+  for (let len = maxOverlap; len > 0; len--) {
+    if (previous.endsWith(next.slice(0, len))) {
+      return next.slice(len);
+    }
+  }
+  const norm = (s: string): string => s.replace(/\s+/g, " ").trim();
+  const prevNorm = norm(previous);
+  for (let len = maxOverlap; len > 0; len--) {
+    const candidate = next.slice(0, len);
+    const candidateNorm = norm(candidate);
+    if (candidateNorm.length === 0) continue;
+    if (prevNorm.endsWith(candidateNorm)) {
+      return next.slice(candidate.trimEnd().length);
+    }
+  }
+  return next;
+}
+
+/** When the tool-loop's final model call returns a length-truncated response,
+ *  issue exactly one resume-call continuation so the structured result is not
+ *  silently incomplete. Returns the stitched content or the original if already
+ *  complete. */
+async function toolLoopWrapTruncated(
+  cwd: string,
+  system: string,
+  user: string,
+  options: CallSecondaryModelOptions,
+  callModel: (
+    s: string,
+    u: string,
+    o: CallSecondaryModelOptions,
+  ) => Promise<{ content: string; usage: UsageCost; truncated?: boolean }>,
+  content: string,
+  usage: UsageCost,
+  truncated: boolean | undefined,
+): Promise<{ content: string; usage: UsageCost; truncated?: boolean }> {
+  if (!truncated) return { content, usage, truncated: false };
+
+  if (options.signal?.aborted) {
+    logEvent(cwd, "info", "Tool-loop resume skipped; request already aborted", {});
+    return { content, usage, truncated: true };
+  }
+
+  logEvent(cwd, "info", "Tool-loop final response truncated; issuing single resume call", {});
+  // Include the tail of the tool conversation for context, then append the resume anchor.
+  const toolContext = user.slice(-4000);
+  const continued = `${toolContext}\n\nContinue your previous response exactly where it left off. Do not repeat what you already wrote; output only the remaining content.\n\n=== Last content (do not repeat) ===\n${content.slice(-2000)}`;
+  try {
+    if (options.signal?.aborted) throw new Error("Aborted");
+    const {
+      content: resumed,
+      usage: resumeUsage,
+      truncated: resumedTruncated,
+    } = await callModel(system, continued, options);
+    const deduped = stripToolLoopOverlap(content, resumed);
+    const stitched = content + deduped;
+    return { content: stitched, usage: mergeUsageCost(usage, resumeUsage), truncated: resumedTruncated ?? false };
+  } catch (err) {
+    if (options.signal?.aborted) throw err;
+    logEvent(cwd, "warn", "Tool-loop resume call failed; returning original truncated content", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { content, usage, truncated: true };
+  }
 }

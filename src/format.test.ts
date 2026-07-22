@@ -124,3 +124,23 @@ test("formatResultText renders review fix plan", () => {
   assert.ok(text.includes("rename to foo"));
   assert.ok(text.includes("fix spelling"));
 });
+
+test("formatResultText renders stitched continuation", () => {
+  const text = formatResultText(recommendResult({ cost: sampleCost, continuation: { rounds: 2, status: "stitched" } }));
+  assert.ok(text.includes("✓ stitched (2 rounds)"));
+});
+
+test("formatResultText renders truncated-after-cap with round count", () => {
+  const text = formatResultText(
+    recommendResult({ cost: sampleCost, continuation: { rounds: 3, status: "truncated-after-cap" } }),
+  );
+  assert.ok(text.includes("⚠ truncated after cap (3 rounds)"));
+});
+
+test("formatResultText omits round count for truncated-after-cap with zero rounds", () => {
+  const text = formatResultText(
+    recommendResult({ cost: sampleCost, continuation: { rounds: 0, status: "truncated-after-cap" } }),
+  );
+  assert.ok(text.includes("⚠ truncated after cap"));
+  assert.ok(!text.includes("(0 rounds)"));
+});

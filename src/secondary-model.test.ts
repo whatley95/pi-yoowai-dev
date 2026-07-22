@@ -1035,6 +1035,22 @@ describe("sdk backend", () => {
     assert.equal(receivedOptions?.reasoning, "high");
   });
 
+  it("sdk backend passes max reasoning option", async () => {
+    const cwd = makeTempDir("yoo-sdk-reasoning-max-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    let receivedOptions: SimpleStreamOptions | undefined;
+    setSdkStreamSimpleOverride((_model, _context, options) => {
+      receivedOptions = options;
+      return fakeSdkStream(fakeSdkAssistantMessage("ok"));
+    });
+
+    await callSecondaryModel("opencode-go", "qwen3.7-max", "system", "user", { cwd, thinking: "max" });
+    assert.equal(receivedOptions?.reasoning, "max");
+  });
+
   it("sdk backend uses catalog maxTokens for non-thinking calls", async () => {
     const cwd = makeTempDir("yoo-sdk-catalog-tokens-");
     tmpDirs.push(cwd);

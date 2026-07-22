@@ -23,6 +23,7 @@ import {
   parseStructuredResult,
   createStreamProgressCallback,
   toolLoopOptions,
+  continuationMeta,
 } from "./shared.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import type { ProgressReporter } from "../progress.js";
@@ -154,7 +155,12 @@ export async function executeYooJudge(
   });
 
   progress(3, STAGES.judge, `Calling ${secondaryModelLabel(modelConfig)}…`);
-  const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
+  const {
+    content: raw,
+    usage,
+    rounds,
+    truncated: finalTruncated,
+  } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,
     thinking: modelConfig.thinking,
     cwd,
@@ -251,5 +257,11 @@ export async function executeYooJudge(
     }
   }
 
-  return { action: "judge", judge, cost, model: modelProfile };
+  return {
+    action: "judge",
+    judge,
+    cost,
+    model: modelProfile,
+    continuation: continuationMeta(rounds, finalTruncated ?? false),
+  };
 }

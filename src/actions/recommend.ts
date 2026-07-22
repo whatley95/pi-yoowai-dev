@@ -21,6 +21,7 @@ import {
   recordCostWithBudget,
   parseStructuredResult,
   createStreamProgressCallback,
+  continuationMeta,
 } from "./shared.js";
 import type { ProgressReporter } from "../progress.js";
 import type { YooToolResult, UsageCost } from "../types.js";
@@ -87,6 +88,8 @@ export async function executeYooRecommend(
   progress(2, STAGES.recommend, `Calling ${secondaryModelLabel(modelConfig)}…`);
   let raw: string;
   let usage: UsageCost;
+  let rounds: number | undefined;
+  let finalTruncated: boolean | undefined;
   try {
     const result = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
       signal,
@@ -99,6 +102,8 @@ export async function executeYooRecommend(
     });
     raw = result.content;
     usage = result.usage;
+    rounds = result.rounds;
+    finalTruncated = result.truncated;
   } catch (err) {
     if (signal?.aborted) throw err;
     const msg = err instanceof Error ? err.message : String(err);
@@ -132,5 +137,11 @@ export async function executeYooRecommend(
     };
   }
 
-  return { action: "recommend", recommend, cost, model: modelProfile };
+  return {
+    action: "recommend",
+    recommend,
+    cost,
+    model: modelProfile,
+    continuation: continuationMeta(rounds, finalTruncated ?? false),
+  };
 }

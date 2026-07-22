@@ -19,6 +19,9 @@ import {
   recordCostWithBudget,
   parseStructuredResult,
   createStreamProgressCallback,
+  continuationMeta,
+  retryStitchedParse,
+  mergeUsageCost,
 } from "./shared.js";
 import type { ProgressReporter } from "../progress.js";
 import type { YooToolResult, UsageCost } from "../types.js";
@@ -69,6 +72,8 @@ export async function executeYooSuggest(
   progress(2, STAGES.suggest, `Calling ${secondaryModelLabel(modelConfig)}…`);
   let raw: string;
   let usage: UsageCost;
+  let rounds: number | undefined;
+  let finalTruncated: boolean | undefined;
   try {
     const result = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
       signal,
@@ -81,6 +86,8 @@ export async function executeYooSuggest(
     });
     raw = result.content;
     usage = result.usage;
+    rounds = result.rounds;
+    finalTruncated = result.truncated;
   } catch (err) {
     if (signal?.aborted) throw err;
     const msg = err instanceof Error ? err.message : String(err);
@@ -93,14 +100,51 @@ export async function executeYooSuggest(
   }
 
   progress(3, STAGES.suggest, "Parsing suggestions…");
-  const cost = recordCostWithBudget(cwd, usage);
-  const suggest = parseStructuredResult(cwd, raw, {
+  let cost = recordCostWithBudget(cwd, usage);
+  let suggest = parseStructuredResult(cwd, raw, {
     label: "Suggestions",
     validate: validateSuggestResult,
     validationErrors: getSuggestValidationErrors,
     salvage: salvageSuggestFromMarkdown,
     salvageDetails: (salvaged) => ({ approachCount: salvaged.approaches.length }),
   });
+
+  // When the stitched output fails to parse and continuation rounds were used,
+  // retry once with a validation-tail prompt to recover from mid-structure splices.
+  if (!suggest && rounds && rounds > 0) {
+    const retryResult = await retryStitchedParse(cwd, raw, signal, async (prompt) => {
+      const result = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, prompt, {
+        signal,
+        thinking: modelConfig.thinking,
+        cwd,
+        sessionManager,
+        task: "suggest",
+        structuredOutput: true,
+      });
+      return result;
+    });
+    if (retryResult) {
+      // Re-record only the retry's incremental cost to avoid double-counting.
+      const retryCost = recordCostWithBudget(cwd, retryResult.usage);
+      cost = mergeUsageCost(cost, retryCost);
+      suggest = parseStructuredResult(cwd, retryResult.raw, {
+        label: "Suggestions (post-stitch retry)",
+        validate: validateSuggestResult,
+        validationErrors: getSuggestValidationErrors,
+        salvage: salvageSuggestFromMarkdown,
+        salvageDetails: (salvaged) => ({ approachCount: salvaged.approaches.length }),
+      });
+      if (suggest) {
+        logEvent(cwd, "info", "Post-stitch validation retry succeeded", {
+          approaches: suggest.approaches.length,
+        });
+      } else {
+        logEvent(cwd, "warn", "Post-stitch validation retry returned content that still did not parse", {
+          rawLength: retryResult.raw.length,
+        });
+      }
+    }
+  }
   if (!suggest) {
     return {
       action: "suggest",
@@ -110,5 +154,11 @@ export async function executeYooSuggest(
     };
   }
 
-  return { action: "suggest", suggest, cost, model: modelProfile };
+  return {
+    action: "suggest",
+    suggest,
+    cost,
+    model: modelProfile,
+    continuation: continuationMeta(rounds, finalTruncated ?? false),
+  };
 }

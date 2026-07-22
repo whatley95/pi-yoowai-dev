@@ -220,6 +220,15 @@ export interface YooToolResult {
   elapsedMs?: number;
   /** The secondary model that produced this result. */
   model?: StageProfile;
+  /** Continuation metadata surfaced when the response was assembled from
+   *  multiple continuation calls after a length-truncated initial response. */
+  continuation?: {
+    /** Number of continuation rounds executed (0 = no rounds ran; check status for whether output was truncated). */
+    rounds: number;
+    /** Whether the final output is stitched from complete responses or
+     *  still truncated after hitting the continuation cap. */
+    status: "stitched" | "truncated-after-cap";
+  };
   inProgress?: boolean;
   progressMessage?: string;
   verificationRequested?: boolean;

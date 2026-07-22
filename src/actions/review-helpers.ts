@@ -142,9 +142,14 @@ export interface ReviewBatchInput {
   maxToolIterations?: number;
 }
 
-export async function runReviewBatch(
-  input: ReviewBatchInput,
-): Promise<{ review: ReviewResult; usage: UsageCost; system: string; user: string }> {
+export async function runReviewBatch(input: ReviewBatchInput): Promise<{
+  review: ReviewResult;
+  usage: UsageCost;
+  system: string;
+  user: string;
+  rounds?: number;
+  truncated: boolean;
+}> {
   const {
     cwd,
     description,
@@ -201,7 +206,12 @@ export async function runReviewBatch(
   );
 
   progress?.(8, STAGES.review, `Calling ${secondaryModelLabel(modelConfig)}…`);
-  const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
+  const {
+    content: raw,
+    usage,
+    rounds,
+    truncated: modelTruncated,
+  } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,
     thinking: modelConfig.thinking,
     cwd,
@@ -229,5 +239,5 @@ export async function runReviewBatch(
     throw new Error("Failed to parse review from secondary model response.");
   }
 
-  return { review, usage, system, user };
+  return { review, usage, system, user, rounds, truncated: modelTruncated ?? false };
 }
