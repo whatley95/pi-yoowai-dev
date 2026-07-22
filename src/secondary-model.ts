@@ -1,5 +1,5 @@
 import { resolveApiKey } from "./auth-reader.js";
-import { loadHeyyooConfig, resolveTaskModel } from "./config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { formatCost, getSessionCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveModelInfo } from "./model-registry.js";
@@ -23,7 +23,7 @@ import {
 } from "./backends/index.js";
 import type { CallSecondaryModelOptions, UsageCost } from "./types.js";
 import type { SecondaryModelConfig } from "./types/secondary-model.js";
-import type { HeyyooConfig } from "./types.js";
+import type { YoowaiConfig } from "./types.js";
 
 export {
   estimateCost,
@@ -76,7 +76,7 @@ export async function callSecondaryModel(
   options: CallSecondaryModelOptions = {},
 ): Promise<{ content: string; usage: UsageCost; rounds?: number; truncated?: boolean }> {
   const { thinking: optionsThinking, cwd, task } = options;
-  const config = cwd ? loadHeyyooConfig(cwd) : undefined;
+  const config = cwd ? loadYoowaiConfig(cwd) : undefined;
   const effectiveSecondary = config && task ? resolveTaskModel(config, task) : config?.secondary;
 
   const attempts: ModelAttempt[] = [
@@ -124,7 +124,7 @@ async function runSingleAttempt(
   systemPrompt: string,
   userPrompt: string,
   options: CallSecondaryModelOptions,
-  config: HeyyooConfig | undefined,
+  config: YoowaiConfig | undefined,
   cwd: string | undefined,
 ): Promise<{ content: string; usage: UsageCost; rounds?: number; truncated?: boolean }> {
   const { provider, model, thinking, secondary } = attempt;
@@ -148,8 +148,8 @@ async function runSingleAttempt(
       const sessionCost = getSessionCost(cwd).costUsd;
       if (sessionCost + projectedCost > budgetUsd) {
         throw new Error(
-          `yoo call would exceed cost budget: projected ${formatCost(sessionCost + projectedCost)} / ${formatCost(budgetUsd)}. ` +
-            `Increase pi-heyyoo.costBudgetUsd in settings or use /yoo-clear to reset.`,
+          `wai call would exceed cost budget: projected ${formatCost(sessionCost + projectedCost)} / ${formatCost(budgetUsd)}. ` +
+            `Increase pi-yoowai.costBudgetUsd in settings or use /wai-clear to reset.`,
         );
       }
     }
@@ -188,7 +188,7 @@ async function runSingleAttempt(
       if (!apiInfo) {
         throw new Error(
           `Unknown provider: ${provider}. Supported providers: ${getSupportedProviders().join(", ")}. ` +
-            `Or set pi-heyyoo.secondary.baseUrl to use any OpenAI-compatible or Anthropic-compatible endpoint.`,
+            `Or set pi-yoowai.secondary.baseUrl to use any OpenAI-compatible or Anthropic-compatible endpoint.`,
         );
       }
 
@@ -196,7 +196,7 @@ async function runSingleAttempt(
       if (!apiKey) {
         throw new Error(
           `No API key found for provider "${provider}". Set the appropriate environment variable, configure auth.json, ` +
-            `or set pi-heyyoo.secondary.apiKey.`,
+            `or set pi-yoowai.secondary.apiKey.`,
         );
       }
 

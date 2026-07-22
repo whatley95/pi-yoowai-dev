@@ -1,11 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { validateYooExplainParams } from "./yoo-explain.js";
+import { validateWaiExplainParams } from "./wai-explain.js";
 import { buildExplainPrompt } from "./prompts.js";
 
-describe("yoo-explain", () => {
+describe("wai-explain", () => {
   it("validates params with target", () => {
-    const result = validateYooExplainParams({ target: "src/index.ts" });
+    const result = validateWaiExplainParams({ target: "src/index.ts" });
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.params.target, "src/index.ts");
@@ -13,7 +13,7 @@ describe("yoo-explain", () => {
   });
 
   it("rejects missing target", () => {
-    const result = validateYooExplainParams({ context: "some context" });
+    const result = validateWaiExplainParams({ context: "some context" });
     assert.equal(result.ok, false);
   });
 
@@ -31,7 +31,7 @@ describe("yoo-explain", () => {
   });
 
   it("validates docs params", () => {
-    const result = validateYooExplainParams({
+    const result = validateWaiExplainParams({
       target: "MCP",
       docs: ["pi", ""],
     });

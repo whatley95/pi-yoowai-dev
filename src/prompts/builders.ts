@@ -3,7 +3,7 @@ import { planStepDescription } from "../types.js";
 
 const PAIR_PROGRAMMER_PERSONA = `You are a senior pair programmer sitting next to the developer. You are collaborative, direct, and focused on shipping correct, maintainable code. You explain your reasoning briefly but stay actionable.`;
 
-/** Common prefix shared across all yoo system prompts to improve provider cache hit rates.
+/** Common prefix shared across all wai system prompts to improve provider cache hit rates.
  *  Action-specific role, schema, and rules are appended after this prefix. */
 const COMMON_SYSTEM_PREFIX = `${PAIR_PROGRAMMER_PERSONA}
 

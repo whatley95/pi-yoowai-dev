@@ -28,8 +28,8 @@ export interface SecondaryModelConfig {
   timeoutMs?: number;
   /** API style when using a custom baseUrl. Defaults to openai-compatible. */
   style?: "openai-compatible" | "anthropic";
-  /** Custom auth header name when using baseUrl. Defaults to Authorization. */
-  authHeader?: string;
+  /** Custom auth header name when using baseUrl, or boolean override for provider registration. Defaults to Authorization for baseUrl; provider registration defaults to true. */
+  authHeader?: string | boolean;
   /** Custom auth prefix when using baseUrl. Defaults to "Bearer ". */
   authPrefix?: string;
 }

@@ -17,7 +17,7 @@ import {
 import type { PlanResult } from "./types.js";
 
 function tempCwd(): string {
-  return mkdtempSync(join(tmpdir(), "yoo-ss-test-"));
+  return mkdtempSync(join(tmpdir(), "wai-ss-test-"));
 }
 
 const plan: PlanResult = { summary: "demo", todo: ["step one", "step two", "step three"], acceptanceCriteria: [] };

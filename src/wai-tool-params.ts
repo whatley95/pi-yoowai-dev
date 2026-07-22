@@ -1,6 +1,6 @@
-import type { YooToolParams, YooAction, YooModelTask } from "./types.js";
+import type { WaiToolParams, WaiAction, WaiModelTask } from "./types.js";
 
-export const YOO_ACTIONS: YooAction[] = [
+export const WAI_ACTIONS: WaiAction[] = [
   "plan",
   "review",
   "suggest",
@@ -12,7 +12,7 @@ export const YOO_ACTIONS: YooAction[] = [
   "done",
   "planUpdate",
 ];
-export const YOO_MODEL_TASKS: YooModelTask[] = [
+export const WAI_MODEL_TASKS: WaiModelTask[] = [
   "plan",
   "review",
   "suggest",
@@ -27,8 +27,8 @@ export const YOO_MODEL_TASKS: YooModelTask[] = [
 
 interface ValidatedParams {
   ok: true;
-  params: YooToolParams;
-  action: YooAction;
+  params: WaiToolParams;
+  action: WaiAction;
 }
 
 interface InvalidParams {
@@ -38,13 +38,18 @@ interface InvalidParams {
 
 type ValidationResult = ValidatedParams | InvalidParams;
 
-export function validateYooToolParams(params: unknown): ValidationResult {
+export function validateWaiToolParams(params: unknown): ValidationResult {
   if (!params || typeof params !== "object") {
     return { ok: false, error: "Invalid parameters: expected an object." };
   }
   const p = params as Record<string, unknown>;
 
-  const active = YOO_ACTIONS.filter((a) => {
+  // The removed 'search' action is intentionally ignored; it is not a supported wai action.
+  if (p.search !== undefined) {
+    // no-op: left over from a deprecated parameter shape
+  }
+
+  const active = WAI_ACTIONS.filter((a) => {
     const value = p[a];
     if (a === "scan") return value === true;
     if (a === "done" || a === "planUpdate") {
@@ -73,7 +78,7 @@ export function validateYooToolParams(params: unknown): ValidationResult {
     return filtered.length > 0 ? filtered : undefined;
   };
 
-  const result: YooToolParams = {
+  const result: WaiToolParams = {
     plan: action === "plan" ? (p.plan as string) : undefined,
     review: action === "review" ? (p.review as string) : undefined,
     suggest: action === "suggest" ? (p.suggest as string) : undefined,

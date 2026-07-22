@@ -7,7 +7,7 @@ import { loadFileContentsForReview, isReviewableFile } from "./file-loader.js";
 import type { ReviewBudget } from "./token-budget.js";
 
 describe("file-loader", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "yoo-file-test-"));
+  const cwd = mkdtempSync(join(tmpdir(), "wai-file-test-"));
   mkdirSync(join(cwd, "src"));
   writeFileSync(join(cwd, "src/small.ts"), "export function foo() {\n  return 1;\n}\n");
   writeFileSync(join(cwd, "src/large.ts"), Array(500).fill("export const x = 1;").join("\n"));

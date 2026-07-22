@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { loadHeyyooConfig, resolveTaskModel } from "./config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { callSecondaryModel } from "./secondary-model.js";
 import { loadConventions, formatConventions } from "./conventions.js";
 import { loadProjectIndex } from "./project-index.js";
@@ -19,7 +19,7 @@ export interface YooExplainParams {
   docs?: string[];
 }
 
-export function validateYooExplainParams(
+export function validateWaiExplainParams(
   raw: unknown,
 ): { ok: false; error: string } | { ok: true; params: YooExplainParams } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -61,7 +61,7 @@ function readFiles(cwd: string, files: string[]): Array<{ file: string; content:
   return entries;
 }
 
-export async function executeYooExplain(
+export async function executeWaiExplain(
   cwd: string,
   params: YooExplainParams,
   signal: AbortSignal | undefined,
@@ -71,10 +71,10 @@ export async function executeYooExplain(
     getBranch(): unknown[];
   },
 ): Promise<{ result: ExplainResult; cost: UsageCost } | { error: string }> {
-  const config = loadHeyyooConfig(cwd);
+  const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "explain");
   if (!modelConfig.provider || !modelConfig.id) {
-    return { error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
+    return { error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
 
   const docRequest: DocContextRequest = { docs: params.docs };

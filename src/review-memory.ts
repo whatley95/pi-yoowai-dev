@@ -32,7 +32,7 @@ function loadMemory(cwd: string): MemoryStore {
     const data = JSON.parse(raw) as MemoryStore;
     return { files: data.files || {}, updatedAt: data.updatedAt || new Date().toISOString() };
   } catch (err) {
-    logEvent(cwd, "warn", "Failed to load yoo review memory", {
+    logEvent(cwd, "warn", "Failed to load wai review memory", {
       error: err instanceof Error ? err.message : String(err),
     });
     return { files: {}, updatedAt: new Date().toISOString() };
@@ -46,7 +46,7 @@ function saveMemory(cwd: string, memory: MemoryStore): void {
     memory.updatedAt = new Date().toISOString();
     writeFileSync(getMemoryPath(cwd), JSON.stringify(memory, null, 2), { encoding: "utf-8", mode: 0o600 });
   } catch (err) {
-    logEvent(cwd, "error", "Failed to save yoo review memory", {
+    logEvent(cwd, "error", "Failed to save wai review memory", {
       error: err instanceof Error ? err.message : String(err),
     });
   }
@@ -204,7 +204,7 @@ export function clearMemory(cwd: string): void {
   try {
     saveMemory(cwd, { files: {}, updatedAt: new Date().toISOString() });
   } catch (err) {
-    logEvent(cwd, "warn", "Failed to clear yoo review memory", {
+    logEvent(cwd, "warn", "Failed to clear wai review memory", {
       error: err instanceof Error ? err.message : String(err),
     });
   }

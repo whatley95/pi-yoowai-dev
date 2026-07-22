@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert";
 import { formatDuration, formatResultText } from "./format.js";
-import type { YooToolResult } from "./types.js";
+import type { WaiToolResult } from "./types.js";
 
 const sampleCost = {
   estimatedInputTokens: 12300,
@@ -10,7 +10,7 @@ const sampleCost = {
   sessionCostUsd: 0.1616,
 };
 
-function recommendResult(overrides: Partial<YooToolResult>): YooToolResult {
+function recommendResult(overrides: Partial<WaiToolResult>): WaiToolResult {
   return {
     action: "recommend",
     recommend: {
@@ -103,7 +103,7 @@ test("formatResultText renders judge plan-update suggestion", () => {
   });
   assert.ok(text.includes("Plan stale"));
   assert.ok(text.includes("old API"));
-  assert.ok(text.includes("yoo-plan-update"));
+  assert.ok(text.includes("wai-plan-update"));
 });
 
 test("formatResultText renders review fix plan", () => {

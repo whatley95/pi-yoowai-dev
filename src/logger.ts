@@ -5,11 +5,11 @@ const MAX_LOG_SIZE_BYTES = 1024 * 1024; // 1 MiB
 const MAX_LOG_LINES = 1000;
 
 function getLogPath(cwd: string): string {
-  return getProjectConfigPath(cwd, "heyyoo", "yoo.log");
+  return getProjectConfigPath(cwd, "yoowai", "wai.log");
 }
 
 function ensureLogDir(cwd: string): void {
-  const dir = getProjectConfigPath(cwd, "heyyoo");
+  const dir = getProjectConfigPath(cwd, "yoowai");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 

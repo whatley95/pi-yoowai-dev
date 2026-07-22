@@ -17,7 +17,7 @@ describe("isFileWriteTool", () => {
   });
 
   it("rejects read-only and unrelated tools", () => {
-    for (const name of ["read", "readFile", "bash", "grep", "glob", "find", "ls", "yoo", "createPlan"]) {
+    for (const name of ["read", "readFile", "bash", "grep", "glob", "find", "ls", "wai", "createPlan"]) {
       assert.equal(isFileWriteTool(name), false, name);
     }
   });

@@ -1,12 +1,15 @@
 import { Text } from "@earendil-works/pi-tui";
+import type { AgentToolResult, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { formatCost } from "./cost-tracker.js";
-import type { YooToolParams, YooToolResult, ReviewIssue, StageProfile } from "./types.js";
+import type { WaiToolParams, WaiToolResult, ReviewIssue, StageProfile } from "./types.js";
 
+/** Local theme interface compatible with the real Pi Theme shape. */
 interface Theme {
   fg(token: string, text: string): string;
   bg(token: string, text: string): string;
 }
 
+/** Local render context compatible with the real ToolRenderContext shape. */
 interface ToolRenderContext {
   lastComponent?: unknown;
 }
@@ -37,24 +40,15 @@ function getTextComponent(context?: ToolRenderContext): Text {
   return new Text("", 0, 0);
 }
 
-function resolveToolResult(result: unknown): {
-  result: (YooToolResult & ProgressDetails) | undefined;
+function resolveToolResult(result: AgentToolResult<WaiToolResult>): {
+  result: (WaiToolResult & ProgressDetails) | undefined;
   isError: boolean;
 } {
-  if (!result || typeof result !== "object") {
-    return { result: undefined, isError: true };
-  }
-  const candidate = result as Record<string, unknown>;
-  if ("details" in candidate) {
-    return {
-      result: (candidate.details as (YooToolResult & ProgressDetails) | undefined) ?? undefined,
-      isError: Boolean(candidate.isError),
-    };
-  }
-  return { result: result as YooToolResult & ProgressDetails, isError: false };
+  const candidate = result.details as (WaiToolResult & ProgressDetails) | undefined;
+  return { result: candidate ?? undefined, isError: false };
 }
 
-function formatCostLine(result: YooToolResult): string | undefined {
+function formatCostLine(result: WaiToolResult): string | undefined {
   if (!result.cost) return undefined;
   const inTokens = formatTokenCount(result.cost.estimatedInputTokens);
   const outTokens = formatTokenCount(result.cost.estimatedOutputTokens);
@@ -97,18 +91,18 @@ function severityIcon(severity: ReviewIssue["severity"]): string {
   }
 }
 
-export function renderCall(params: unknown, theme: Theme, context?: ToolRenderContext): Text {
-  const p = params as YooToolParams;
+export function renderCall(args: WaiToolParams, theme: Theme, context?: ToolRenderContext): Text {
+  const p = args;
   let label: string;
-  if (p.plan) label = `yoo plan: ${truncate(String(p.plan), 80)}`;
-  else if (p.review) label = `yoo review: ${truncate(String(p.review), 80)}`;
-  else if (p.suggest) label = `yoo suggest: ${truncate(String(p.suggest), 80)}`;
-  else if (p.recommend) label = `yoo recommend: ${truncate(String(p.recommend), 80)}`;
-  else if (p.judge) label = `yoo judge: ${truncate(String(p.judge), 80)}`;
-  else if (p.scan) label = "yoo scan";
-  else if (p.test) label = `yoo test: ${truncate(String(p.test), 80)}`;
-  else if (p.security) label = `yoo security: ${truncate(String(p.security), 80)}`;
-  else label = "yoo";
+  if (p.plan) label = `wai plan: ${truncate(String(p.plan), 80)}`;
+  else if (p.review) label = `wai review: ${truncate(String(p.review), 80)}`;
+  else if (p.suggest) label = `wai suggest: ${truncate(String(p.suggest), 80)}`;
+  else if (p.recommend) label = `wai recommend: ${truncate(String(p.recommend), 80)}`;
+  else if (p.judge) label = `wai judge: ${truncate(String(p.judge), 80)}`;
+  else if (p.scan) label = "wai scan";
+  else if (p.test) label = `wai test: ${truncate(String(p.test), 80)}`;
+  else if (p.security) label = `wai security: ${truncate(String(p.security), 80)}`;
+  else label = "wai";
 
   const text = getTextComponent(context);
   text.setText(theme.fg("yoo", label));
@@ -116,24 +110,24 @@ export function renderCall(params: unknown, theme: Theme, context?: ToolRenderCo
 }
 
 export function renderResult(
-  result: unknown,
-  opts: { expanded: boolean; isPartial?: boolean },
+  result: AgentToolResult<WaiToolResult>,
+  opts: ToolRenderResultOptions,
   theme: Theme,
   context?: ToolRenderContext,
 ): Text {
-  const { result: r, isError } = resolveToolResult(result);
+  const { result: r } = resolveToolResult(result);
   const text = getTextComponent(context);
 
-  if (!r || r.error || isError) {
-    const message = r?.error ? `yoo error: ${r.error}` : "yoo error";
+  if (!r || r.error) {
+    const message = r?.error ? `wai error: ${r.error}` : "wai error";
     text.setText(theme.fg("error", message));
     return text;
   }
 
   if (r.inProgress || opts.isPartial) {
     const stage = typeof r.stage === "number" && typeof r.total === "number" ? `[${r.stage}/${r.total}] ` : "";
-    const message = r.progressMessage || "yoo is thinking…";
-    text.setText(theme.fg("dim", `yoo ${r.action ? r.action + " " : ""}${stage}${message}`));
+    const message = r.progressMessage || "wai is thinking…";
+    text.setText(theme.fg("dim", `wai ${r.action ? r.action + " " : ""}${stage}${message}`));
     return text;
   }
 
@@ -144,7 +138,7 @@ export function renderResult(
   }
 
   if (r.plan) {
-    lines.push(theme.fg("yoo", `yoo plan${modelSuffix(r.model)}`));
+    lines.push(theme.fg("yoo", `wai plan${modelSuffix(r.model)}`));
     lines.push(`  ${r.plan.todo.length} step(s) planned`);
     lines.push(`  ${theme.fg("dim", r.plan.summary)}`);
   }
@@ -152,7 +146,7 @@ export function renderResult(
   if (r.review) {
     const icon = r.review.verdict === "pass" ? "✓" : r.review.verdict === "blocked" ? "✗" : "⚠";
     const color = r.review.verdict === "pass" ? "green" : r.review.verdict === "blocked" ? "error" : "yellow";
-    lines.push(theme.fg(color, `yoo review ${icon} ${r.review.verdict}${modelSuffix(r.model)}`));
+    lines.push(theme.fg(color, `wai review ${icon} ${r.review.verdict}${modelSuffix(r.model)}`));
 
     if (r.review.contextLimited || r.review.truncated || (r.review.droppedFiles && r.review.droppedFiles.length > 0)) {
       const warnings: string[] = [];
@@ -190,21 +184,21 @@ export function renderResult(
   }
 
   if (r.suggest) {
-    lines.push(theme.fg("yoo", `yoo suggest${modelSuffix(r.model)}`));
+    lines.push(theme.fg("yoo", `wai suggest${modelSuffix(r.model)}`));
     for (const a of r.suggest.approaches) {
       lines.push(`  • ${theme.fg("bold", a.title)}`);
     }
   }
 
   if (r.recommend) {
-    lines.push(theme.fg("yoo", `yoo recommend${modelSuffix(r.model)}`));
+    lines.push(theme.fg("yoo", `wai recommend${modelSuffix(r.model)}`));
     lines.push(`  → ${r.recommend.nextStep}`);
   }
 
   if (r.test) {
     const icon = r.test.verdict === "pass" ? "✓" : r.test.verdict === "blocked" ? "✗" : "⚠";
     const color = r.test.verdict === "pass" ? "green" : r.test.verdict === "blocked" ? "error" : "yellow";
-    lines.push(theme.fg(color, `yoo test ${icon} ${r.test.verdict}${modelSuffix(r.model)}`));
+    lines.push(theme.fg(color, `wai test ${icon} ${r.test.verdict}${modelSuffix(r.model)}`));
     if (r.test.missingTests.length > 0) {
       lines.push(`  ${theme.fg("dim", `${r.test.missingTests.length} missing test(s)`)}`);
     }
@@ -216,7 +210,7 @@ export function renderResult(
   if (r.security) {
     const icon = r.security.verdict === "pass" ? "✓" : "⚠";
     const color = r.security.verdict === "pass" ? "green" : "error";
-    lines.push(theme.fg(color, `yoo security ${icon} ${r.security.verdict}${modelSuffix(r.model)}`));
+    lines.push(theme.fg(color, `wai security ${icon} ${r.security.verdict}${modelSuffix(r.model)}`));
     if (r.security.findings.length > 0) {
       lines.push(`  ${theme.fg("dim", `${r.security.findings.length} security finding(s)`)}`);
     }
@@ -225,7 +219,7 @@ export function renderResult(
   if (r.judge) {
     const icon = r.judge.verdict === "pass" ? "✓" : r.judge.verdict === "blocked" ? "✗" : "⚠";
     const color = r.judge.verdict === "pass" ? "green" : r.judge.verdict === "blocked" ? "error" : "yellow";
-    lines.push(theme.fg(color, `yoo judge ${icon} ${r.judge.verdict}${modelSuffix(r.model)}`));
+    lines.push(theme.fg(color, `wai judge ${icon} ${r.judge.verdict}${modelSuffix(r.model)}`));
 
     if (r.judge.contextLimited || r.judge.truncated || (r.judge.droppedFiles && r.judge.droppedFiles.length > 0)) {
       const warnings: string[] = [];
@@ -246,7 +240,7 @@ export function renderResult(
   }
 
   if (r.scan) {
-    lines.push(theme.fg("yoo", `yoo scan${modelSuffix(r.model)}`));
+    lines.push(theme.fg("yoo", `wai scan${modelSuffix(r.model)}`));
     lines.push(`  ${r.scan.files.length} file(s) scanned`);
     lines.push(`  ${theme.fg("dim", `${r.scan.conventions.stack} • ${r.scan.conventions.naming}`)}`);
   }

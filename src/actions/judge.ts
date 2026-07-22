@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { getDiff } from "../diff-grabber.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
@@ -27,19 +27,19 @@ import {
 } from "./shared.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import type { ProgressReporter } from "../progress.js";
-import type { YooToolResult } from "../types.js";
+import type { WaiToolResult } from "../types.js";
 
-export async function executeYooJudge(
+export async function executeWaiJudge(
   cwd: string,
   description: string,
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
   sessionManager?: ExtensionContext["sessionManager"],
-): Promise<YooToolResult> {
-  const config = loadHeyyooConfig(cwd);
+): Promise<WaiToolResult> {
+  const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "judge");
   if (!modelConfig.provider || !modelConfig.id) {
-    return { action: "judge", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
+    return { action: "judge", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
   const modelProfile = {
     provider: modelConfig.provider,
@@ -218,7 +218,7 @@ export async function executeYooJudge(
   if (hasUnreviewedEdits) {
     judge.unreviewedEdits = true;
     judge.suggestions.push(
-      "There are unreviewed edits since the last yoo.review. Consider running yoo.review first, or treat this judgment as covering all changes.",
+      "There are unreviewed edits since the last wai.review. Consider running wai.review first, or treat this judgment as covering all changes.",
     );
   }
 

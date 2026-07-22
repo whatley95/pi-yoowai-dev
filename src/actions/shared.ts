@@ -1,9 +1,9 @@
 import { recordCost } from "../cost-tracker.js";
-import { loadHeyyooConfig } from "../config.js";
+import { loadYoowaiConfig } from "../config.js";
 import { logEvent } from "../logger.js";
 import { parseJsonResponse, getJsonParseError } from "../prompts.js";
 import type { ProgressReporter } from "../progress.js";
-import type { UsageCost, SecondaryModelConfig, HeyyooConfig, YooToolResult } from "../types.js";
+import type { UsageCost, SecondaryModelConfig, YoowaiConfig, WaiToolResult } from "../types.js";
 
 export const STAGES = {
   plan: 3,
@@ -34,13 +34,13 @@ export function createStreamProgressCallback(
 }
 
 export function recordCostWithBudget(cwd: string, usage: UsageCost): UsageCost {
-  const config = loadHeyyooConfig(cwd);
+  const config = loadYoowaiConfig(cwd);
   return recordCost(cwd, usage, config.costBudgetUsd);
 }
 
-/** Build continuation metadata for YooToolResult from callSecondaryModel's rounds
+/** Build continuation metadata for WaiToolResult from callSecondaryModel's rounds
  *  return value. Returns undefined when no continuation occurred. */
-export function continuationMeta(rounds: number | undefined, truncated: boolean): YooToolResult["continuation"] {
+export function continuationMeta(rounds: number | undefined, truncated: boolean): WaiToolResult["continuation"] {
   if (!rounds || rounds === 0) {
     return truncated ? { rounds: 0, status: "truncated-after-cap" } : undefined;
   }
@@ -63,7 +63,7 @@ export function formatTokenCount(n: number): string {
   return String(n);
 }
 
-export function toolLoopOptions(config: HeyyooConfig): { enableToolLoop: boolean; maxToolIterations?: number } {
+export function toolLoopOptions(config: YoowaiConfig): { enableToolLoop: boolean; maxToolIterations?: number } {
   if (!config.toolUseLoop) return { enableToolLoop: false };
   // A numeric value <= 0 is not a valid iteration count. Treat it as "use the
   // default" rather than disabling the loop (which would otherwise return the

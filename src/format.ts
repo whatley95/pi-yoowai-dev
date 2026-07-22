@@ -2,7 +2,7 @@ import { formatTokenCount } from "./actions/shared.js";
 import { formatCost } from "./cost-tracker.js";
 import { formatConventions } from "./conventions.js";
 import { planStepDescription, isPlanStep } from "./types.js";
-import type { StageProfile, YooToolResult } from "./types.js";
+import type { StageProfile, WaiToolResult } from "./types.js";
 
 export function issueEmoji(severity: "high" | "medium" | "low"): string {
   switch (severity) {
@@ -28,8 +28,8 @@ export function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function formatResultText(result: YooToolResult): string {
-  if (result.error) return `yoo error: ${result.error}`;
+export function formatResultText(result: WaiToolResult): string {
+  if (result.error) return `wai error: ${result.error}`;
 
   const lines: string[] = [];
 
@@ -60,7 +60,7 @@ export function formatResultText(result: YooToolResult): string {
   }
 
   if (result.plan) {
-    lines.push(`## yoo plan${formatModelSuffix(result.model)}`);
+    lines.push(`## wai plan${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(`**Summary:** ${result.plan.summary}`);
     lines.push("");
@@ -89,7 +89,7 @@ export function formatResultText(result: YooToolResult): string {
 
   if (result.review) {
     const icon = result.review.verdict === "pass" ? "✓" : result.review.verdict === "blocked" ? "✗" : "⚠";
-    lines.push(`## yoo review ${icon} ${result.review.verdict}${formatModelSuffix(result.model)}`);
+    lines.push(`## wai review ${icon} ${result.review.verdict}${formatModelSuffix(result.model)}`);
     lines.push("");
 
     if (
@@ -109,7 +109,7 @@ export function formatResultText(result: YooToolResult): string {
 
     if (result.review.planStale) {
       lines.push(
-        "⚠️ **Plan stale:** The current plan step contradicts the actual code. The code is trusted; consider updating the plan with `/yoo plan ...` or `/yoo-clear` and re-planning.",
+        "⚠️ **Plan stale:** The current plan step contradicts the actual code. The code is trusted; consider updating the plan with `/wai plan ...` or `/wai-clear` and re-planning.",
       );
       lines.push("");
     }
@@ -157,10 +157,10 @@ export function formatResultText(result: YooToolResult): string {
       }
       lines.push("");
       lines.push(
-        "**Workflow:** 1) If this single change finished multiple plan steps, call `yoo.done` with those step numbers now. 2) Otherwise, implement the next step above. 3) Run `yoo.review` when the step is ready. 4) Run `yoo.judge` after the final step.",
+        "**Workflow:** 1) If this single change finished multiple plan steps, call `wai.done` with those step numbers now. 2) Otherwise, implement the next step above. 3) Run `wai.review` when the step is ready. 4) Run `wai.judge` after the final step.",
       );
     } else if (result.review.verdict === "needs-work" || result.review.verdict === "blocked") {
-      lines.push("**Action:** Fix the issues above and call `yoo.review` again.");
+      lines.push("**Action:** Fix the issues above and call `wai.review` again.");
       if (result.review.fixPlan && result.review.fixPlan.length > 0) {
         lines.push("");
         lines.push("### Suggested fix plan");
@@ -177,7 +177,7 @@ export function formatResultText(result: YooToolResult): string {
   }
 
   if (result.suggest) {
-    lines.push(`## yoo suggest${formatModelSuffix(result.model)}`);
+    lines.push(`## wai suggest${formatModelSuffix(result.model)}`);
     lines.push("");
     for (const a of result.suggest.approaches) {
       lines.push(`### ${a.title}`);
@@ -197,7 +197,7 @@ export function formatResultText(result: YooToolResult): string {
   }
 
   if (result.recommend) {
-    lines.push(`## yoo recommend${formatModelSuffix(result.model)}`);
+    lines.push(`## wai recommend${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(`**Next step:** ${result.recommend.nextStep}`);
     lines.push("");
@@ -213,7 +213,7 @@ export function formatResultText(result: YooToolResult): string {
 
   if (result.test) {
     const icon = result.test.verdict === "pass" ? "✓" : result.test.verdict === "blocked" ? "✗" : "⚠";
-    lines.push(`## yoo test ${icon} ${result.test.verdict}${formatModelSuffix(result.model)}`);
+    lines.push(`## wai test ${icon} ${result.test.verdict}${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(result.test.summary);
     lines.push("");
@@ -245,7 +245,7 @@ export function formatResultText(result: YooToolResult): string {
 
   if (result.security) {
     const icon = result.security.verdict === "pass" ? "✓" : "⚠";
-    lines.push(`## yoo security ${icon} ${result.security.verdict}${formatModelSuffix(result.model)}`);
+    lines.push(`## wai security ${icon} ${result.security.verdict}${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(result.security.summary);
     lines.push("");
@@ -275,7 +275,7 @@ export function formatResultText(result: YooToolResult): string {
 
   if (result.judge) {
     const icon = result.judge.verdict === "pass" ? "✓" : result.judge.verdict === "blocked" ? "✗" : "⚠";
-    lines.push(`## yoo judge ${icon} ${result.judge.verdict}${formatModelSuffix(result.model)}`);
+    lines.push(`## wai judge ${icon} ${result.judge.verdict}${formatModelSuffix(result.model)}`);
     lines.push("");
 
     if (
@@ -295,20 +295,20 @@ export function formatResultText(result: YooToolResult): string {
 
     if (result.judge.unreviewedEdits) {
       lines.push(
-        "⚠️ **Unreviewed edits:** There are edits since the last `yoo.review`. Consider running `yoo.review` before trusting this judgment.",
+        "⚠️ **Unreviewed edits:** There are edits since the last `wai.review`. Consider running `wai.review` before trusting this judgment.",
       );
       lines.push("");
     }
 
     if (result.judge.planStale || result.judge.planUpdateSuggested) {
       lines.push(
-        "⚠️ **Plan stale:** The original plan contradicts the final code. The code is trusted; consider updating the plan with `/yoo plan ...` or `/yoo-clear` and re-planning.",
+        "⚠️ **Plan stale:** The original plan contradicts the final code. The code is trusted; consider updating the plan with `/wai plan ...` or `/wai-clear` and re-planning.",
       );
       if (result.judge.planUpdateReason) {
         lines.push(`Reason: ${result.judge.planUpdateReason}`);
       }
       lines.push(
-        "**Action:** Run `/yoo-plan-update <new task description>` to regenerate the plan from the current code.",
+        "**Action:** Run `/wai-plan-update <new task description>` to regenerate the plan from the current code.",
       );
       lines.push("");
     }
@@ -336,12 +336,12 @@ export function formatResultText(result: YooToolResult): string {
     }
     lines.push("");
     lines.push(
-      "**Workflow:** Tracker auto-synced by judge. Implement the next step above, then run `yoo.review` when ready and `yoo.judge` after the final step. Use `yoo.done` or `yoo.planUpdate` only if the tracker needs a manual correction.",
+      "**Workflow:** Tracker auto-synced by judge. Implement the next step above, then run `wai.review` when ready and `wai.judge` after the final step. Use `wai.done` or `wai.planUpdate` only if the tracker needs a manual correction.",
     );
   }
 
   if (result.done) {
-    const header = result.action === "planUpdate" ? "yoo plan update" : "yoo done";
+    const header = result.action === "planUpdate" ? "wai plan update" : "wai done";
     lines.push(`## ${header}${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(result.done.message);
@@ -358,13 +358,13 @@ export function formatResultText(result: YooToolResult): string {
       lines.push(`**Next step:** ${result.done.nextStep}`);
     }
     if (result.done.allDone) {
-      lines.push("All steps are complete. Run `/yoo judge` for a final review.");
+      lines.push("All steps are complete. Run `/wai judge` for a final review.");
     }
     lines.push("");
   }
 
   if (result.scan) {
-    lines.push(`## yoo scan${formatModelSuffix(result.model)}`);
+    lines.push(`## wai scan${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(formatConventions(result.scan.conventions));
     lines.push("");
@@ -378,7 +378,7 @@ export function formatResultText(result: YooToolResult): string {
     lines.push("### Main agent verification required");
     lines.push("");
     lines.push(
-      "The user (or `verifyByDefault`) asked for explicit confirmation. Do **not** implement, edit, or merge anything based on this yoo result until you complete the verification below.",
+      "The user (or `verifyByDefault`) asked for explicit confirmation. Do **not** implement, edit, or merge anything based on this wai result until you complete the verification below.",
     );
     lines.push("");
     lines.push("Reply with:");

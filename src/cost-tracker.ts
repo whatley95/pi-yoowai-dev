@@ -15,7 +15,14 @@ function getCostPath(cwd: string): string {
   return getSessionConfigPath(cwd, "cost.json");
 }
 
+const costCache = new Map<string, CostLog>();
+
 function loadCost(cwd: string): CostLog {
+  const cached = costCache.get(cwd);
+  if (cached) {
+    return { ...cached };
+  }
+
   const path = getCostPath(cwd);
   if (!existsSync(path)) {
     return { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, updatedAt: new Date().toISOString() };
@@ -31,7 +38,7 @@ function loadCost(cwd: string): CostLog {
       updatedAt: data.updatedAt || new Date().toISOString(),
     };
   } catch (err) {
-    logEvent(cwd, "warn", "Failed to load yoo cost log", { error: err instanceof Error ? err.message : String(err) });
+    logEvent(cwd, "warn", "Failed to load wai cost log", { error: err instanceof Error ? err.message : String(err) });
     return { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, updatedAt: new Date().toISOString() };
   }
 }
@@ -41,8 +48,9 @@ function saveCost(cwd: string, log: CostLog): void {
     const dir = getSessionConfigDir(cwd, "cost.json");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(getCostPath(cwd), JSON.stringify(log, null, 2), { encoding: "utf-8", mode: 0o600 });
+    costCache.set(cwd, { ...log });
   } catch (err) {
-    logEvent(cwd, "error", "Failed to save yoo cost log", { error: err instanceof Error ? err.message : String(err) });
+    logEvent(cwd, "error", "Failed to save wai cost log", { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -62,8 +70,8 @@ export function recordCost(cwd: string, usage: UsageCost, budgetUsd?: number): U
 
   if (budgetUsd !== undefined && budgetUsd >= 0 && log.costUsd > budgetUsd) {
     throw new Error(
-      `yoo cost budget exceeded: ${formatCost(log.costUsd)} / ${formatCost(budgetUsd)}. ` +
-        `Increase pi-heyyoo.costBudgetUsd in settings or reset with /yoo-clear.`,
+      `wai cost budget exceeded: ${formatCost(log.costUsd)} / ${formatCost(budgetUsd)}. ` +
+        `Increase pi-yoowai.costBudgetUsd in settings or reset with /wai-clear.`,
     );
   }
 

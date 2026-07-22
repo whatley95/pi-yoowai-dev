@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SearchResults } from "duck-duck-scrape";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { validateYooToolParams } from "./yoo-tool-params.js";
-import { handleYooSearchCommand } from "./yoo-search.js";
+import { validateWaiToolParams } from "./wai-tool-params.js";
+import { handleWaiSearchCommand } from "./wai-search.js";
 import { setSearchFnForTests, resetSearchFnForTests } from "./doc-fetcher.js";
 
 function makeTempDir(prefix: string): string {
@@ -20,12 +20,12 @@ function mockCtx(cwd: string): ExtensionContext {
 function writeProjectSettings(cwd: string, settings: Record<string, unknown>): void {
   const dir = join(cwd, ".pi");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "settings.json"), JSON.stringify({ "pi-heyyoo": settings }, null, 2) + "\n", "utf-8");
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ "pi-yoowai": settings }, null, 2) + "\n", "utf-8");
 }
 
-describe("validateYooToolParams", () => {
+describe("validateWaiToolParams", () => {
   it("accepts a regular action with docs", () => {
-    const result = validateYooToolParams({ suggest: "useEffect vs useLayoutEffect", docs: ["react"] });
+    const result = validateWaiToolParams({ suggest: "useEffect vs useLayoutEffect", docs: ["react"] });
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.action, "suggest");
@@ -35,7 +35,7 @@ describe("validateYooToolParams", () => {
   });
 
   it("ignores a search parameter if present", () => {
-    const result = validateYooToolParams({ suggest: "Next.js caching", search: "Next.js caching 2024" });
+    const result = validateWaiToolParams({ suggest: "Next.js caching", search: "Next.js caching 2024" });
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.action, "suggest");
@@ -44,7 +44,7 @@ describe("validateYooToolParams", () => {
   });
 
   it("rejects a call with only a search parameter", () => {
-    const result = validateYooToolParams({ search: "something" });
+    const result = validateWaiToolParams({ search: "something" });
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.match(result.error, /No action specified/);
@@ -52,7 +52,7 @@ describe("validateYooToolParams", () => {
   });
 });
 
-describe("handleYooSearchCommand", () => {
+describe("handleWaiSearchCommand", () => {
   const tmpDirs: string[] = [];
 
   after(() => {
@@ -70,22 +70,22 @@ describe("handleYooSearchCommand", () => {
   });
 
   it("returns usage help when query is empty", async () => {
-    const result = await handleYooSearchCommand("  ", mockCtx(makeTempDir("yoo-search-empty-")));
-    assert.equal(result.content[0]?.text, "Usage: /yoo-search <query>");
+    const result = await handleWaiSearchCommand("  ", mockCtx(makeTempDir("wai-search-empty-")));
+    assert.equal(result.content[0]?.text, "Usage: /wai-search <query>");
   });
 
   it("reports when web search is disabled", async () => {
-    const cwd = makeTempDir("yoo-search-disabled-");
+    const cwd = makeTempDir("wai-search-disabled-");
     tmpDirs.push(cwd);
-    const result = await handleYooSearchCommand("react hooks", mockCtx(cwd));
+    const result = await handleWaiSearchCommand("react hooks", mockCtx(cwd));
     assert.match(
       result.content[0]?.text ?? "",
-      /Web search is disabled\. Enable it with pi-heyyoo\.docs\.webSearch\.enabled/,
+      /Web search is disabled\. Enable it with pi-yoowai\.docs\.webSearch\.enabled/,
     );
   });
 
   it("returns formatted web search results when enabled", async () => {
-    const cwd = makeTempDir("yoo-search-enabled-");
+    const cwd = makeTempDir("wai-search-enabled-");
     tmpDirs.push(cwd);
     writeProjectSettings(cwd, {
       docs: {
@@ -108,7 +108,7 @@ describe("handleYooSearchCommand", () => {
         }) as unknown as SearchResults,
     );
 
-    const result = await handleYooSearchCommand("react hooks", mockCtx(cwd));
+    const result = await handleWaiSearchCommand("react hooks", mockCtx(cwd));
     const text = result.content[0]?.text ?? "";
     assert.match(text, /Web search results for "react hooks"/);
     assert.match(text, /<web_search query="react hooks">/);
@@ -116,7 +116,7 @@ describe("handleYooSearchCommand", () => {
   });
 
   it("reports no results when search returns nothing", async () => {
-    const cwd = makeTempDir("yoo-search-noresults-");
+    const cwd = makeTempDir("wai-search-noresults-");
     tmpDirs.push(cwd);
     writeProjectSettings(cwd, {
       docs: {
@@ -133,7 +133,7 @@ describe("handleYooSearchCommand", () => {
         }) as unknown as SearchResults,
     );
 
-    const result = await handleYooSearchCommand("xyz123nomatch", mockCtx(cwd));
+    const result = await handleWaiSearchCommand("xyz123nomatch", mockCtx(cwd));
     assert.equal(result.content[0]?.text, 'No results for "xyz123nomatch".');
   });
 });

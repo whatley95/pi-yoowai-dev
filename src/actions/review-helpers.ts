@@ -27,7 +27,7 @@ export function getSessionContext(ctx: ExtensionContext): string {
 
     for (const entry of recent.slice().reverse()) {
       if (!entry || typeof entry !== "object") continue;
-      const e = entry as Record<string, unknown>;
+      const e = entry as unknown as Record<string, unknown>;
       const msg = (e.message ?? e) as Record<string, unknown> | undefined;
       if (!msg || typeof msg.role !== "string") continue;
       if (msg.role === "tool") continue;

@@ -6,7 +6,7 @@ import { logEvent } from "./logger.js";
 import type { Conventions, ScanResult } from "./types.js";
 
 function getConventionsPath(cwd: string): string {
-  return getProjectConfigPath(cwd, "heyyoo", "conventions.json");
+  return getProjectConfigPath(cwd, "yoowai", "conventions.json");
 }
 
 function isValidConventions(data: unknown): Conventions | null {
@@ -53,7 +53,7 @@ export function loadConventions(cwd: string): Conventions | null {
 
 export function saveConventions(cwd: string, conventions: Conventions): void {
   try {
-    const dir = getProjectConfigPath(cwd, "heyyoo");
+    const dir = getProjectConfigPath(cwd, "yoowai");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(getConventionsPath(cwd), JSON.stringify(conventions, null, 2), { encoding: "utf-8", mode: 0o600 });
   } catch (err) {

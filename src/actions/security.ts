@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { getDiff } from "../diff-grabber.js";
 import { loadConventions, formatConventions, scanProjectConventions, gatherDeepScanSamples } from "../conventions.js";
 import { logEvent } from "../logger.js";
@@ -26,7 +26,7 @@ import { getSessionContext } from "./review-helpers.js";
 import { getState } from "../session-state.js";
 import { planStepDescription } from "../types.js";
 import type { ProgressReporter } from "../progress.js";
-import type { YooToolResult } from "../types.js";
+import type { WaiToolResult } from "../types.js";
 
 function mapFileContentEntries(
   entries: FileContentEntry[],
@@ -34,7 +34,7 @@ function mapFileContentEntries(
   return entries.map((e) => ({ file: e.file, content: e.content, mode: e.mode }));
 }
 
-export async function executeYooSecurity(
+export async function executeWaiSecurity(
   cwd: string,
   description: string,
   ctx: ExtensionContext,
@@ -49,11 +49,11 @@ export async function executeYooSecurity(
   } = {},
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
-): Promise<YooToolResult> {
-  const config = loadHeyyooConfig(cwd);
+): Promise<WaiToolResult> {
+  const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "security");
   if (!modelConfig.provider || !modelConfig.id) {
-    return { action: "security", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
+    return { action: "security", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
   const modelProfile = {
     provider: modelConfig.provider,

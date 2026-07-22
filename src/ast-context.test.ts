@@ -9,7 +9,7 @@ describe("ast-context", () => {
   let cwd: string;
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "yoo-ast-"));
+    cwd = mkdtempSync(join(tmpdir(), "wai-ast-"));
     mkdirSync(join(cwd, "src"), { recursive: true });
   });
 

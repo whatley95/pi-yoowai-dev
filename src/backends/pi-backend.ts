@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadHeyyooConfig } from "../config.js";
+import { loadYoowaiConfig } from "../config.js";
 import { logEvent } from "../logger.js";
 import type { CallSecondaryModelOptions } from "../types.js";
 import {
@@ -11,6 +11,7 @@ import {
   buildUsage,
   extractTextFromContent,
   isLengthStop,
+  isYoowaiDebugEnabled,
   type AssistantMessageLike,
   type PiProcessResult,
 } from "./shared.js";
@@ -51,7 +52,7 @@ function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
 }
 
 function writeTempSessionJsonl(sessionJsonl: string): { dir: string; filePath: string } {
-  const tmpDir = mkdtempSync(join(tmpdir(), "pi-heyyoo-"));
+  const tmpDir = mkdtempSync(join(tmpdir(), "pi-yoowai-"));
   const filePath = join(tmpDir, "session.jsonl");
   writeFileSync(filePath, sessionJsonl, { encoding: "utf-8", mode: 0o600 });
   return { dir: tmpDir, filePath };
@@ -169,7 +170,7 @@ function processPiJsonLine(line: string, result: PiProcessResult, cwd?: string):
   }
 
   // Debug: log every event type so we can diagnose providers that emit unusual events.
-  if (process.env.PI_HEYYOO_DEBUG === "1" || process.env.PI_HEYYOO_DEBUG === "true") {
+  if (isYoowaiDebugEnabled()) {
     function shapeOf(value: unknown, depth = 0): unknown {
       if (value === null || typeof value !== "object") return typeof value;
       if (depth > 3) return "...";
@@ -200,7 +201,7 @@ function processPiJsonLine(line: string, result: PiProcessResult, cwd?: string):
     if (cwd) {
       logEvent(cwd, "debug", "pi-backend event", { event: debugInfo });
     } else {
-      console.log("[pi-heyyoo pi-backend event]", debugInfo);
+      console.log("[pi-yoowai pi-backend event]", debugInfo);
     }
   }
 
@@ -488,7 +489,7 @@ export async function callPiBackend(
 ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> {
   const { signal, thinking, cwd, sessionManager, relevantPaths } = options;
 
-  const config = cwd ? loadHeyyooConfig(cwd) : undefined;
+  const config = cwd ? loadYoowaiConfig(cwd) : undefined;
   const processTimeoutMs = config?.processTimeoutMs ?? PI_PROCESS_TIMEOUT_MS;
   // Pass the parent Pi session ID to the child process so opencode-go/opencode
   // receive the same x-opencode-session header for sticky provider routing.
@@ -621,8 +622,8 @@ export async function callPiBackend(
         await new Promise((r) => setTimeout(r, delay));
       }
     }
-    // On final failure, include raw output diagnostics if PI_HEYYOO_DEBUG is set.
-    const debug = process.env.PI_HEYYOO_DEBUG === "1" || process.env.PI_HEYYOO_DEBUG === "true";
+    // On final failure, include raw output diagnostics if PI_YOOWAI_DEBUG is set.
+    const debug = isYoowaiDebugEnabled();
     if (debug && cwd) {
       logEvent(cwd, "error", "Pi backend exhausted retries — raw diagnostics", {
         attemptErrors,

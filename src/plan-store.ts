@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { Value } from "@sinclair/typebox/value";
 import { getSessionConfigDir, getSessionConfigPath } from "./session-scope.js";
 import { logEvent } from "./logger.js";
-import type { HeyyooSessionState, PlanResult } from "./types.js";
+import type { YoowaiSessionState, PlanResult } from "./types.js";
 import { validatePlanResult } from "./prompts.js";
 import { PlanResultSchema } from "./schemas.js";
 
@@ -14,7 +14,7 @@ function getPlanPath(cwd: string): string {
   return getSessionConfigPath(cwd, "plan.json");
 }
 
-export function loadState(cwd: string): HeyyooSessionState | null {
+export function loadState(cwd: string): YoowaiSessionState | null {
   const path = getPlanPath(cwd);
   if (!existsSync(path)) return null;
   try {
@@ -42,7 +42,7 @@ export function loadState(cwd: string): HeyyooSessionState | null {
       editsSinceLastDone: typeof data.editsSinceLastDone === "number" ? data.editsSinceLastDone : 0,
     };
   } catch (err) {
-    logEvent(cwd, "warn", "Failed to load yoo plan state", { error: err instanceof Error ? err.message : String(err) });
+    logEvent(cwd, "warn", "Failed to load wai plan state", { error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
@@ -67,7 +67,7 @@ function salvagePlan(raw: unknown): PlanResult | undefined {
   return undefined;
 }
 
-export function saveState(cwd: string, state: HeyyooSessionState): void {
+export function saveState(cwd: string, state: YoowaiSessionState): void {
   try {
     const dir = getStateDir(cwd);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -90,7 +90,7 @@ export function saveState(cwd: string, state: HeyyooSessionState): void {
       { encoding: "utf-8", mode: 0o600 },
     );
   } catch (err) {
-    logEvent(cwd, "error", "Failed to save yoo plan state", {
+    logEvent(cwd, "error", "Failed to save wai plan state", {
       error: err instanceof Error ? err.message : String(err),
     });
   }
@@ -103,7 +103,7 @@ export function clearState(cwd: string): void {
       writeFileSync(path, "{}", { encoding: "utf-8", mode: 0o600 });
     }
   } catch (err) {
-    logEvent(cwd, "warn", "Failed to clear yoo plan state", {
+    logEvent(cwd, "warn", "Failed to clear wai plan state", {
       error: err instanceof Error ? err.message : String(err),
     });
   }

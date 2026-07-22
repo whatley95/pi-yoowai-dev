@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { isSafeRelativePath, resolveProjectPath, validateRevision } from "./path-security.js";
 
 describe("path-security", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "yoo-path-test-"));
+  const cwd = mkdtempSync(join(tmpdir(), "wai-path-test-"));
   writeFileSync(join(cwd, "safe.txt"), "ok");
 
   it("rejects absolute paths", () => {

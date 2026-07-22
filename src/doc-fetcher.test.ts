@@ -154,7 +154,7 @@ describe("doc-fetcher", () => {
     assert.equal(first, second);
     assert.match(second, /cached content 1/);
 
-    const cachePath = join(cwd, ".pi", "heyyoo", "docs", "react.txt");
+    const cachePath = join(cwd, ".pi", "yoowai", "docs", "react.txt");
     assert.ok(statSync(cachePath).isFile());
   });
 
@@ -171,7 +171,7 @@ describe("doc-fetcher", () => {
       }) as unknown as Response;
 
     await loadDocContext(cwd, makeConfig({ maxCharsPerSource: 1000 }), { docs: ["react"] });
-    const cachePath = join(cwd, ".pi", "heyyoo", "docs", "react.txt");
+    const cachePath = join(cwd, ".pi", "yoowai", "docs", "react.txt");
     const stats = statSync(cachePath);
     // Windows does not support Unix permissions, so mode checks are skipped there.
     if (process.platform !== "win32") {
@@ -194,7 +194,7 @@ describe("doc-fetcher", () => {
     const config = makeConfig({ maxCharsPerSource: 1000 });
     await loadDocContext(cwd, config, { docs: ["react"] });
 
-    const cachePath = join(cwd, ".pi", "heyyoo", "docs", "react.txt");
+    const cachePath = join(cwd, ".pi", "yoowai", "docs", "react.txt");
     const stats = statSync(cachePath);
     // Set mtime to 25 hours ago so the cache is treated as stale.
     const staleTime = new Date(stats.mtimeMs - 25 * 60 * 60 * 1000);

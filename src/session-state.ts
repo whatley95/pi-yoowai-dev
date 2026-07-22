@@ -1,10 +1,10 @@
 import { loadState, saveState } from "./plan-store.js";
 import { planStepDescription } from "./types.js";
-import type { HeyyooSessionState, PlanResult } from "./types.js";
+import type { YoowaiSessionState, PlanResult } from "./types.js";
 
-const sessionStates = new Map<string, HeyyooSessionState>();
+const sessionStates = new Map<string, YoowaiSessionState>();
 
-export function getState(cwd: string): HeyyooSessionState {
+export function getState(cwd: string): YoowaiSessionState {
   let state = sessionStates.get(cwd);
   if (!state) {
     state = loadState(cwd) ?? {
@@ -101,7 +101,7 @@ export function getProgress(cwd: string): { completed: number; total: number; ne
   return { completed, total, nextStep };
 }
 
-function findNextEligibleStep(state: HeyyooSessionState): number | undefined {
+function findNextEligibleStep(state: YoowaiSessionState): number | undefined {
   if (!state.plan || state.plan.todo.length === 0) return undefined;
   for (let i = state.completedSteps; i < state.plan.todo.length; i++) {
     const step = state.plan.todo[i];
@@ -171,4 +171,13 @@ export function setLastReviewedCommit(cwd: string, commit: string | undefined): 
 
 export function dropSessionState(cwd: string): void {
   sessionStates.delete(cwd);
+}
+
+/** Flush the in-memory session state to disk. Useful before session
+ *  navigation events (switch/fork) so counters survive. */
+export function flushSessionState(cwd: string): void {
+  const state = sessionStates.get(cwd);
+  if (state) {
+    saveState(cwd, state);
+  }
 }

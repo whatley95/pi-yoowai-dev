@@ -27,7 +27,7 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const MAX_ENTRIES = 100;
 
 function getCachePath(cwd: string): string {
-  const dir = join(cwd, ".pi", "heyyoo");
+  const dir = join(cwd, ".pi", "yoowai");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return join(dir, "review-cache.json");
 }
@@ -75,7 +75,7 @@ export function buildCacheKey(action: string, payload: Record<string, unknown>):
   // Recursively sort keys so nested objects (modelProfile, options) serialize
   // deterministically. A plain array replacer would apply only at the top level
   // and serialize nested objects to {}, making the key ignore the model and
-  // returning a stale cached verdict after /yoo-model switches models.
+  // returning a stale cached verdict after /wai-model switches models.
   const canonical = stableStringify(payload);
   return createHash("sha256").update(`${action}:${canonical}`).digest("hex").slice(0, 32);
 }

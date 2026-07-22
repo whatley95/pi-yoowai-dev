@@ -1,4 +1,4 @@
-import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { getDiff } from "../diff-grabber.js";
 import {
   getProgress,
@@ -35,14 +35,14 @@ function parseDoneTarget(value: string | number | undefined): { targetStep?: num
   };
 }
 
-export async function executeYooDone(cwd: string, value?: string | number, signal?: AbortSignal): Promise<DoneResult> {
+export async function executeWaiDone(cwd: string, value?: string | number, signal?: AbortSignal): Promise<DoneResult> {
   const before = getProgress(cwd);
   if (before.total === 0) {
     return {
       completedStep: 0,
       totalSteps: 0,
       allDone: false,
-      message: "No active yoo plan. Start one with /yoo plan <task>.",
+      message: "No active wai plan. Start one with /wai plan <task>.",
     };
   }
   if (before.completed >= before.total) {
@@ -50,11 +50,11 @@ export async function executeYooDone(cwd: string, value?: string | number, signa
       completedStep: before.completed,
       totalSteps: before.total,
       allDone: true,
-      message: "All plan steps are already complete. Run /yoo judge for a final review.",
+      message: "All plan steps are already complete. Run /wai judge for a final review.",
     };
   }
 
-  const config = loadHeyyooConfig(cwd);
+  const config = loadYoowaiConfig(cwd);
   const { targetStep, label, error } = parseDoneTarget(value);
   if (error) {
     return {
@@ -100,7 +100,7 @@ export async function executeYooDone(cwd: string, value?: string | number, signa
               allDone: false,
               verified: false,
               verificationReason: parsed.reason,
-              message: `Step ${before.completed + 1} does not appear to be complete: ${parsed.reason}. Continue working or run yoo.review to confirm.`,
+              message: `Step ${before.completed + 1} does not appear to be complete: ${parsed.reason}. Continue working or run wai.review to confirm.`,
             };
           }
         }

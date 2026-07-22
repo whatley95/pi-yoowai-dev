@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { loadHeyyooConfig, resolveTaskModel } from "./config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { recordCost } from "./cost-tracker.js";
 import { loadConventions, formatConventions } from "./conventions.js";
 import { logEvent } from "./logger.js";
@@ -25,7 +25,7 @@ export interface LearnedStore {
 const MAX_FACTS = 200;
 
 function getLearnedPath(cwd: string): string {
-  return getProjectConfigPath(cwd, "heyyoo", "learned.json");
+  return getProjectConfigPath(cwd, "yoowai", "learned.json");
 }
 
 function loadLearned(cwd: string): LearnedStore {
@@ -487,10 +487,10 @@ export async function verifyLearnedFactsDeep(
   },
   callModel?: DeepVerifyModelCaller,
 ): Promise<{ results: LearnedFactVerification[]; cost: UsageCost }> {
-  const config = loadHeyyooConfig(cwd);
+  const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "explain");
   if (!callModel && (!modelConfig.provider || !modelConfig.id)) {
-    throw new Error("No secondary model configured. Set pi-heyyoo.secondary in settings.json.");
+    throw new Error("No secondary model configured. Set pi-yoowai.secondary in settings.json.");
   }
 
   const conventions = loadConventions(cwd);

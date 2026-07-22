@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveTaskModel, loadHeyyooConfig } from "./config.js";
-import type { HeyyooConfig } from "./types.js";
+import { resolveTaskModel, loadYoowaiConfig } from "./config.js";
+import type { YoowaiConfig } from "./types.js";
 
-const baseConfig: HeyyooConfig = {
+const baseConfig: YoowaiConfig = {
   secondary: { provider: "openai", id: "gpt-4o-mini", thinking: "off", backend: "pi" },
 };
 
@@ -17,7 +17,7 @@ function makeTempDir(prefix: string): string {
 function writeProjectSettings(cwd: string, yooSettings: Record<string, unknown>): void {
   const piDir = join(cwd, ".pi");
   mkdirSync(piDir, { recursive: true });
-  writeFileSync(join(piDir, "settings.json"), JSON.stringify({ "pi-heyyoo": yooSettings }, null, 2), "utf-8");
+  writeFileSync(join(piDir, "settings.json"), JSON.stringify({ "pi-yoowai": yooSettings }, null, 2), "utf-8");
 }
 
 describe("resolveTaskModel", () => {
@@ -30,7 +30,7 @@ describe("resolveTaskModel", () => {
   });
 
   it("uses task override fields when present", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       ...baseConfig,
       taskModels: {
         review: { provider: "anthropic", id: "claude-sonnet-4", thinking: "medium" },
@@ -44,7 +44,7 @@ describe("resolveTaskModel", () => {
   });
 
   it("falls back to base for omitted override fields", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       ...baseConfig,
       taskModels: { review: { id: "gpt-4o" } },
     };
@@ -55,7 +55,7 @@ describe("resolveTaskModel", () => {
   });
 
   it("ignores overrides for other actions", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       ...baseConfig,
       taskModels: { plan: { provider: "anthropic", id: "claude-sonnet-4" } },
     };
@@ -65,7 +65,7 @@ describe("resolveTaskModel", () => {
   });
 
   it("applies task-level contextWindow and maxOutputTokens", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       ...baseConfig,
       taskModels: { review: { contextWindow: 128000, maxOutputTokens: 4096 } },
     };
@@ -76,7 +76,7 @@ describe("resolveTaskModel", () => {
   });
 
   it("ignores empty override strings and falls back to base", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       ...baseConfig,
       taskModels: { review: { provider: "", id: "" } },
     };
@@ -86,16 +86,16 @@ describe("resolveTaskModel", () => {
   });
 
   it("ignores invalid taskModel action keys", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       ...baseConfig,
-      taskModels: { revieww: { provider: "anthropic", id: "claude" } } as unknown as HeyyooConfig["taskModels"],
+      taskModels: { revieww: { provider: "anthropic", id: "claude" } } as unknown as YoowaiConfig["taskModels"],
     };
     const result = resolveTaskModel(config, "review");
     assert.equal(result.provider, "openai");
   });
 
   it("supports done taskModel override", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       ...baseConfig,
       taskModels: { done: { provider: "deepseek", id: "deepseek-chat", thinking: "off" } },
     };
@@ -107,7 +107,7 @@ describe("resolveTaskModel", () => {
   });
 
   it("preserves sdk backend override", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       ...baseConfig,
       taskModels: { review: { backend: "sdk" } },
     };
@@ -116,17 +116,17 @@ describe("resolveTaskModel", () => {
   });
 
   it("ignores non-finite numeric overrides", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       ...baseConfig,
       taskModels: { review: { contextWindow: NaN, maxOutputTokens: Infinity } },
-    } as unknown as HeyyooConfig;
+    } as unknown as YoowaiConfig;
     const result = resolveTaskModel(config, "review");
     assert.equal(result.contextWindow, undefined);
     assert.equal(result.maxOutputTokens, undefined);
   });
 
   it("preserves sdk options through task overrides", () => {
-    const config: HeyyooConfig = {
+    const config: YoowaiConfig = {
       secondary: {
         provider: "openai",
         id: "gpt-4o-mini",
@@ -149,7 +149,7 @@ describe("resolveTaskModel", () => {
   });
 });
 
-describe("loadHeyyooConfig docs", () => {
+describe("loadYoowaiConfig docs", () => {
   const tmpDirs: string[] = [];
 
   after(() => {
@@ -167,7 +167,7 @@ describe("loadHeyyooConfig docs", () => {
     tmpDirs.push(cwd);
     writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
 
-    const config = loadHeyyooConfig(cwd);
+    const config = loadYoowaiConfig(cwd);
     assert.ok(config.docs);
     assert.deepEqual(config.docs?.sources, {});
     assert.equal(config.docs?.maxCharsPerSource, 8000);
@@ -188,7 +188,7 @@ describe("loadHeyyooConfig docs", () => {
       },
     });
 
-    const config = loadHeyyooConfig(cwd);
+    const config = loadYoowaiConfig(cwd);
     assert.deepEqual(config.docs?.sources, { react: "https://react.dev" });
     assert.equal(config.docs?.maxCharsPerSource, 5000);
     assert.equal(config.docs?.webSearch.enabled, true);
@@ -207,7 +207,7 @@ describe("loadHeyyooConfig docs", () => {
       },
     });
 
-    const config = loadHeyyooConfig(cwd);
+    const config = loadYoowaiConfig(cwd);
     assert.equal(config.docs?.maxCharsPerSource, 8000);
     assert.equal(config.docs?.webSearch.maxResults, 3);
     assert.equal(config.docs?.webSearch.maxCharsPerResult, 3000);
@@ -223,7 +223,23 @@ describe("loadHeyyooConfig docs", () => {
       },
     });
 
-    const config = loadHeyyooConfig(cwd);
+    const config = loadYoowaiConfig(cwd);
     assert.deepEqual(config.docs?.sources, { react: "https://react.dev" });
+  });
+
+  it("falls back to legacy pi-heyyoo config key", () => {
+    const cwd = makeTempDir("config-legacy-key-");
+    tmpDirs.push(cwd);
+    const piDir = join(cwd, ".pi");
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(
+      join(piDir, "settings.json"),
+      JSON.stringify({ "pi-heyyoo": { secondary: { provider: "anthropic", id: "claude-sonnet-4" } } }, null, 2),
+      "utf-8",
+    );
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.secondary.provider, "anthropic");
+    assert.equal(config.secondary.id, "claude-sonnet-4");
   });
 });

@@ -72,6 +72,15 @@ declare module "@earendil-works/pi-ai" {
     thoughtSignature?: string;
   }
 
+  export interface ToolResultMessage {
+    role: "toolResult";
+    toolCallId: string;
+    toolName: string;
+    content: (TextContent | ImageContent)[];
+    isError: boolean;
+    timestamp: number;
+  }
+
   export interface Usage {
     input: number;
     output: number;
@@ -109,7 +118,7 @@ declare module "@earendil-works/pi-ai" {
     timestamp: number;
   }
 
-  export type Message = UserMessage | AssistantMessage;
+  export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
   export interface Context {
     systemPrompt?: string;
@@ -164,6 +173,27 @@ declare module "@earendil-works/pi-ai" {
   }
 
   export function createModels(options?: CreateModelsOptions): MutableModels;
+
+  export interface OAuthCredentials {
+    access?: string;
+    refresh?: string;
+    expiresAt?: number;
+    [key: string]: unknown;
+  }
+
+  export interface OAuthLoginCallbacks {
+    openUrl?: (url: string) => void | Promise<void>;
+    onCode?: (code: string) => void | Promise<void>;
+    onError?: (error: Error) => void | Promise<void>;
+  }
+
+  export interface OAuthProviderInterface {
+    id: string;
+    name: string;
+    login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials | undefined>;
+    refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials | undefined>;
+    getApiKey(credentials: OAuthCredentials): string | undefined;
+  }
 }
 
 declare module "@earendil-works/pi-ai/compat" {

@@ -1,9 +1,9 @@
-export type YooAction =
+export type WaiAction =
   "plan" | "review" | "suggest" | "recommend" | "judge" | "scan" | "test" | "security" | "done" | "planUpdate";
 
 /** Tasks that can have a per-model override in settings.json.
  *  planUpdate intentionally shares the plan model, so it is not selectable separately. */
-export type YooModelTask =
+export type WaiModelTask =
   "plan" | "review" | "suggest" | "recommend" | "judge" | "scan" | "test" | "security" | "done" | "explain";
 
 import type { BackendType } from "./types/secondary-model.js";
@@ -16,10 +16,10 @@ export type {
 } from "./types/secondary-model.js";
 export type { DocsConfig, WebSearchConfig, WebSearchProvider } from "./types/docs.js";
 
-export interface HeyyooConfig {
+export interface YoowaiConfig {
   secondary: import("./types/secondary-model.js").SecondaryModelConfig;
   /** Per-task model overrides. Any omitted field falls back to `secondary`. */
-  taskModels?: Partial<Record<YooModelTask, Partial<import("./types/secondary-model.js").SecondaryModelConfig>>>;
+  taskModels?: Partial<Record<WaiModelTask, Partial<import("./types/secondary-model.js").SecondaryModelConfig>>>;
   /** Fallback secondary models to try if the primary model fails. Each fallback is tried in order. */
   secondaryFallback?: import("./types/secondary-model.js").SecondaryModelConfig[];
   autoJudge?: boolean;
@@ -48,7 +48,7 @@ export interface HeyyooConfig {
   docs?: import("./types/docs.js").DocsConfig;
   /** Timeout in ms for child pi process calls (default 300000 = 5 min). */
   processTimeoutMs?: number;
-  /** Timeout in ms per model in /yoo test (default 120000 = 2 min). */
+  /** Timeout in ms per model in /wai test (default 120000 = 2 min). */
   testTimeoutMs?: number;
   /** Maximum continuation calls when a secondary-model response is length-truncated (default 3). */
   maxContinuations?: number;
@@ -56,6 +56,18 @@ export interface HeyyooConfig {
   verifyDoneClaims?: boolean;
   /** Number of file edits since last review before showing a workflow reminder. Default 3. */
   reviewReminderEdits?: number;
+  /** Inject active plan, conventions, and workflow reminders into every user message. Default true. */
+  autoInjectContext?: boolean;
+  /** Maximum tokens of injected context per message. Default 800. */
+  contextInjectMaxTokens?: number;
+  /** Render wai audit entries (plan, review, judge, etc.) with a custom TUI entry renderer. Default true. */
+  entryRenderer?: boolean;
+  /** Register keyboard shortcuts for common wai actions (review, done, status). Default true. */
+  shortcuts?: boolean;
+  /** Show a compact plan-progress widget above the editor. Default true. */
+  planWidget?: boolean;
+  /** Register the configured secondary model as a Pi provider named "wai". Default false. */
+  registerProvider?: boolean;
 }
 
 export interface PlanStep {
@@ -168,7 +180,7 @@ export interface SecurityResult {
   summary: string;
 }
 
-export interface HeyyooSessionState {
+export interface YoowaiSessionState {
   plan?: PlanResult;
   completedSteps: number;
   totalSteps: number;
@@ -182,7 +194,7 @@ export interface HeyyooSessionState {
   lastReviewedCommit?: string;
 }
 
-export interface YooToolParams {
+export interface WaiToolParams {
   plan?: string;
   review?: string;
   suggest?: string;
@@ -191,8 +203,8 @@ export interface YooToolParams {
   scan?: boolean;
   test?: string;
   security?: string;
-  done?: string | number;
-  planUpdate?: string;
+  done?: string | number | boolean;
+  planUpdate?: string | boolean;
   files?: string[];
   exclude?: string[];
   revision?: string;
@@ -203,8 +215,8 @@ export interface YooToolParams {
   docs?: string[];
 }
 
-export interface YooToolResult {
-  action: YooAction;
+export interface WaiToolResult {
+  action: WaiAction;
   plan?: PlanResult;
   review?: ReviewResult;
   suggest?: SuggestResult;
@@ -216,7 +228,7 @@ export interface YooToolResult {
   done?: DoneResult;
   error?: string;
   cost?: UsageCost;
-  /** Wall-clock time the yoo tool took to produce this result, in milliseconds. */
+  /** Wall-clock time the wai tool took to produce this result, in milliseconds. */
   elapsedMs?: number;
   /** The secondary model that produced this result. */
   model?: StageProfile;
@@ -260,8 +272,8 @@ export interface CallSecondaryModelOptions {
   };
   /** File paths to prioritize when selecting inherited session context (e.g. changed files for a review). */
   relevantPaths?: string[];
-  /** Yoo task to resolve a per-task model override from settings. */
-  task?: YooModelTask;
+  /** Wai task to resolve a per-task model override from settings. */
+  task?: WaiModelTask;
   /** When true, request native structured JSON output if the provider supports it. */
   structuredOutput?: boolean;
   /** Optional callback invoked with accumulated generated text during SDK streaming. */

@@ -4,17 +4,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadState, saveState } from "./plan-store.js";
-import type { HeyyooSessionState } from "./types.js";
+import type { YoowaiSessionState } from "./types.js";
 
 describe("plan-store", () => {
   let cwd: string;
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "yoo-plan-test-"));
+    cwd = mkdtempSync(join(tmpdir(), "wai-plan-test-"));
   });
 
   it("round-trips legacy string-array plans", () => {
-    const state: HeyyooSessionState = {
+    const state: YoowaiSessionState = {
       completedSteps: 1,
       totalSteps: 2,
       reviewRounds: [],
@@ -33,7 +33,7 @@ describe("plan-store", () => {
   });
 
   it("round-trips plan steps with priority and dependencies", () => {
-    const state: HeyyooSessionState = {
+    const state: YoowaiSessionState = {
       completedSteps: 0,
       totalSteps: 2,
       reviewRounds: [],

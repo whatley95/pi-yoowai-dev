@@ -37,33 +37,37 @@ export function recordToolCall(state: LoopDetectionState, event: unknown): void 
   }
 }
 
+function isWaiToolName(toolName: string): boolean {
+  return toolName === "wai" || toolName === "yoo" || toolName.startsWith("wai_") || toolName.startsWith("yoo_");
+}
+
 export function checkLoop(state: LoopDetectionState): { looping: boolean; message: string } | null {
   const calls = state.recentCalls;
   if (calls.length < 5) return null;
 
-  // Pattern 1: yoo.* called 5+ times in a row without other tools doing real work
-  const recentYoo = calls.slice(-5);
-  const yooCalls = recentYoo.filter((c) => c.toolName === "yoo");
-  const nonYooCalls = recentYoo.filter((c) => c.toolName !== "yoo");
-  const realWorkCalls = nonYooCalls.filter((c) => !isReadOnlyTool(c.toolName));
+  // Pattern 1: wai/yoo called 5+ times in a row without other tools doing real work
+  const recentWai = calls.slice(-5);
+  const waiCalls = recentWai.filter((c) => isWaiToolName(c.toolName));
+  const nonWaiCalls = recentWai.filter((c) => !isWaiToolName(c.toolName));
+  const realWorkCalls = nonWaiCalls.filter((c) => !isReadOnlyTool(c.toolName));
 
-  if (yooCalls.length >= 5 && realWorkCalls.length === 0) {
+  if (waiCalls.length >= 5 && realWorkCalls.length === 0) {
     return {
       looping: true,
       message:
-        "LOOP DETECTED: you keep calling yoo tools without making real edits. STOP. Pick one concrete issue, fix it in the actual code, then call yoo.review once. If stuck, ask the user or use yoo.suggest.",
+        "LOOP DETECTED: you keep calling wai tools without making real edits. STOP. Pick one concrete issue, fix it in the actual code, then call wai.review once. If stuck, ask the user or use wai.suggest.",
     };
   }
 
-  // Pattern 2: same yoo action called repeatedly with identical description
+  // Pattern 2: same wai action called repeatedly with identical description
   const last = calls[calls.length - 1];
-  if (last.toolName === "yoo") {
+  if (isWaiToolName(last.toolName)) {
     const sameDescriptionCount = countIdenticalDescriptions(calls, last);
     if (sameDescriptionCount >= 5) {
       return {
         looping: true,
         message:
-          "LOOP DETECTED: you are repeating the same yoo call with the same description. STOP. The previous result should already guide you. Apply a real change or ask the user if blocked.",
+          "LOOP DETECTED: you are repeating the same wai call with the same description. STOP. The previous result should already guide you. Apply a real change or ask the user if blocked.",
       };
     }
   }
@@ -72,16 +76,16 @@ export function checkLoop(state: LoopDetectionState): { looping: boolean; messag
 }
 
 function countIdenticalDescriptions(calls: ToolCallRecord[], target: ToolCallRecord): number {
-  const targetDesc = getYooDescription(target.args);
+  const targetDesc = getWaiDescription(target.args);
   if (!targetDesc) return 0;
 
-  const targetAction = getYooActionKey(target.args);
+  const targetAction = getWaiActionKey(target.args);
   let count = 0;
   for (let i = calls.length - 1; i >= 0; i--) {
     const c = calls[i];
-    if (c.toolName !== "yoo") break;
-    if (getYooActionKey(c.args) !== targetAction) break;
-    if (getYooDescription(c.args) === targetDesc) {
+    if (!isWaiToolName(c.toolName)) break;
+    if (getWaiActionKey(c.args) !== targetAction) break;
+    if (getWaiDescription(c.args) === targetDesc) {
       count++;
     } else {
       break;
@@ -90,7 +94,7 @@ function countIdenticalDescriptions(calls: ToolCallRecord[], target: ToolCallRec
   return count;
 }
 
-export function getYooActionKey(args: Record<string, unknown>): string {
+export function getWaiActionKey(args: Record<string, unknown>): string {
   if (typeof args.review === "string") return "review";
   if (typeof args.judge === "string") return "judge";
   if (typeof args.plan === "string") return "plan";
@@ -104,7 +108,7 @@ function isReadOnlyTool(toolName: string): boolean {
   return toolName === "readFile" || toolName === "grep" || toolName === "glob";
 }
 
-function getYooDescription(args: Record<string, unknown>): string {
+function getWaiDescription(args: Record<string, unknown>): string {
   const description =
     (typeof args.review === "string" ? args.review : "") ||
     (typeof args.judge === "string" ? args.judge : "") ||

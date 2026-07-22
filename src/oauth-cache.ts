@@ -14,7 +14,7 @@ const DEFAULT_TTL_MS = 55 * 60 * 1000; // 55 minutes
 const CACHE_FILE = "oauth-cache.json";
 
 function getCachePath(cwd: string): string {
-  const dir = join(cwd, ".pi", "heyyoo");
+  const dir = join(cwd, ".pi", "yoowai");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return join(dir, CACHE_FILE);
 }

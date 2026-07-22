@@ -4,10 +4,10 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  handleYooSearchConfigCommand,
+  handleWaiSearchConfigCommand,
   setSearchConfigAgentDirForTests,
   resetSearchConfigAgentDirForTests,
-} from "./yoo-search-config.js";
+} from "./wai-search-config.js";
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -48,17 +48,17 @@ function writeProjectSettings(cwd: string, enabled: boolean): void {
   mkdirSync(piDir, { recursive: true });
   writeFileSync(
     join(piDir, "settings.json"),
-    JSON.stringify({ "pi-heyyoo": { docs: { webSearch: { enabled } } } }, null, 2),
+    JSON.stringify({ "pi-yoowai": { docs: { webSearch: { enabled } } } }, null, 2),
     "utf-8",
   );
 }
 
-describe("yoo-search-config", () => {
+describe("wai-search-config", () => {
   let tmpDirs: string[] = [];
   let agentDir: string;
 
   before(() => {
-    agentDir = makeTempDir("pi-heyyoo-agent-");
+    agentDir = makeTempDir("pi-yoowai-agent-");
     setSearchConfigAgentDirForTests(agentDir);
     tmpDirs.push(agentDir);
   });
@@ -89,15 +89,15 @@ describe("yoo-search-config", () => {
   });
 
   it("saves Brave provider and API key from inline args", async () => {
-    const cwd = makeTempDir("yoo-search-config-inline-");
+    const cwd = makeTempDir("wai-search-config-inline-");
     tmpDirs.push(cwd);
     writeProjectSettings(cwd, true);
     const ui: MockUI = { notifications: [], selects: [] };
     const ctx = makeCtx(cwd, ui);
 
-    const result = await handleYooSearchConfigCommand(
+    const result = await handleWaiSearchConfigCommand(
       "brave brave-api-key-123",
-      ctx as unknown as Parameters<typeof handleYooSearchConfigCommand>[1],
+      ctx as unknown as Parameters<typeof handleWaiSearchConfigCommand>[1],
     );
 
     assert.match(result.content[0].text, /Brave/);
@@ -105,40 +105,40 @@ describe("yoo-search-config", () => {
     assert.equal((auth.brave as { type: string; key: string }).type, "api_key");
     assert.equal((auth.brave as { type: string; key: string }).key, "brave-api-key-123");
     const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as Record<string, unknown>;
-    const webSearch = ((settings["pi-heyyoo"] as Record<string, unknown>).docs as Record<string, unknown>)
+    const webSearch = ((settings["pi-yoowai"] as Record<string, unknown>).docs as Record<string, unknown>)
       .webSearch as Record<string, unknown>;
     assert.equal(webSearch.provider, "brave");
   });
 
   it("switches provider to duckduckgo from inline args", async () => {
-    const cwd = makeTempDir("yoo-search-config-duck-");
+    const cwd = makeTempDir("wai-search-config-duck-");
     tmpDirs.push(cwd);
     writeProjectSettings(cwd, true);
     const ui: MockUI = { notifications: [], selects: [] };
     const ctx = makeCtx(cwd, ui);
 
-    const result = await handleYooSearchConfigCommand(
+    const result = await handleWaiSearchConfigCommand(
       "duckduckgo",
-      ctx as unknown as Parameters<typeof handleYooSearchConfigCommand>[1],
+      ctx as unknown as Parameters<typeof handleWaiSearchConfigCommand>[1],
     );
 
     assert.match(result.content[0].text, /duckduckgo/);
     const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as Record<string, unknown>;
-    const webSearch = ((settings["pi-heyyoo"] as Record<string, unknown>).docs as Record<string, unknown>)
+    const webSearch = ((settings["pi-yoowai"] as Record<string, unknown>).docs as Record<string, unknown>)
       .webSearch as Record<string, unknown>;
     assert.equal(webSearch.provider, "duckduckgo");
   });
 
   it("returns error when web search is disabled", async () => {
-    const cwd = makeTempDir("yoo-search-config-disabled-");
+    const cwd = makeTempDir("wai-search-config-disabled-");
     tmpDirs.push(cwd);
     writeProjectSettings(cwd, false);
     const ui: MockUI = { notifications: [], selects: [] };
     const ctx = makeCtx(cwd, ui);
 
-    const result = await handleYooSearchConfigCommand(
+    const result = await handleWaiSearchConfigCommand(
       "brave key",
-      ctx as unknown as Parameters<typeof handleYooSearchConfigCommand>[1],
+      ctx as unknown as Parameters<typeof handleWaiSearchConfigCommand>[1],
     );
 
     assert.match(result.content[0].text, /disabled/);
@@ -146,15 +146,15 @@ describe("yoo-search-config", () => {
   });
 
   it("TUI selects brave and warns when no API key", async () => {
-    const cwd = makeTempDir("yoo-search-config-tui-brave-");
+    const cwd = makeTempDir("wai-search-config-tui-brave-");
     tmpDirs.push(cwd);
     writeProjectSettings(cwd, true);
     const ui: MockUI = { notifications: [], selects: [], selectResult: "Brave Search (API key required)" };
     const ctx = makeCtx(cwd, ui);
 
-    const result = await handleYooSearchConfigCommand(
+    const result = await handleWaiSearchConfigCommand(
       "",
-      ctx as unknown as Parameters<typeof handleYooSearchConfigCommand>[1],
+      ctx as unknown as Parameters<typeof handleWaiSearchConfigCommand>[1],
     );
 
     assert.equal(ui.selects.length, 1);
@@ -162,26 +162,26 @@ describe("yoo-search-config", () => {
     assert.match(result.content[0].text, /Brave/);
     assert.match(result.content[0].text, /API key/);
     const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as Record<string, unknown>;
-    const webSearch = ((settings["pi-heyyoo"] as Record<string, unknown>).docs as Record<string, unknown>)
+    const webSearch = ((settings["pi-yoowai"] as Record<string, unknown>).docs as Record<string, unknown>)
       .webSearch as Record<string, unknown>;
     assert.equal(webSearch.provider, "brave");
   });
 
   it("TUI selects duckduckgo", async () => {
-    const cwd = makeTempDir("yoo-search-config-tui-duck-");
+    const cwd = makeTempDir("wai-search-config-tui-duck-");
     tmpDirs.push(cwd);
     writeProjectSettings(cwd, true);
     const ui: MockUI = { notifications: [], selects: [], selectResult: "DuckDuckGo (no API key needed)" };
     const ctx = makeCtx(cwd, ui);
 
-    const result = await handleYooSearchConfigCommand(
+    const result = await handleWaiSearchConfigCommand(
       "",
-      ctx as unknown as Parameters<typeof handleYooSearchConfigCommand>[1],
+      ctx as unknown as Parameters<typeof handleWaiSearchConfigCommand>[1],
     );
 
     assert.match(result.content[0].text, /duckduckgo/);
     const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as Record<string, unknown>;
-    const webSearch = ((settings["pi-heyyoo"] as Record<string, unknown>).docs as Record<string, unknown>)
+    const webSearch = ((settings["pi-yoowai"] as Record<string, unknown>).docs as Record<string, unknown>)
       .webSearch as Record<string, unknown>;
     assert.equal(webSearch.provider, "duckduckgo");
   });

@@ -9,7 +9,7 @@ describe("project-index", () => {
   let cwd: string;
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "yoo-index-test-"));
+    cwd = mkdtempSync(join(tmpdir(), "wai-index-test-"));
   });
 
   it("indexes TypeScript source files", () => {
@@ -55,7 +55,7 @@ export interface Config {
     const index = buildProjectIndex(cwd);
     saveProjectIndex(cwd, index);
 
-    assert.ok(existsSync(join(cwd, ".pi", "heyyoo", "index.json")), "index file should be saved");
+    assert.ok(existsSync(join(cwd, ".pi", "yoowai", "index.json")), "index file should be saved");
     const loaded = loadProjectIndex(cwd);
     assert.deepEqual(loaded, index);
   });

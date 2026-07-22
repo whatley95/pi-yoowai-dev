@@ -1,10 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { calculateReviewBudget, estimateTokens, truncateToTokenBudget } from "./token-budget.js";
-import type { HeyyooConfig } from "./types.js";
+import type { YoowaiConfig } from "./types.js";
 
 describe("token budget", () => {
-  const baseConfig: HeyyooConfig = {
+  const baseConfig: YoowaiConfig = {
     secondary: { provider: "openai", id: "gpt-4o", thinking: "medium" },
     autoJudge: false,
     preReviewCommands: [],
@@ -32,7 +32,7 @@ describe("token budget", () => {
   });
 
   it("honors hard input cap", () => {
-    const config: HeyyooConfig = { ...baseConfig, reviewMaxInputTokens: 1000 };
+    const config: YoowaiConfig = { ...baseConfig, reviewMaxInputTokens: 1000 };
     const budget = calculateReviewBudget("openai", "gpt-4o", config, {
       systemPrompt: "",
       sessionContext: "",

@@ -36,7 +36,7 @@ describe("convention inference", () => {
   });
 
   it("gathers deep scan samples from entry points and source files", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-heyyoo-deep-scan-"));
+    const cwd = mkdtempSync(join(tmpdir(), "pi-yoowai-deep-scan-"));
     mkdirSync(join(cwd, "src"), { recursive: true });
     writeFileSync(join(cwd, "package.json"), JSON.stringify({ main: "src/index.ts" }), "utf-8");
     writeFileSync(join(cwd, "src/index.ts"), "export function main() {\n  return 1;\n}\n", "utf-8");
@@ -51,7 +51,7 @@ describe("convention inference", () => {
   });
 
   it("caps deep scan samples at maxFiles", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-heyyoo-deep-scan-limit-"));
+    const cwd = mkdtempSync(join(tmpdir(), "pi-yoowai-deep-scan-limit-"));
     mkdirSync(join(cwd, "src"), { recursive: true });
     writeFileSync(join(cwd, "src/a.ts"), "export const a = 1;\n", "utf-8");
     writeFileSync(join(cwd, "src/b.ts"), "export const b = 1;\n", "utf-8");
@@ -62,7 +62,7 @@ describe("convention inference", () => {
   });
 
   it("excludes test directories and declaration files from deep scan source samples", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-heyyoo-deep-scan-filter-"));
+    const cwd = mkdtempSync(join(tmpdir(), "pi-yoowai-deep-scan-filter-"));
     mkdirSync(join(cwd, "src"), { recursive: true });
     mkdirSync(join(cwd, "tests"), { recursive: true });
     writeFileSync(join(cwd, "src/app.ts"), "export const app = 1;\n", "utf-8");
@@ -81,7 +81,7 @@ describe("convention inference", () => {
   });
 
   it("does not sample entry points outside the project root", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-heyyoo-deep-scan-entry-"));
+    const cwd = mkdtempSync(join(tmpdir(), "pi-yoowai-deep-scan-entry-"));
     mkdirSync(join(cwd, "src"), { recursive: true });
     writeFileSync(join(cwd, "package.json"), JSON.stringify({ main: "../outside.ts" }), "utf-8");
     writeFileSync(join(cwd, "src/index.ts"), "export const x = 1;\n", "utf-8");
@@ -93,7 +93,7 @@ describe("convention inference", () => {
   });
 
   it("reads nested package.json exports as entry points", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-heyyoo-deep-scan-exports-"));
+    const cwd = mkdtempSync(join(tmpdir(), "pi-yoowai-deep-scan-exports-"));
     mkdirSync(join(cwd, "src"), { recursive: true });
     writeFileSync(
       join(cwd, "package.json"),

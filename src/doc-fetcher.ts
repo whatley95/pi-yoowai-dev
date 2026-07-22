@@ -21,7 +21,7 @@ type SearchFn = typeof dds.search;
 
 /**
  * Default DuckDuckGo search, imported lazily on first use. A broken or
- * outdated duck-duck-scrape install then degrades /yoo-search with a logged
+ * outdated duck-duck-scrape install then degrades /wai-search with a logged
  * warning instead of breaking extension startup at import time.
  */
 const defaultSearchFn: SearchFn = async (query, options) => {
@@ -71,7 +71,7 @@ function detectWebSearchProvider(config: WebSearchConfig): WebSearchProvider {
 }
 
 function getDocsCacheDir(cwd: string): string {
-  return getProjectConfigPath(cwd, "heyyoo", "docs");
+  return getProjectConfigPath(cwd, "yoowai", "docs");
 }
 
 function ensureCacheDir(cwd: string): void {
@@ -153,7 +153,7 @@ async function fetchDocSource(
       method: "GET",
       credentials: "omit",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: { "User-Agent": `pi-heyyoo/${process.version}` },
+      headers: { "User-Agent": `pi-yoowai/${process.version}` },
     });
     if (!response.ok) {
       logEvent(cwd, "warn", "Doc source fetch failed", { name, url, status: response.status });

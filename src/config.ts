@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, getProjectConfigPath } from "./pi-paths.js";
 import { logEvent } from "./logger.js";
-import type { HeyyooConfig, SecondaryModelConfig, YooModelTask, DocsConfig } from "./types.js";
+import type { YoowaiConfig, SecondaryModelConfig, WaiModelTask, DocsConfig } from "./types.js";
 
 export { getAgentDir, getProjectConfigPath } from "./pi-paths.js";
 
@@ -12,6 +12,12 @@ function isValidBackend(value: unknown): value is "pi" | "http" | "sdk" {
 
 function pickOptionalString(value: unknown, fallback: string | undefined): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function pickOptionalAuthHeader(value: unknown, fallback: string | boolean | undefined): string | boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string" && value.length > 0) return value;
+  return fallback;
 }
 
 function pickOptionalNumber(value: unknown, fallback: number | undefined): number | undefined {
@@ -55,7 +61,7 @@ function mergeSecondaryFields(
     maxRetryDelayMs: pickOptionalNumber(override.maxRetryDelayMs, base.maxRetryDelayMs),
     timeoutMs: pickOptionalNumber(override.timeoutMs, base.timeoutMs),
     style: pickOptionalStyle(override.style, base.style),
-    authHeader: pickOptionalString(override.authHeader, base.authHeader),
+    authHeader: pickOptionalAuthHeader(override.authHeader, base.authHeader),
     authPrefix: pickOptionalString(override.authPrefix, base.authPrefix),
   };
 }
@@ -67,18 +73,18 @@ function mergeSecondary(base: SecondaryModelConfig, override: unknown): Secondar
   return mergeSecondaryFields(base, override as Partial<SecondaryModelConfig>) as SecondaryModelConfig;
 }
 
-export function resolveTaskModel(config: HeyyooConfig, action: YooModelTask): SecondaryModelConfig {
+export function resolveTaskModel(config: YoowaiConfig, action: WaiModelTask): SecondaryModelConfig {
   const override = config.taskModels?.[action];
   if (override) return mergeSecondary(config.secondary, override);
   return config.secondary;
 }
 
-export function loadHeyyooConfig(cwd: string): HeyyooConfig {
+export function loadYoowaiConfig(cwd: string): YoowaiConfig {
   const agentDir = getAgentDir();
   const globalPath = join(agentDir, "settings.json");
   const projectPath = getProjectConfigPath(cwd, "settings.json");
 
-  let config: HeyyooConfig = {
+  let config: YoowaiConfig = {
     secondary: { provider: "", id: "", thinking: "xhigh" },
     autoJudge: false,
     preReviewCommands: [],
@@ -88,6 +94,12 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
     reviewStrategy: "auto",
     verifyDoneClaims: true,
     reviewReminderEdits: 3,
+    autoInjectContext: true,
+    contextInjectMaxTokens: 800,
+    entryRenderer: true,
+    shortcuts: true,
+    planWidget: true,
+    registerProvider: false,
     docs: {
       sources: {},
       maxCharsPerSource: 8000,
@@ -104,12 +116,19 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
   if (existsSync(globalPath)) {
     try {
       const global = JSON.parse(readFileSync(globalPath, "utf-8"));
+      if (global["pi-yoowai"]) {
+        checkUnknownKeys(global["pi-yoowai"], "global", cwd);
+        config = mergeConfig(config, global["pi-yoowai"]);
+      }
       if (global["pi-heyyoo"]) {
+        logEvent(cwd, "warn", "Deprecated config key pi-heyyoo detected in global settings; use pi-yoowai", {
+          path: globalPath,
+        });
         checkUnknownKeys(global["pi-heyyoo"], "global", cwd);
         config = mergeConfig(config, global["pi-heyyoo"]);
       }
     } catch (err) {
-      logEvent(cwd, "warn", "Failed to parse global yoo settings", {
+      logEvent(cwd, "warn", "Failed to parse global wai settings", {
         error: err instanceof Error ? err.message : String(err),
         path: globalPath,
       });
@@ -119,12 +138,19 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
   if (existsSync(projectPath)) {
     try {
       const project = JSON.parse(readFileSync(projectPath, "utf-8"));
+      if (project["pi-yoowai"]) {
+        checkUnknownKeys(project["pi-yoowai"], "project", cwd);
+        config = mergeConfig(config, project["pi-yoowai"]);
+      }
       if (project["pi-heyyoo"]) {
+        logEvent(cwd, "warn", "Deprecated config key pi-heyyoo detected in project settings; use pi-yoowai", {
+          path: projectPath,
+        });
         checkUnknownKeys(project["pi-heyyoo"], "project", cwd);
         config = mergeConfig(config, project["pi-heyyoo"]);
       }
     } catch (err) {
-      logEvent(cwd, "warn", "Failed to parse project yoo settings", {
+      logEvent(cwd, "warn", "Failed to parse project wai settings", {
         error: err instanceof Error ? err.message : String(err),
         path: projectPath,
       });
@@ -134,7 +160,7 @@ export function loadHeyyooConfig(cwd: string): HeyyooConfig {
   return validateConfig(config, cwd);
 }
 
-/** Known top-level keys in pi-heyyoo config. */
+/** Known top-level keys in pi-yoowai config. */
 const KNOWN_CONFIG_KEYS = new Set([
   "secondary",
   "taskModels",
@@ -158,7 +184,13 @@ const KNOWN_CONFIG_KEYS = new Set([
   "testTimeoutMs",
   "verifyDoneClaims",
   "reviewReminderEdits",
+  "autoInjectContext",
+  "contextInjectMaxTokens",
   "maxContinuations",
+  "entryRenderer",
+  "shortcuts",
+  "planWidget",
+  "registerProvider",
   "docs",
 ]);
 
@@ -173,14 +205,14 @@ function checkUnknownKeys(raw: Record<string, unknown>, source: string, cwd: str
 }
 
 /** Validate config and log warnings for common mistakes. */
-function validateConfig(config: HeyyooConfig, cwd: string): HeyyooConfig {
+function validateConfig(config: YoowaiConfig, cwd: string): YoowaiConfig {
   const warnings: string[] = [];
 
   if (!config.secondary.provider) {
-    warnings.push("secondary.provider is not set — yoo tool will not work");
+    warnings.push("secondary.provider is not set — wai tool will not work");
   }
   if (!config.secondary.id) {
-    warnings.push("secondary.id is not set — yoo tool will not work");
+    warnings.push("secondary.id is not set — wai tool will not work");
   }
   if (config.processTimeoutMs !== undefined && config.processTimeoutMs <= 0) {
     warnings.push(`processTimeoutMs=${config.processTimeoutMs} is invalid, using default`);
@@ -202,11 +234,11 @@ function normalizeCostBudgetUsd(value: unknown, fallback: number | undefined): n
   return value;
 }
 
-function mergeModelInfo(base: HeyyooConfig["modelInfo"], override: unknown): HeyyooConfig["modelInfo"] {
+function mergeModelInfo(base: YoowaiConfig["modelInfo"], override: unknown): YoowaiConfig["modelInfo"] {
   if (!override || typeof override !== "object" || Array.isArray(override)) {
     return base;
   }
-  const result: NonNullable<HeyyooConfig["modelInfo"]> = base ? { ...base } : {};
+  const result: NonNullable<YoowaiConfig["modelInfo"]> = base ? { ...base } : {};
   for (const [key, value] of Object.entries(override)) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const v = value as Record<string, unknown>;
@@ -232,7 +264,7 @@ function mergePartialSecondary(
   return mergeSecondaryFields(base, override);
 }
 
-const VALID_YOO_MODEL_TASKS = new Set<string>([
+const VALID_WAI_MODEL_TASKS = new Set<string>([
   "plan",
   "review",
   "suggest",
@@ -245,16 +277,16 @@ const VALID_YOO_MODEL_TASKS = new Set<string>([
   "explain",
 ]);
 
-function mergeTaskModels(base: HeyyooConfig["taskModels"], override: unknown): HeyyooConfig["taskModels"] {
+function mergeTaskModels(base: YoowaiConfig["taskModels"], override: unknown): YoowaiConfig["taskModels"] {
   if (!override || typeof override !== "object" || Array.isArray(override)) {
     return base;
   }
-  const o = override as Partial<Record<YooModelTask, Partial<SecondaryModelConfig>>>;
-  const result: NonNullable<HeyyooConfig["taskModels"]> = base ? { ...base } : {};
+  const o = override as Partial<Record<WaiModelTask, Partial<SecondaryModelConfig>>>;
+  const result: NonNullable<YoowaiConfig["taskModels"]> = base ? { ...base } : {};
   for (const [action, value] of Object.entries(o)) {
-    if (!VALID_YOO_MODEL_TASKS.has(action)) continue;
+    if (!VALID_WAI_MODEL_TASKS.has(action)) continue;
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    result[action as YooModelTask] = mergePartialSecondary(result[action as YooModelTask] ?? {}, value);
+    result[action as WaiModelTask] = mergePartialSecondary(result[action as WaiModelTask] ?? {}, value);
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
@@ -318,11 +350,11 @@ function mergeDocs(base: DocsConfig | undefined, override: unknown): DocsConfig 
   };
 }
 
-function mergeConfig(base: HeyyooConfig, override: unknown): HeyyooConfig {
+function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
   if (!override || typeof override !== "object" || Array.isArray(override)) {
     return base;
   }
-  const o = override as Partial<HeyyooConfig>;
+  const o = override as Partial<YoowaiConfig>;
   return {
     secondary: mergeSecondary(base.secondary, o.secondary),
     taskModels: mergeTaskModels(base.taskModels, o.taskModels),
@@ -355,6 +387,12 @@ function mergeConfig(base: HeyyooConfig, override: unknown): HeyyooConfig {
         : base.maxContinuations,
     verifyDoneClaims: typeof o.verifyDoneClaims === "boolean" ? o.verifyDoneClaims : base.verifyDoneClaims,
     reviewReminderEdits: pickPositiveInteger(o.reviewReminderEdits ?? NaN, base.reviewReminderEdits ?? 3),
+    autoInjectContext: typeof o.autoInjectContext === "boolean" ? o.autoInjectContext : base.autoInjectContext,
+    contextInjectMaxTokens: pickPositiveInteger(o.contextInjectMaxTokens ?? NaN, base.contextInjectMaxTokens ?? 800),
+    entryRenderer: typeof o.entryRenderer === "boolean" ? o.entryRenderer : base.entryRenderer,
+    shortcuts: typeof o.shortcuts === "boolean" ? o.shortcuts : base.shortcuts,
+    planWidget: typeof o.planWidget === "boolean" ? o.planWidget : base.planWidget,
+    registerProvider: typeof o.registerProvider === "boolean" ? o.registerProvider : base.registerProvider,
     docs: mergeDocs(base.docs, o.docs),
   };
 }

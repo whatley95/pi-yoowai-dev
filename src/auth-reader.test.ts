@@ -110,7 +110,7 @@ describe("auth-reader", () => {
   });
 
   it("reads raw OAuth credential from auth.json", () => {
-    tempAgentDir = makeTempDir("pi-heyyoo-auth-");
+    tempAgentDir = makeTempDir("pi-yoowai-auth-");
     mkdirSync(tempAgentDir, { recursive: true });
     writeFileSync(
       join(tempAgentDir, "auth.json"),

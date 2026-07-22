@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { buildProjectSnapshot, formatProjectSnapshot } from "../project-snapshot.js";
 import { callSecondaryModel } from "../secondary-model.js";
@@ -16,20 +16,20 @@ import {
 } from "./shared.js";
 import { logEvent } from "../logger.js";
 import type { ProgressReporter } from "../progress.js";
-import type { YooToolResult, UsageCost, YooModelTask } from "../types.js";
+import type { WaiToolResult, UsageCost, WaiModelTask } from "../types.js";
 
-export async function executeYooPlan(
+export async function executeWaiPlan(
   cwd: string,
   task: string,
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
   sessionManager?: ExtensionContext["sessionManager"],
-  modelTask: YooModelTask = "plan",
-): Promise<YooToolResult> {
-  const config = loadHeyyooConfig(cwd);
+  modelTask: WaiModelTask = "plan",
+): Promise<WaiToolResult> {
+  const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, modelTask);
   if (!modelConfig.provider || !modelConfig.id) {
-    return { action: "plan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
+    return { action: "plan", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
   const modelProfile = {
     provider: modelConfig.provider,
@@ -67,10 +67,10 @@ export async function executeYooPlan(
   } catch (err) {
     if (signal?.aborted) throw err;
     const msg = err instanceof Error ? err.message : String(err);
-    logEvent(cwd, "error", "yoo tool plan failed", { error: msg });
+    logEvent(cwd, "error", "wai tool plan failed", { error: msg });
     return {
       action: "plan",
-      error: `Secondary model unavailable: ${msg.slice(0, 200)}. Try again or configure a different model via /yoo-model.`,
+      error: `Secondary model unavailable: ${msg.slice(0, 200)}. Try again or configure a different model via /wai-model.`,
       model: modelProfile,
     };
   }

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, loadHeyyooConfig } from "./config.js";
+import { getAgentDir, loadYoowaiConfig } from "./config.js";
 import { logEvent } from "./logger.js";
 import type { WebSearchProvider } from "./types.js";
 
@@ -61,7 +61,7 @@ function getAuthPath(): string {
 }
 
 function getCurrentProvider(cwd: string): WebSearchProvider {
-  const config = loadHeyyooConfig(cwd);
+  const config = loadYoowaiConfig(cwd);
   if (config.docs?.webSearch?.provider) return config.docs.webSearch.provider;
   return resolveBraveApiKeyFromAgentDir() || config.docs?.webSearch?.apiKey ? "brave" : "duckduckgo";
 }
@@ -100,14 +100,14 @@ function saveAuthEntry(provider: string, apiKey: string): void {
 function saveWebSearchProvider(provider: WebSearchProvider): void {
   const settingsPath = getSettingsPath();
   const settings = readJson(settingsPath);
-  if (!settings["pi-heyyoo"] || typeof settings["pi-heyyoo"] !== "object") {
-    settings["pi-heyyoo"] = {};
+  if (!settings["pi-yoowai"] || typeof settings["pi-yoowai"] !== "object") {
+    settings["pi-yoowai"] = {};
   }
-  const yooSettings = settings["pi-heyyoo"] as Record<string, unknown>;
-  if (!yooSettings.docs || typeof yooSettings.docs !== "object") {
-    yooSettings.docs = {};
+  const waiSettings = settings["pi-yoowai"] as Record<string, unknown>;
+  if (!waiSettings.docs || typeof waiSettings.docs !== "object") {
+    waiSettings.docs = {};
   }
-  const docs = yooSettings.docs as Record<string, unknown>;
+  const docs = waiSettings.docs as Record<string, unknown>;
   if (!docs.webSearch || typeof docs.webSearch !== "object") {
     docs.webSearch = {};
   }
@@ -116,15 +116,15 @@ function saveWebSearchProvider(provider: WebSearchProvider): void {
   writeJson(settingsPath, settings);
 }
 
-export async function handleYooSearchConfigCommand(
+export async function handleWaiSearchConfigCommand(
   args: string,
   ctx: ExtensionContext,
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const cwd = ctx.cwd;
-  const config = loadHeyyooConfig(cwd);
+  const config = loadYoowaiConfig(cwd);
   const parsed = parseArgs(args);
 
-  // Inline arg mode: /yoo-search-config brave <api-key>
+  // Inline arg mode: /wai-search-config brave <api-key>
   if (parsed.provider) {
     const isEnabled = config.docs?.webSearch?.enabled ?? false;
     if (!isEnabled) {
@@ -134,7 +134,7 @@ export async function handleYooSearchConfigCommand(
             type: "text",
             text:
               "Web search is currently disabled. Enable it first by setting " +
-              "pi-heyyoo.docs.webSearch.enabled = true in settings.json.",
+              "pi-yoowai.docs.webSearch.enabled = true in settings.json.",
           },
         ],
       };
@@ -174,8 +174,8 @@ export async function handleYooSearchConfigCommand(
           type: "text",
           text:
             "Web search is currently disabled. Enable it first by setting " +
-            "pi-heyyoo.docs.webSearch.enabled = true in settings.json, " +
-            "then use /yoo-search-config to pick a provider.",
+            "pi-yoowai.docs.webSearch.enabled = true in settings.json, " +
+            "then use /wai-search-config to pick a provider.",
         },
       ],
     };
@@ -200,9 +200,9 @@ export async function handleYooSearchConfigCommand(
 
     if (selectedProvider === "brave" && !braveKey) {
       ctx.ui.notify(
-        "Brave selected. Set the API key with /yoo-search-config brave <api-key>, " +
+        "Brave selected. Set the API key with /wai-search-config brave <api-key>, " +
           "add a 'brave' entry to ~/.pi/agent/auth.json, or set BRAVE_API_KEY.",
-        "warn",
+        "warning",
       );
       saveWebSearchProvider("brave");
       return {
@@ -211,7 +211,7 @@ export async function handleYooSearchConfigCommand(
             type: "text",
             text:
               "Brave Search selected, but no API key was found. " +
-              "Set it with `/yoo-search-config brave <api-key>`, add a 'brave' entry to " +
+              "Set it with `/wai-search-config brave <api-key>`, add a 'brave' entry to " +
               "~/.pi/agent/auth.json, or set the BRAVE_API_KEY environment variable. " +
               "Run /reload to apply.",
           },
@@ -231,7 +231,7 @@ export async function handleYooSearchConfigCommand(
     };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logEvent(cwd, "warn", "yoo-search-config TUI failed", { error });
+    logEvent(cwd, "warn", "wai-search-config TUI failed", { error });
     return { content: [{ type: "text", text: `Failed to configure web search: ${error}` }] };
   }
 }

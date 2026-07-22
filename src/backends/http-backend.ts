@@ -1,7 +1,7 @@
 import { resolveModelInfo } from "../model-registry.js";
 import type { ProviderApiInfo } from "../types/secondary-model.js";
 import { getPiSessionId } from "./pi-backend.js";
-import { buildUsage, applyReportedUsage, isLengthStop } from "./shared.js";
+import { buildUsage, applyReportedUsage, isLengthStop, isYoowaiDebugEnabled } from "./shared.js";
 
 interface AnthropicSseEvent {
   type: string;
@@ -129,12 +129,12 @@ function logHttpDebug(
   headers: Record<string, string>,
   body: Record<string, unknown>,
 ): void {
-  if (process.env.PI_HEYYOO_DEBUG !== "1" && process.env.PI_HEYYOO_DEBUG !== "true") return;
+  if (!isYoowaiDebugEnabled()) return;
   const redactedHeaders: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
     redactedHeaders[key] = /api[-_]?key|auth|token|session/i.test(key) ? "[REDACTED]" : value;
   }
-  console.log(`[pi-heyyoo debug] ${label}`, JSON.stringify({ provider, model, url, headers: redactedHeaders, body }));
+  console.log(`[pi-yoowai debug] ${label}`, JSON.stringify({ provider, model, url, headers: redactedHeaders, body }));
 }
 
 async function callOpenAiCompatibleApi(
@@ -512,7 +512,7 @@ function usesAdaptiveThinking(provider: string, model: string): boolean {
   return model.toLowerCase() === "claude-fable-5";
 }
 
-// Maps pi-heyyoo's canonical thinking levels to Anthropic's adaptive-thinking
+// Maps pi-yoowai's canonical thinking levels to Anthropic's adaptive-thinking
 // `output_config.effort` values. These values are provider-specific; this mapping
 // targets the current Anthropic adaptive models (Claude Fable 5 and later).
 function anthropicEffortFromThinking(level: string): "low" | "medium" | "high" | "xhigh" | "max" {

@@ -1,10 +1,10 @@
-import { executeYooPlan } from "./plan.js";
+import { executeWaiPlan } from "./plan.js";
 import { getState, setPlan, markStepsComplete } from "../session-state.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DoneResult, PlanResult } from "../types.js";
 import type { ProgressReporter } from "../progress.js";
 
-export async function executeYooPlanUpdate(
+export async function executeWaiPlanUpdate(
   cwd: string,
   description: string,
   signal: AbortSignal | undefined,
@@ -14,7 +14,7 @@ export async function executeYooPlanUpdate(
   const before = getState(cwd);
   const previousCompleted = before.completedSteps;
 
-  const planResult = await executeYooPlan(cwd, description, signal, progress, sessionManager);
+  const planResult = await executeWaiPlan(cwd, description, signal, progress, sessionManager);
   if (planResult.error || !planResult.plan) {
     return {
       completedStep: previousCompleted,

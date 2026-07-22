@@ -1,5 +1,5 @@
 import { resolveModelInfo } from "./model-registry.js";
-import type { HeyyooConfig, SecondaryModelConfig } from "./types.js";
+import type { YoowaiConfig, SecondaryModelConfig } from "./types.js";
 
 export interface ReviewBudget {
   contextWindow: number;
@@ -23,7 +23,7 @@ export function truncateToTokenBudget(text: string, maxTokens: number): string {
 export function calculateReviewBudget(
   provider: string,
   model: string,
-  config: HeyyooConfig,
+  config: YoowaiConfig,
   fixedPromptParts: {
     systemPrompt: string;
     sessionContext: string;

@@ -1,10 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { YooModelTask } from "./types.js";
+import type { WaiModelTask } from "./types.js";
 
 export type ProgressReporter = (stage: number, total: number, message: string) => void;
 
 export function createProgressReporter(
-  action: YooModelTask,
+  action: WaiModelTask,
   ctx: ExtensionContext,
   onUpdate?: (update: unknown) => void,
 ): ProgressReporter {
@@ -19,7 +19,7 @@ export function createProgressReporter(
     const elapsedText = elapsedMs > 1000 ? ` (${(elapsedMs / 1000).toFixed(1)}s)` : "";
 
     if (stage >= total) {
-      clearYooStatus(ctx);
+      clearWaiStatus(ctx);
       if (onUpdate) {
         onUpdate({
           content: [{ type: "text", text: message }],
@@ -49,16 +49,16 @@ export function createProgressReporter(
     }
 
     try {
-      ctx.ui.setStatus("yoo", `[${stage}/${total}] ${message}${elapsedText}`);
+      ctx.ui.setStatus("wai", `[${stage}/${total}] ${message}${elapsedText}`);
     } catch {
       // setStatus may not be available in all modes; ignore.
     }
   };
 }
 
-export function clearYooStatus(ctx: ExtensionContext): void {
+export function clearWaiStatus(ctx: ExtensionContext): void {
   try {
-    ctx.ui.setStatus("yoo", undefined);
+    ctx.ui.setStatus("wai", undefined);
   } catch {
     // ignore
   }

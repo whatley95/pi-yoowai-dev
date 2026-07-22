@@ -7,7 +7,7 @@ import { recordIssues, getPastIssuesForFiles, clearMemory } from "./review-memor
 import type { ReviewIssue } from "./types.js";
 
 describe("review-memory", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "yoo-test-"));
+  const cwd = mkdtempSync(join(tmpdir(), "wai-test-"));
 
   it("records and retrieves issues for files", () => {
     const issues: ReviewIssue[] = [
@@ -37,7 +37,7 @@ describe("review-memory", () => {
   });
 
   it("deduplicates identical issues", () => {
-    const dir = mkdtempSync(join(tmpdir(), "yoo-test-dedup-"));
+    const dir = mkdtempSync(join(tmpdir(), "wai-test-dedup-"));
     try {
       const issue: ReviewIssue = { severity: "medium", file: "src/a.ts", issue: "missing type", suggestion: "add it" };
       recordIssues(dir, [issue]);
@@ -51,7 +51,7 @@ describe("review-memory", () => {
   });
 
   it("ranks issues by semantic similarity when a query is provided", () => {
-    const dir = mkdtempSync(join(tmpdir(), "yoo-test-semantic-"));
+    const dir = mkdtempSync(join(tmpdir(), "wai-test-semantic-"));
     try {
       const issues: ReviewIssue[] = [
         { severity: "medium", file: "src/a.ts", issue: "variable naming unclear", suggestion: "rename" },

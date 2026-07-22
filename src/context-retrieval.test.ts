@@ -9,7 +9,7 @@ describe("context-retrieval", () => {
   let cwd: string;
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "yoo-context-"));
+    cwd = mkdtempSync(join(tmpdir(), "wai-context-"));
     mkdirSync(join(cwd, "src"), { recursive: true });
   });
 

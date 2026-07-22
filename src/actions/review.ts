@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { getDiff, splitDiffByFile, splitDiffByHunk, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js";
@@ -36,15 +36,15 @@ import {
   runReviewBatch,
   type ConcurrencyOutcome,
 } from "./review-helpers.js";
-import { executeYooJudge } from "./judge.js";
+import { executeWaiJudge } from "./judge.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { validateReviewResult, getReviewValidationErrors, salvageReviewFromMarkdown } from "../prompts.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
 import type { ProgressReporter } from "../progress.js";
-import type { YooToolResult, ReviewResult, UsageCost } from "../types.js";
+import type { WaiToolResult, ReviewResult, UsageCost } from "../types.js";
 
-export async function executeYooReview(
+export async function executeWaiReview(
   cwd: string,
   description: string,
   ctx: ExtensionContext,
@@ -58,11 +58,11 @@ export async function executeYooReview(
   } = {},
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
-): Promise<YooToolResult> {
-  const config = loadHeyyooConfig(cwd);
+): Promise<WaiToolResult> {
+  const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "review");
   if (!modelConfig.provider || !modelConfig.id) {
-    return { action: "review", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
+    return { action: "review", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
   const modelProfile = {
     provider: modelConfig.provider,
@@ -679,7 +679,7 @@ export async function executeYooReview(
         progress(STAGES.review, STAGES.review, `[judge] ${message}`);
       };
       try {
-        const judgeResult = await executeYooJudge(
+        const judgeResult = await executeWaiJudge(
           cwd,
           `All ${planProgress.total} plan steps completed.`,
           signal,
@@ -718,7 +718,7 @@ export async function executeYooReview(
     if ((updatedState.reviewRounds[updatedState.completedSteps] ?? 0) >= 3) {
       review.escalated = true;
       review.suggestions.push(
-        "This step has failed review 3 times. Consider regenerating the plan with `/yoo-plan-update` or `yoo({ planUpdate: '...' })`, breaking this step into smaller pieces, or asking the user for guidance.",
+        "This step has failed review 3 times. Consider regenerating the plan with `/wai-plan-update` or `wai({ planUpdate: '...' })`, breaking this step into smaller pieces, or asking the user for guidance.",
       );
     }
   }

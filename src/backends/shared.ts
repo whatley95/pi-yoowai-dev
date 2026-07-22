@@ -10,6 +10,11 @@ export function isLengthStop(reason: unknown): boolean {
   return r === "length" || r === "max_tokens" || r === "maxtokens";
 }
 
+export function isYoowaiDebugEnabled(): boolean {
+  const val = process.env.PI_YOOWAI_DEBUG ?? process.env.PI_HEYYOO_DEBUG;
+  return val === "1" || val === "true";
+}
+
 export function estimateCost(provider: string, model: string, inputTokens: number, outputTokens: number): number {
   // Approximate cost per 1M tokens in USD. These are rough averages.
   const key = `${provider}:${model}`.toLowerCase();

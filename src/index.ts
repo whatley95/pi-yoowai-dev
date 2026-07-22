@@ -1,9 +1,8 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { YooToolResult, YooModelTask } from "./types.js";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { WaiToolResult, WaiModelTask } from "./types.js";
 import { Type } from "@sinclair/typebox";
-import { loadHeyyooConfig, resolveTaskModel } from "./config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { setPiSessionId, clearPiSessionId } from "./secondary-model.js";
-import { getDiff } from "./diff-grabber.js";
 
 import { renderCall, renderResult } from "./render.js";
 import { resetCost } from "./cost-tracker.js";
@@ -15,40 +14,43 @@ import {
   shouldSendSteer,
   type LoopDetectionState,
 } from "./loop-detector.js";
-import { createProgressReporter, clearYooStatus } from "./progress.js";
-import { setSessionId, clearSessionId, pruneSessionDirs } from "./session-scope.js";
-import { validateYooToolParams } from "./yoo-tool-params.js";
+import { createProgressReporter, clearWaiStatus } from "./progress.js";
+import { setSessionId, clearSessionId, pruneSessionDirs, migrateLegacyState } from "./session-scope.js";
+import { validateWaiToolParams } from "./wai-tool-params.js";
 import {
   recordLearnedFact,
   findLearnedFacts,
   verifyLearnedFacts,
   verifyLearnedFactsDeep,
   formatVerificationReport,
-} from "./yoo-learn.js";
-import {
-  dropSessionState,
-  getEditTracker,
-  getState,
-  recordFileEdit,
-  resetEditsSinceDone,
-  resetEditsSinceReview,
-} from "./session-state.js";
+} from "./wai-learn.js";
+import { dropSessionState, flushSessionState, resetEditsSinceDone, resetEditsSinceReview } from "./session-state.js";
 import { secondaryModelLabel } from "./actions/shared.js";
-import { executeYooPlan } from "./actions/plan.js";
-import { executeYooReview } from "./actions/review.js";
-import { executeYooTest } from "./actions/test.js";
-import { executeYooSecurity } from "./actions/security.js";
-import { executeYooSuggest } from "./actions/suggest.js";
-import { executeYooRecommend } from "./actions/recommend.js";
-import { executeYooJudge } from "./actions/judge.js";
-import { executeYooScan } from "./actions/scan.js";
-import { executeYooDone } from "./actions/done.js";
-import { executeYooPlanUpdate } from "./actions/plan-update.js";
-import { executeYooIndex, formatIndexResult, validateYooIndexParams } from "./yoo-index.js";
-import { executeYooExplain, validateYooExplainParams } from "./yoo-explain.js";
-import { registerYooCommands } from "./commands/register.js";
+import { executeWaiPlan } from "./actions/plan.js";
+import { executeWaiReview } from "./actions/review.js";
+import { executeWaiTest } from "./actions/test.js";
+import { executeWaiSecurity } from "./actions/security.js";
+import { executeWaiSuggest } from "./actions/suggest.js";
+import { executeWaiRecommend } from "./actions/recommend.js";
+import { executeWaiJudge } from "./actions/judge.js";
+import { executeWaiScan } from "./actions/scan.js";
+import { executeWaiDone } from "./actions/done.js";
+import { executeWaiPlanUpdate } from "./actions/plan-update.js";
+import { executeWaiIndex, formatIndexResult, validateWaiIndexParams } from "./wai-index.js";
+import { executeWaiExplain, validateWaiExplainParams } from "./wai-explain.js";
+import { registerWaiCommands } from "./commands/register.js";
 import { formatResultText } from "./format.js";
-import { isFileWriteTool } from "./file-write-tools.js";
+import { registerContextInjector, setWaiToolExecuting } from "./integration/context-injector.js";
+import { registerLifecycleHandlers } from "./integration/lifecycle.js";
+import { updateWaiStatus, clearWaiStatusLines } from "./integration/status.js";
+import { setAuditExtensionAPI } from "./integration/audit.js";
+import { publishWaiResult } from "./integration/publish.js";
+import { registerWaiEntryRenderer } from "./integration/entry-renderer.js";
+import { registerWaiShortcuts } from "./integration/shortcuts.js";
+import { updateWaiPlanWidget, hideWaiPlanWidget } from "./integration/widget.js";
+import { registerWaiProvider, unregisterWaiProvider } from "./integration/provider.js";
+
+const DEPRECATION_WARNING = "**Deprecation warning:** the `yoo` tool name is deprecated. Use `wai` instead.\n\n";
 
 const loopStates = new Map<string, LoopDetectionState>();
 function getLoopState(cwd: string): LoopDetectionState {
@@ -60,8 +62,13 @@ function getLoopState(cwd: string): LoopDetectionState {
   return state;
 }
 
-export default function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI) {
+  setAuditExtensionAPI(pi);
+
   pi.on("session_start", async (_event, ctx) => {
+    // Migrate pre-rebrand runtime state before any reads/writes.
+    migrateLegacyState(ctx.cwd);
+
     // Probe sessionManager once; it may be unavailable in some Pi versions.
     let sessionId: string | undefined;
     try {
@@ -71,7 +78,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (sessionId) {
-      // Scope volatile yoo state to this Pi session so plans/memory/cost do not
+      // Scope volatile wai state to this Pi session so plans/memory/cost do not
       // leak across unrelated sessions on the same project.
       try {
         setSessionId(ctx.cwd, sessionId);
@@ -90,13 +97,22 @@ export default function (pi: ExtensionAPI) {
 
     // cost.json tracks estimated spend for the current Pi session.
     resetCost(ctx.cwd);
+    updateWaiStatus(ctx);
+    updateWaiPlanWidget(ctx);
+
+    // Phase 6: optionally register the configured secondary model as a Pi provider.
+    await registerWaiProvider(pi, ctx.cwd);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    flushSessionState(ctx.cwd);
     dropSessionState(ctx.cwd);
     loopStates.delete(ctx.cwd);
     clearPiSessionId(ctx.cwd);
     clearSessionId(ctx.cwd);
+    hideWaiPlanWidget(ctx);
+    clearWaiStatusLines(ctx);
+    unregisterWaiProvider(pi, ctx.cwd);
   });
 
   pi.on("tool_execution_start", async (event, ctx) => {
@@ -107,69 +123,170 @@ export default function (pi: ExtensionAPI) {
       if (loop && shouldSendSteer(state, loop)) {
         pi.sendUserMessage(loop.message, { deliverAs: "steer" });
       }
-
-      const e = event as Record<string, unknown> | undefined;
-      const toolName = typeof e?.toolName === "string" ? e.toolName : "";
-      if (isFileWriteTool(toolName)) {
-        recordFileEdit(ctx.cwd);
-        const config = loadHeyyooConfig(ctx.cwd);
-        const editState = getEditTracker(ctx.cwd);
-        const now = Date.now();
-        const sessionState = getState(ctx.cwd);
-        const lastSteer = sessionState.lastSteerAt ?? 0;
-        const reviewThreshold = config.reviewReminderEdits ?? 3;
-        if (
-          (editState.editsSinceLastReview >= reviewThreshold || editState.editsSinceLastDone >= 3) &&
-          now - lastSteer > 30_000
-        ) {
-          sessionState.lastSteerAt = now;
-          const reminders: string[] = [];
-          if (editState.editsSinceLastDone >= 3) {
-            reminders.push("call `yoo({ done: true })` to mark completed plan steps done");
-          }
-          if (editState.editsSinceLastReview >= reviewThreshold) {
-            const { changedFiles } = getDiff(ctx.cwd, { maxDiffChars: config.reviewMaxDiffChars });
-            const fileList = changedFiles.length > 0 ? ` in: ${changedFiles.slice(0, 5).join(", ")}` : "";
-            reminders.push(`call \`yoo({ review: '...' })\` to review the changes${fileList}`);
-          }
-          pi.sendUserMessage(
-            `WORKFLOW REMINDER: you have made ${editState.editsSinceLastDone} file edit(s) without updating the plan tracker. Please ${reminders.join(" and ")}.`,
-            { deliverAs: "steer" },
-          );
-        }
-      }
     } catch {
-      // best-effort loop detection and workflow reminders
+      // best-effort loop detection
     }
   });
 
+  async function runWaiTool(
+    params: unknown,
+    signal: AbortSignal | undefined,
+    onUpdate: ((update: unknown) => void) | undefined,
+    ctx: ExtensionContext,
+  ): Promise<import("@earendil-works/pi-coding-agent").AgentToolResult<WaiToolResult> & { isError: boolean }> {
+    const validation = validateWaiToolParams(params);
+    if (!validation.ok) {
+      return {
+        content: [{ type: "text", text: `wai: ${validation.error}` }],
+        details: { action: "scan", error: validation.error },
+        isError: true,
+      };
+    }
+    const p = validation.params;
+    const action = validation.action;
+    const config = loadYoowaiConfig(ctx.cwd);
+
+    setWaiToolExecuting(ctx.cwd, true);
+
+    const start = Date.now();
+    const progressAction = (action === "planUpdate" ? "plan" : action) as WaiModelTask;
+    const progress = createProgressReporter(progressAction, ctx, onUpdate);
+    let result: WaiToolResult;
+
+    try {
+      if (p.plan) {
+        result = await executeWaiPlan(ctx.cwd, p.plan, signal, progress, ctx.sessionManager);
+      } else if (p.review) {
+        result = await executeWaiReview(
+          ctx.cwd,
+          p.review,
+          ctx,
+          {
+            files: p.files,
+            exclude: p.exclude,
+            revision: p.revision,
+            since: p.since,
+            vcs: p.vcs,
+            untracked: p.untracked,
+          },
+          signal,
+          progress,
+        );
+      } else if (p.suggest) {
+        result = await executeWaiSuggest(ctx.cwd, p.suggest, signal, progress, ctx.sessionManager, {
+          docs: p.docs,
+        });
+      } else if (p.recommend) {
+        result = await executeWaiRecommend(ctx.cwd, p.recommend, signal, progress, ctx.sessionManager, {
+          docs: p.docs,
+        });
+      } else if (p.judge) {
+        result = await executeWaiJudge(ctx.cwd, p.judge, signal, progress, ctx.sessionManager);
+      } else if (p.test) {
+        result = await executeWaiTest(
+          ctx.cwd,
+          p.test,
+          ctx,
+          {
+            files: p.files,
+            exclude: p.exclude,
+            revision: p.revision,
+            since: p.since,
+            vcs: p.vcs,
+            untracked: p.untracked,
+          },
+          signal,
+          progress,
+        );
+      } else if (p.security) {
+        result = await executeWaiSecurity(
+          ctx.cwd,
+          p.security,
+          ctx,
+          {
+            files: p.files,
+            exclude: p.exclude,
+            revision: p.revision,
+            since: p.since,
+            vcs: p.vcs,
+            untracked: p.untracked,
+          },
+          signal,
+          progress,
+        );
+      } else if (p.done !== undefined) {
+        result = { action: "done", done: await executeWaiDone(ctx.cwd, p.done as string | number, signal) };
+      } else if (p.planUpdate !== undefined) {
+        result = {
+          action: "planUpdate",
+          done: await executeWaiPlanUpdate(ctx.cwd, p.planUpdate as string, signal, progress, ctx.sessionManager),
+        };
+      } else {
+        result = await executeWaiScan(ctx.cwd, signal, progress, ctx.sessionManager);
+      }
+
+      if (p.review) resetEditsSinceReview(ctx.cwd);
+      // Only clear the done-edit counter when the step actually advanced. A
+      // failed verification returns early without advancing, so clearing here
+      // would let the next retry bypass the verification gate entirely.
+      if (p.done !== undefined && !(result.done && result.done.verified === false)) {
+        resetEditsSinceDone(ctx.cwd);
+      }
+    } catch (err) {
+      logEvent(ctx.cwd, "error", `wai tool ${action} failed`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      result = { action, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      setWaiToolExecuting(ctx.cwd, false);
+      clearWaiStatus(ctx);
+    }
+
+    publishWaiResult(ctx, result);
+
+    result.elapsedMs = Date.now() - start;
+
+    const shouldVerify = p.verify ?? config.verifyByDefault ?? false;
+    if (shouldVerify && !result.error) {
+      result.verificationRequested = true;
+    }
+
+    const text = formatResultText(result);
+
+    return {
+      content: [{ type: "text", text }],
+      details: result,
+      isError: Boolean(result.error),
+    };
+  }
+
   pi.registerTool({
-    name: "yoo",
-    label: "Yoo — Pair Programmer",
+    name: "wai",
+    label: "Wai — Pair Programmer",
     description:
-      "Mandatory second-opinion workflow powered by a secondary model. Always use yoo.plan before implementing, yoo.review after every change, yoo.scan when opening a new project, yoo.suggest for non-trivial architectural or design questions, yoo.recommend when deciding next steps, and yoo.judge before declaring work complete. Optionally use yoo.test to check test coverage and failures, and yoo.security to audit for vulnerabilities.",
+      "Mandatory second-opinion workflow powered by a secondary model. Always use wai.plan before implementing, wai.review after every change, wai.scan when opening a new project, wai.suggest for non-trivial architectural or design questions, wai.recommend when deciding next steps, and wai.judge before declaring work complete. Optionally use wai.test to check test coverage and failures, and wai.security to audit for vulnerabilities.",
     promptSnippet:
-      "yoo: always get a second opinion from the secondary model before acting on code or making architectural decisions",
+      "wai: always get a second opinion from the secondary model before acting on code or making architectural decisions",
     promptGuidelines: [
-      "Always use yoo with plan:true before starting any non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria; do not write code without a plan.",
-      "Always use yoo with review:true after every code change. Treat review feedback as blocking; fix issues and re-run review until it returns 'pass'.",
-      "Use yoo with review:true and files:[...] to limit the review to specific files, or exclude:[...] to skip files like generated output.",
-      "Use yoo with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans.",
-      "Use yoo with suggest:true whenever you are uncertain about the best approach for a specific technical question. If you are stuck, looping, or about to ask the user for help, call yoo.suggest first.",
-      "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call yoo.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without yoo.",
-      "Use yoo with recommend:true whenever you need to decide what step to take next. If you have spent more than one turn without clear progress, call yoo.recommend.",
-      "Use yoo with test:true when you want a dedicated check for missing tests, failing tests, or low test quality. This is optional; yoo.review already catches many quality issues.",
-      "Use yoo with security:true when the change involves auth, input handling, secrets, dependencies, or any security-sensitive area. Pass a description of the function or API to audit and scope it with files:[...] if needed.",
-      "Use yoo with judge:true after completing all work for a final holistic review against the original plan.",
-      "Use yoo with done:true to mark the current plan step complete. Use it after finishing a step so the tracker stays in sync.",
-      "Use yoo with planUpdate:'<new task description>' when the original plan no longer matches the implementation. The plan is regenerated and already-completed progress is preserved.",
-      "Enable autoJudge in settings.json to automatically run judge when the last plan step is completed (passes review or is marked done via /yoo-done).",
+      "Always use wai with plan:true before starting any non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria; do not write code without a plan.",
+      "Always use wai with review:true after every code change. Treat review feedback as blocking; fix issues and re-run review until it returns 'pass'.",
+      "Use wai with review:true and files:[...] to limit the review to specific files, or exclude:[...] to skip files like generated output.",
+      "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans.",
+      "Use wai with suggest:true whenever you are uncertain about the best approach for a specific technical question. If you are stuck, looping, or about to ask the user for help, call wai.suggest first.",
+      "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call wai.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without wai.",
+      "Use wai with recommend:true whenever you need to decide what step to take next. If you have spent more than one turn without clear progress, call wai.recommend.",
+      "Use wai with test:true when you want a dedicated check for missing tests, failing tests, or low test quality. This is optional; wai.review already catches many quality issues.",
+      "Use wai with security:true when the change involves auth, input handling, secrets, dependencies, or any security-sensitive area. Pass a description of the function or API to audit and scope it with files:[...] if needed.",
+      "Use wai with judge:true after completing all work for a final holistic review against the original plan.",
+      "Use wai with done:true to mark the current plan step complete. Use it after finishing a step so the tracker stays in sync.",
+      "Use wai with planUpdate:'<new task description>' when the original plan no longer matches the implementation. The plan is regenerated and already-completed progress is preserved.",
+      "Enable autoJudge in settings.json to automatically run judge when the last plan step is completed (passes review or is marked done via /wai-done).",
 
       "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
-      "Use `verify: true` when a yoo finding is surprising, high-stakes, or unclear. The main agent must then confirm or refute the finding with evidence before acting.",
-      "The secondary model should be a DIFFERENT model family than the main model to catch blind spots. Configure in settings.json under pi-heyyoo.secondary.",
+      "Use `verify: true` when a wai finding is surprising, high-stakes, or unclear. The main agent must then confirm or refute the finding with evidence before acting.",
+      "The secondary model should be a DIFFERENT model family than the main model to catch blind spots. Configure in settings.json under pi-yoowai.secondary.",
       "Only one action (plan/review/suggest/recommend/judge/scan/test/security/done/planUpdate) per call. Do not combine them.",
-      "When stuck, confused, or looping, stop and use a yoo tool. Do not spin in place or guess.",
+      "When stuck, confused, or looping, stop and use a wai tool. Do not spin in place or guess.",
     ],
     parameters: Type.Object({
       plan: Type.Optional(
@@ -220,13 +337,13 @@ export default function (pi: ExtensionAPI) {
       done: Type.Optional(
         Type.Union([Type.Boolean(), Type.String(), Type.Number()], {
           description:
-            "Mark yoo plan step(s) complete. Pass true/empty string for the current step, a positive number to mark up to that step, 'all' for all steps, or a description to record what was completed.",
+            "Mark wai plan step(s) complete. Pass true/empty string for the current step, a positive number to mark up to that step, 'all' for all steps, or a description to record what was completed.",
         }),
       ),
       planUpdate: Type.Optional(
         Type.Union([Type.Boolean(), Type.String()], {
           description:
-            "Regenerate the active yoo plan from a new task description when the original plan no longer matches the implementation. Already-completed progress is preserved.",
+            "Regenerate the active wai plan from a new task description when the original plan no longer matches the implementation. Already-completed progress is preserved.",
         }),
       ),
       files: Type.Optional(
@@ -261,7 +378,7 @@ export default function (pi: ExtensionAPI) {
       ),
       docs: Type.Optional(
         Type.Array(Type.String(), {
-          description: "Named documentation sources to include in the prompt (configured in pi-heyyoo.docs.sources).",
+          description: "Named documentation sources to include in the prompt (configured in pi-yoowai.docs.sources).",
         }),
       ),
       verify: Type.Optional(
@@ -275,144 +392,93 @@ export default function (pi: ExtensionAPI) {
     renderResult,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const validation = validateYooToolParams(params);
-      if (!validation.ok) {
-        return {
-          content: [{ type: "text", text: `yoo: ${validation.error}` }],
-          isError: true,
-        };
-      }
-      const p = validation.params;
-      const action = validation.action;
-      const config = loadHeyyooConfig(ctx.cwd);
-
-      const start = Date.now();
-      const progressAction = (action === "planUpdate" ? "plan" : action) as YooModelTask;
-      const progress = createProgressReporter(progressAction, ctx, onUpdate);
-      let result: YooToolResult;
-
-      try {
-        if (p.plan) {
-          result = await executeYooPlan(ctx.cwd, p.plan, signal, progress, ctx.sessionManager);
-        } else if (p.review) {
-          result = await executeYooReview(
-            ctx.cwd,
-            p.review,
-            ctx,
-            {
-              files: p.files,
-              exclude: p.exclude,
-              revision: p.revision,
-              since: p.since,
-              vcs: p.vcs,
-              untracked: p.untracked,
-            },
-            signal,
-            progress,
-          );
-        } else if (p.suggest) {
-          result = await executeYooSuggest(ctx.cwd, p.suggest, signal, progress, ctx.sessionManager, {
-            docs: p.docs,
-          });
-        } else if (p.recommend) {
-          result = await executeYooRecommend(ctx.cwd, p.recommend, signal, progress, ctx.sessionManager, {
-            docs: p.docs,
-          });
-        } else if (p.judge) {
-          result = await executeYooJudge(ctx.cwd, p.judge, signal, progress, ctx.sessionManager);
-        } else if (p.test) {
-          result = await executeYooTest(
-            ctx.cwd,
-            p.test,
-            ctx,
-            {
-              files: p.files,
-              exclude: p.exclude,
-              revision: p.revision,
-              since: p.since,
-              vcs: p.vcs,
-              untracked: p.untracked,
-            },
-            signal,
-            progress,
-          );
-        } else if (p.security) {
-          result = await executeYooSecurity(
-            ctx.cwd,
-            p.security,
-            ctx,
-            {
-              files: p.files,
-              exclude: p.exclude,
-              revision: p.revision,
-              since: p.since,
-              vcs: p.vcs,
-              untracked: p.untracked,
-            },
-            signal,
-            progress,
-          );
-        } else if (p.done !== undefined) {
-          result = { action: "done", done: await executeYooDone(ctx.cwd, p.done, signal) };
-        } else if (p.planUpdate !== undefined) {
-          result = {
-            action: "planUpdate",
-            done: await executeYooPlanUpdate(ctx.cwd, p.planUpdate, signal, progress, ctx.sessionManager),
-          };
-        } else {
-          result = await executeYooScan(ctx.cwd, signal, progress, ctx.sessionManager);
-        }
-
-        if (p.review) resetEditsSinceReview(ctx.cwd);
-        // Only clear the done-edit counter when the step actually advanced. A
-        // failed verification returns early without advancing, so clearing here
-        // would let the next retry bypass the verification gate entirely.
-        if (p.done !== undefined && !(result.done && result.done.verified === false)) {
-          resetEditsSinceDone(ctx.cwd);
-        }
-      } catch (err) {
-        logEvent(ctx.cwd, "error", `yoo tool ${action} failed`, {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        result = { action, error: err instanceof Error ? err.message : String(err) };
-      } finally {
-        clearYooStatus(ctx);
-      }
-
-      result.elapsedMs = Date.now() - start;
-
-      const shouldVerify = p.verify ?? config.verifyByDefault ?? false;
-      if (shouldVerify && !result.error) {
-        result.verificationRequested = true;
-      }
-
-      const text = formatResultText(result);
-
-      return {
-        content: [{ type: "text", text }],
-        details: result,
-        isError: Boolean(result.error),
-      };
+      return runWaiTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
     },
   });
 
   pi.registerTool({
-    name: "yoo_index",
-    label: "Yoo Index — Project Context",
+    name: "yoo",
+    label: "Yoo — Pair Programmer (deprecated alias for wai)",
     description:
-      "Read stored yoo project context: conventions, active plan, review memory, session cost, and recent logs. No model call — fast and deterministic. Use this before making changes to understand the project's rules, current task, and past issues.",
-    promptSnippet: "yoo_index: retrieve stored project context before acting on code",
+      "Deprecated alias for the wai tool. Use wai for the same second-opinion workflow. This alias will be removed in a future release.",
+    promptSnippet:
+      "yoo: always get a second opinion from the secondary model before acting on code or making architectural decisions",
+    promptGuidelines: ["Deprecated: use wai instead of yoo. This alias will be removed in a future release."],
+    parameters: Type.Object({
+      plan: Type.Optional(Type.String()),
+      review: Type.Optional(Type.String()),
+      suggest: Type.Optional(Type.String()),
+      recommend: Type.Optional(Type.String()),
+      judge: Type.Optional(Type.String()),
+      scan: Type.Optional(Type.Boolean()),
+      test: Type.Optional(Type.String()),
+      security: Type.Optional(Type.String()),
+      done: Type.Optional(Type.Union([Type.Boolean(), Type.String(), Type.Number()])),
+      planUpdate: Type.Optional(Type.Union([Type.Boolean(), Type.String()])),
+      files: Type.Optional(Type.Array(Type.String())),
+      exclude: Type.Optional(Type.Array(Type.String())),
+      revision: Type.Optional(Type.String()),
+      since: Type.Optional(Type.String()),
+      vcs: Type.Optional(Type.Union([Type.Literal("git"), Type.Literal("svn")])),
+      untracked: Type.Optional(Type.Boolean()),
+      docs: Type.Optional(Type.Array(Type.String())),
+      verify: Type.Optional(Type.Boolean()),
+    }),
+    renderCall,
+    renderResult,
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const inner = await runWaiTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
+      const deprecationText = `${DEPRECATION_WARNING}${inner.content[0]?.type === "text" ? inner.content[0].text : ""}`;
+      return {
+        ...inner,
+        content: [{ type: "text", text: deprecationText }],
+      };
+    },
+  });
+
+  async function runWaiIndexTool(
+    params: unknown,
+    ctx: ExtensionContext,
+  ): Promise<
+    import("@earendil-works/pi-coding-agent").AgentToolResult<Record<string, unknown>> & { isError: boolean }
+  > {
+    try {
+      const indexParams = validateWaiIndexParams(params);
+      const result = executeWaiIndex(ctx.cwd, indexParams);
+      const text = formatIndexResult(result);
+      return {
+        content: [{ type: "text", text }],
+        details: result as unknown as Record<string, unknown>,
+        isError: false,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logEvent(ctx.cwd, "error", "wai_index failed", { error: message });
+      return {
+        content: [{ type: "text", text: `wai_index failed: ${message}` }],
+        details: { error: message },
+        isError: true,
+      };
+    }
+  }
+
+  pi.registerTool({
+    name: "wai_index",
+    label: "Wai Index — Project Context",
+    description:
+      "Read stored wai project context: conventions, active plan, review memory, session cost, and recent logs. No model call — fast and deterministic. Use this before making changes to understand the project's rules, current task, and past issues.",
+    promptSnippet: "wai_index: retrieve stored project context before acting on code",
     promptGuidelines: [
-      "Call yoo_index when you need a quick overview of the project conventions, active plan, or recent review issues.",
+      "Call wai_index when you need a quick overview of the project conventions, active plan, or recent review issues.",
       "Use topic 'conventions' to learn the project's stack, naming, structure, and patterns.",
       "Use topic 'plan' to see the current todo list and progress.",
       "Use topic 'memory' with files:[...] to see past review issues for specific files.",
       "Use topic 'cost' to check estimated spend in the current session.",
-      "Use topic 'logs' to see recent yoo errors or warnings.",
-      "Use topic 'index' to see the project symbol index built by yoo scan-deep or yoo_index update.",
-      "Use topic 'learned' to see facts recorded with yoo_learn.",
+      "Use topic 'logs' to see recent wai errors or warnings.",
+      "Use topic 'index' to see the project symbol index built by wai scan-deep or wai_index update.",
+      "Use topic 'learned' to see facts recorded with wai_learn.",
       "Set update:true to rebuild the symbol index on demand.",
-      "yoo_index does not call a model; it only reads data yoo already stored.",
+      "wai_index does not call a model; it only reads data wai already stored.",
     ],
     parameters: Type.Object({
       topic: Type.Optional(
@@ -449,37 +515,88 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      try {
-        const indexParams = validateYooIndexParams(params);
-        const result = executeYooIndex(ctx.cwd, indexParams);
-        const text = formatIndexResult(result);
-        return {
-          content: [{ type: "text", text }],
-          details: result,
-          isError: false,
-        };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        logEvent(ctx.cwd, "error", "yoo_index failed", { error: message });
-        return {
-          content: [{ type: "text", text: `yoo_index failed: ${message}` }],
-          isError: true,
-        };
-      }
+      return runWaiIndexTool(params, ctx);
     },
   });
 
   pi.registerTool({
-    name: "yoo_explain",
-    label: "Yoo Explain — Code & Error Explanations",
+    name: "yoo_index",
+    label: "Yoo Index — Project Context (deprecated alias for wai_index)",
+    description:
+      "Deprecated alias for wai_index. Retrieves stored project context. Use wai_index instead; this alias will be removed in a future release.",
+    promptSnippet: "yoo_index: deprecated alias for wai_index",
+    promptGuidelines: ["Deprecated: use wai_index instead of yoo_index."],
+    parameters: Type.Object({
+      topic: Type.Optional(
+        Type.Union([
+          Type.Literal("all"),
+          Type.Literal("plan"),
+          Type.Literal("memory"),
+          Type.Literal("conventions"),
+          Type.Literal("cost"),
+          Type.Literal("logs"),
+          Type.Literal("index"),
+          Type.Literal("learned"),
+        ]),
+      ),
+      files: Type.Optional(Type.Array(Type.String())),
+      query: Type.Optional(Type.String()),
+      update: Type.Optional(Type.Boolean()),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const inner = await runWaiIndexTool(params, ctx);
+      const deprecationText = `${DEPRECATION_WARNING}${inner.content[0]?.type === "text" ? inner.content[0].text : ""}`;
+      return {
+        ...inner,
+        content: [{ type: "text", text: deprecationText }],
+      };
+    },
+  });
+
+  async function runWaiExplainTool(
+    params: unknown,
+    signal: AbortSignal | undefined,
+    ctx: ExtensionContext,
+  ): Promise<
+    import("@earendil-works/pi-coding-agent").AgentToolResult<Record<string, unknown>> & { isError: boolean }
+  > {
+    const validation = validateWaiExplainParams(params);
+    if (!validation.ok) {
+      return {
+        content: [{ type: "text", text: `wai_explain: ${validation.error}` }],
+        details: { error: validation.error },
+        isError: true,
+      };
+    }
+
+    const progress = createProgressReporter("explain", ctx);
+    const result = await executeWaiExplain(ctx.cwd, validation.params, signal, progress, ctx.sessionManager);
+    if ("error" in result) {
+      return {
+        content: [{ type: "text", text: `wai_explain error: ${result.error}` }],
+        details: { error: result.error },
+        isError: true,
+      };
+    }
+
+    return {
+      content: [{ type: "text", text: result.result.details }],
+      details: { action: "explain", explain: result.result, cost: result.cost },
+      isError: false,
+    };
+  }
+
+  pi.registerTool({
+    name: "wai_explain",
+    label: "Wai Explain — Code & Error Explanations",
     description:
       "Explain a code snippet, error message, diff, or file using the secondary model. Useful when the main agent encounters an unfamiliar API, a cryptic error, or wants a second pair of eyes on a piece of code.",
-    promptSnippet: "yoo_explain: explain this code or error before acting on it",
+    promptSnippet: "wai_explain: explain this code or error before acting on it",
     promptGuidelines: [
-      "Call yoo_explain when you see an error you do not fully understand.",
-      "Use yoo_explain to get a concise explanation of a code snippet, function, or file.",
+      "Call wai_explain when you see an error you do not fully understand.",
+      "Use wai_explain to get a concise explanation of a code snippet, function, or file.",
       "Pass files:[...] so the model can see full context around the target.",
-      "Use context to add extra background (e.g. 'this is thrown during yoo scan').",
+      "Use context to add extra background (e.g. 'this is thrown during wai scan').",
     ],
     parameters: Type.Object({
       target: Type.String({
@@ -497,47 +614,126 @@ export default function (pi: ExtensionAPI) {
       ),
       docs: Type.Optional(
         Type.Array(Type.String(), {
-          description: "Named documentation sources to include in the prompt (configured in pi-heyyoo.docs.sources).",
+          description: "Named documentation sources to include in the prompt (configured in pi-yoowai.docs.sources).",
         }),
       ),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const validation = validateYooExplainParams(params);
-      if (!validation.ok) {
-        return {
-          content: [{ type: "text", text: `yoo_explain: ${validation.error}` }],
-          isError: true,
-        };
-      }
-
-      const progress = createProgressReporter("explain", ctx);
-      const result = await executeYooExplain(ctx.cwd, validation.params, signal, progress, ctx.sessionManager);
-      if ("error" in result) {
-        return {
-          content: [{ type: "text", text: `yoo_explain error: ${result.error}` }],
-          isError: true,
-        };
-      }
-
-      return {
-        content: [{ type: "text", text: result.result.details }],
-        details: { action: "explain", explain: result.result, cost: result.cost },
-        isError: false,
-      };
+      return runWaiExplainTool(params, signal, ctx);
     },
   });
 
   pi.registerTool({
-    name: "yoo_learn",
-    label: "Yoo Learn — Project Facts",
+    name: "yoo_explain",
+    label: "Yoo Explain — Code & Error Explanations (deprecated alias for wai_explain)",
     description:
-      "Record a persistent project fact that yoo will remember across sessions. Facts are surfaced by yoo_index so the main agent can ground future work in project-specific knowledge.",
-    promptSnippet: "yoo_learn: remember this project fact for future sessions",
+      "Deprecated alias for wai_explain. Use wai_explain instead; this alias will be removed in a future release.",
+    promptSnippet: "yoo_explain: deprecated alias for wai_explain",
+    promptGuidelines: ["Deprecated: use wai_explain instead of yoo_explain."],
+    parameters: Type.Object({
+      target: Type.Optional(Type.String()),
+      context: Type.Optional(Type.String()),
+      files: Type.Optional(Type.Array(Type.String())),
+      docs: Type.Optional(Type.Array(Type.String())),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const inner = await runWaiExplainTool(params, signal, ctx);
+      const deprecationText = `${DEPRECATION_WARNING}${inner.content[0]?.type === "text" ? inner.content[0].text : ""}`;
+      return {
+        ...inner,
+        content: [{ type: "text", text: deprecationText }],
+      };
+    },
+  });
+
+  async function runWaiLearnTool(
+    params: unknown,
+    signal: AbortSignal | undefined,
+    ctx: ExtensionContext,
+  ): Promise<
+    import("@earendil-works/pi-coding-agent").AgentToolResult<Record<string, unknown>> & { isError: boolean }
+  > {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+      return {
+        content: [{ type: "text", text: "wai_learn: Invalid parameters." }],
+        details: { error: "Invalid parameters." },
+        isError: true,
+      };
+    }
+    const r = params as Record<string, unknown>;
+    const query = typeof r.query === "string" ? r.query : undefined;
+
+    if (r.verify === true && r.deep === true) {
+      const progress = createProgressReporter("explain", ctx);
+      const learnConfig = loadYoowaiConfig(ctx.cwd);
+      const learnModelConfig = resolveTaskModel(learnConfig, "explain");
+      const learnModelLabel = secondaryModelLabel(learnModelConfig);
+      const { results, cost } = await verifyLearnedFactsDeep(
+        ctx.cwd,
+        query,
+        signal,
+        (current, total) => progress(current, total, `Verifying fact ${current}/${total} with ${learnModelLabel}…`),
+        ctx.sessionManager,
+      );
+      const text = formatVerificationReport(results);
+      return {
+        content: [{ type: "text", text }],
+        details: { action: "learn", verify: results, cost },
+        isError: false,
+      };
+    }
+
+    if (r.verify === true) {
+      const results = verifyLearnedFacts(ctx.cwd, query);
+      const text = formatVerificationReport(results);
+      return {
+        content: [{ type: "text", text }],
+        details: { action: "learn", verify: results },
+        isError: false,
+      };
+    }
+
+    if (typeof r.fact !== "string" || r.fact.length === 0) {
+      return {
+        content: [{ type: "text", text: "wai_learn: Missing or empty 'fact' parameter." }],
+        details: { error: "Missing or empty 'fact' parameter." },
+        isError: true,
+      };
+    }
+    const category = typeof r.category === "string" ? r.category : undefined;
+    const source = typeof r.source === "string" ? r.source : undefined;
+    recordLearnedFact(ctx.cwd, r.fact, { category, source });
+    const related = findLearnedFacts(ctx.cwd, r.fact).slice(0, 10);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Recorded fact.${
+            related.length > 1
+              ? ` Related facts (${related.length - 1}):\n${related
+                  .slice(1)
+                  .map((f) => `- ${f.fact}`)
+                  .join("\n")}`
+              : ""
+          }`,
+        },
+      ],
+      details: { action: "learn", learned: related },
+      isError: false,
+    };
+  }
+
+  pi.registerTool({
+    name: "wai_learn",
+    label: "Wai Learn — Project Facts",
+    description:
+      "Record a persistent project fact that wai will remember across sessions. Facts are surfaced by wai_index so the main agent can ground future work in project-specific knowledge.",
+    promptSnippet: "wai_learn: remember this project fact for future sessions",
     promptGuidelines: [
-      "Call yoo_learn to record project-specific facts, decisions, or quirks the main agent should remember.",
+      "Call wai_learn to record project-specific facts, decisions, or quirks the main agent should remember.",
       "Use a category to group related facts (e.g. 'auth', 'build', 'conventions').",
       "Keep facts concise and actionable.",
-      "Recorded facts appear in yoo_index topic 'learned'.",
+      "Recorded facts appear in wai_index topic 'learned'.",
       "Use verify:true to check stored facts against the current codebase instead of recording.",
       "Add deep:true to verify with the secondary model for higher accuracy (costs tokens per fact).",
     ],
@@ -574,74 +770,38 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      if (!params || typeof params !== "object" || Array.isArray(params)) {
-        return {
-          content: [{ type: "text", text: "yoo_learn: Invalid parameters." }],
-          isError: true,
-        };
-      }
-      const r = params as Record<string, unknown>;
-      const query = typeof r.query === "string" ? r.query : undefined;
+      return runWaiLearnTool(params, signal, ctx);
+    },
+  });
 
-      if (r.verify === true && r.deep === true) {
-        const progress = createProgressReporter("explain", ctx);
-        const learnConfig = loadHeyyooConfig(ctx.cwd);
-        const learnModelConfig = resolveTaskModel(learnConfig, "explain");
-        const learnModelLabel = secondaryModelLabel(learnModelConfig);
-        const { results, cost } = await verifyLearnedFactsDeep(
-          ctx.cwd,
-          query,
-          signal,
-          (current, total) => progress(current, total, `Verifying fact ${current}/${total} with ${learnModelLabel}…`),
-          ctx.sessionManager,
-        );
-        const text = formatVerificationReport(results);
-        return {
-          content: [{ type: "text", text }],
-          details: { action: "learn", verify: results, cost },
-          isError: false,
-        };
-      }
-
-      if (r.verify === true) {
-        const results = verifyLearnedFacts(ctx.cwd, query);
-        const text = formatVerificationReport(results);
-        return {
-          content: [{ type: "text", text }],
-          details: { action: "learn", verify: results },
-          isError: false,
-        };
-      }
-
-      if (typeof r.fact !== "string" || r.fact.length === 0) {
-        return {
-          content: [{ type: "text", text: "yoo_learn: Missing or empty 'fact' parameter." }],
-          isError: true,
-        };
-      }
-      const category = typeof r.category === "string" ? r.category : undefined;
-      const source = typeof r.source === "string" ? r.source : undefined;
-      recordLearnedFact(ctx.cwd, r.fact, { category, source });
-      const related = findLearnedFacts(ctx.cwd, r.fact).slice(0, 10);
+  pi.registerTool({
+    name: "yoo_learn",
+    label: "Yoo Learn — Project Facts (deprecated alias for wai_learn)",
+    description:
+      "Deprecated alias for wai_learn. Use wai_learn instead; this alias will be removed in a future release.",
+    promptSnippet: "yoo_learn: deprecated alias for wai_learn",
+    promptGuidelines: ["Deprecated: use wai_learn instead of yoo_learn."],
+    parameters: Type.Object({
+      fact: Type.Optional(Type.String()),
+      category: Type.Optional(Type.String()),
+      source: Type.Optional(Type.String()),
+      verify: Type.Optional(Type.Boolean()),
+      query: Type.Optional(Type.String()),
+      deep: Type.Optional(Type.Boolean()),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const inner = await runWaiLearnTool(params, signal, ctx);
+      const deprecationText = `${DEPRECATION_WARNING}${inner.content[0]?.type === "text" ? inner.content[0].text : ""}`;
       return {
-        content: [
-          {
-            type: "text",
-            text: `Recorded fact.${
-              related.length > 1
-                ? ` Related facts (${related.length - 1}):\n${related
-                    .slice(1)
-                    .map((f) => `- ${f.fact}`)
-                    .join("\n")}`
-                : ""
-            }`,
-          },
-        ],
-        details: { action: "learn", learned: related },
-        isError: false,
+        ...inner,
+        content: [{ type: "text", text: deprecationText }],
       };
     },
   });
 
-  registerYooCommands(pi, loopStates);
+  registerWaiCommands(pi, loopStates);
+  registerContextInjector(pi);
+  registerLifecycleHandlers(pi, loopStates);
+  await registerWaiEntryRenderer(pi);
+  registerWaiShortcuts(pi);
 }

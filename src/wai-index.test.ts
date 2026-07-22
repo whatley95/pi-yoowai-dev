@@ -8,15 +8,15 @@ import { recordCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { saveState } from "./plan-store.js";
 import { recordIssues } from "./review-memory.js";
-import { executeYooIndex, formatIndexResult, validateYooIndexParams } from "./yoo-index.js";
-import { recordLearnedFact } from "./yoo-learn.js";
-import type { Conventions, HeyyooSessionState, ReviewIssue, UsageCost } from "./types.js";
+import { executeWaiIndex, formatIndexResult, validateWaiIndexParams } from "./wai-index.js";
+import { recordLearnedFact } from "./wai-learn.js";
+import type { Conventions, YoowaiSessionState, ReviewIssue, UsageCost } from "./types.js";
 
-describe("yoo-index", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "yoo-index-test-"));
+describe("wai-index", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "wai-index-test-"));
 
   beforeEach(() => {
-    const sessionsRoot = join(cwd, ".pi", "heyyoo", "sessions");
+    const sessionsRoot = join(cwd, ".pi", "yoowai", "sessions");
     if (existsSync(sessionsRoot)) {
       rmSync(sessionsRoot, { recursive: true, force: true });
     }
@@ -34,7 +34,7 @@ describe("yoo-index", () => {
     };
     saveConventions(cwd, conventions);
 
-    const state: HeyyooSessionState = {
+    const state: YoowaiSessionState = {
       completedSteps: 1,
       totalSteps: 3,
       reviewRounds: [],
@@ -64,7 +64,7 @@ describe("yoo-index", () => {
 
     logEvent(cwd, "info", "test event");
 
-    const result = executeYooIndex(cwd, { topic: "all" });
+    const result = executeWaiIndex(cwd, { topic: "all" });
 
     assert.equal(result.topic, "all");
     assert.ok(result.conventions, "should include conventions");
@@ -90,7 +90,7 @@ describe("yoo-index", () => {
     };
     saveConventions(cwd, conventions);
 
-    const result = executeYooIndex(cwd, { topic: "conventions" });
+    const result = executeWaiIndex(cwd, { topic: "conventions" });
     assert.equal(result.topic, "conventions");
     assert.ok(result.conventions);
     assert.equal(result.plan, undefined);
@@ -104,28 +104,28 @@ describe("yoo-index", () => {
     ];
     recordIssues(cwd, issues);
 
-    const result = executeYooIndex(cwd, { topic: "memory", query: "alpha" });
+    const result = executeWaiIndex(cwd, { topic: "memory", query: "alpha" });
     assert.ok(result.memory, "should include memory");
     assert.match(result.memory!, /alpha/);
     assert.ok(!result.memory!.includes("beta"), "should filter out non-matching issues");
   });
 
   it("validates raw params", () => {
-    const params = validateYooIndexParams({ topic: "plan", files: ["src/a.ts"], query: "foo" });
+    const params = validateWaiIndexParams({ topic: "plan", files: ["src/a.ts"], query: "foo" });
     assert.equal(params.topic, "plan");
     assert.deepEqual(params.files, ["src/a.ts"]);
     assert.equal(params.query, "foo");
   });
 
   it("ignores invalid topic in validator", () => {
-    const params = validateYooIndexParams({ topic: "nonsense" });
+    const params = validateWaiIndexParams({ topic: "nonsense" });
     assert.equal(params.topic, undefined);
   });
 
   it("formats index result as markdown", () => {
-    const result = executeYooIndex(cwd, { topic: "cost" });
+    const result = executeWaiIndex(cwd, { topic: "cost" });
     const text = formatIndexResult(result);
-    assert.match(text, /# yoo index/);
+    assert.match(text, /# wai index/);
     assert.match(text, /## Session cost/);
   });
 
@@ -133,7 +133,7 @@ describe("yoo-index", () => {
     mkdirSync(join(cwd, "src"), { recursive: true });
     writeFileSync(join(cwd, "src", "demo.ts"), "export const demo = 1;", "utf-8");
 
-    const result = executeYooIndex(cwd, { topic: "index", update: true });
+    const result = executeWaiIndex(cwd, { topic: "index", update: true });
     assert.ok(result.index, "should return built index");
     assert.ok(result.indexSummary, "should include index summary");
     assert.match(result.indexSummary!, /demo/);
@@ -146,7 +146,7 @@ describe("yoo-index", () => {
   it("returns learned facts", () => {
     recordLearnedFact(cwd, "Use camelCase for functions.", { category: "conventions" });
 
-    const result = executeYooIndex(cwd, { topic: "learned" });
+    const result = executeWaiIndex(cwd, { topic: "learned" });
     assert.ok(result.learned, "should include learned facts");
     assert.equal(result.learned?.length, 1);
     assert.match(result.learnedSummary!, /camelCase/);

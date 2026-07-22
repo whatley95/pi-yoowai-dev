@@ -11,12 +11,12 @@ import {
 } from "./project-index.js";
 import { loadState } from "./plan-store.js";
 import { getMemorySummary, getPastIssuesForFiles } from "./review-memory.js";
-import { findLearnedFacts, formatLearnedFacts, type LearnedFact } from "./yoo-learn.js";
-import type { Conventions, HeyyooSessionState, PlanTodoItem } from "./types.js";
+import { findLearnedFacts, formatLearnedFacts, type LearnedFact } from "./wai-learn.js";
+import type { Conventions, YoowaiSessionState, PlanTodoItem } from "./types.js";
 
 export type IndexTopic = "all" | "plan" | "memory" | "conventions" | "cost" | "logs" | "index" | "learned";
 
-export interface YooIndexParams {
+export interface WaiIndexParams {
   topic?: IndexTopic;
   files?: string[];
   query?: string;
@@ -25,8 +25,8 @@ export interface YooIndexParams {
 
 const VALID_TOPICS: IndexTopic[] = ["all", "plan", "memory", "conventions", "cost", "logs", "index", "learned"];
 
-export function validateYooIndexParams(raw: unknown): YooIndexParams {
-  const params: YooIndexParams = {};
+export function validateWaiIndexParams(raw: unknown): WaiIndexParams {
+  const params: WaiIndexParams = {};
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const r = raw as Record<string, unknown>;
     if (typeof r.topic === "string" && (VALID_TOPICS as string[]).includes(r.topic)) {
@@ -78,7 +78,7 @@ function normalizeTopic(topic: unknown): IndexTopic {
   return "all";
 }
 
-function pickPlan(state: HeyyooSessionState | null) {
+function pickPlan(state: YoowaiSessionState | null) {
   if (!state?.plan) return undefined;
   return {
     summary: state.plan.summary,
@@ -89,7 +89,7 @@ function pickPlan(state: HeyyooSessionState | null) {
   };
 }
 
-export function executeYooIndex(cwd: string, params: YooIndexParams): IndexResult {
+export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResult {
   const topic = normalizeTopic(params.topic);
   const files = Array.isArray(params.files) ? params.files : [];
   const query = typeof params.query === "string" ? params.query.toLowerCase() : "";
@@ -105,7 +105,7 @@ export function executeYooIndex(cwd: string, params: YooIndexParams): IndexResul
       result.indexUpdated = true;
     } catch (err) {
       result.indexUpdated = false;
-      logEvent(cwd, "warn", "yoo_index update failed", {
+      logEvent(cwd, "warn", "wai_index update failed", {
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -165,7 +165,7 @@ function filterText(text: string, query: string): string {
 
 export function formatIndexResult(result: IndexResult): string {
   const parts: string[] = [];
-  parts.push(`# yoo index (${result.topic})`);
+  parts.push(`# wai index (${result.topic})`);
 
   if (result.indexUpdated === true) {
     parts.push("\n_Index updated successfully._");
@@ -258,7 +258,7 @@ export function formatIndexResult(result: IndexResult): string {
     !result.index &&
     !result.learned
   ) {
-    parts.push("\nNo stored yoo context found. Run `yoo scan` to build project conventions.");
+    parts.push("\nNo stored wai context found. Run `wai scan` to build project conventions.");
   }
 
   return parts.join("\n");

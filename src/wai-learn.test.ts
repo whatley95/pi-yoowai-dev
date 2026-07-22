@@ -13,13 +13,13 @@ import {
   verifyLearnedFacts,
   formatVerificationReport,
   verifyLearnedFactsDeep,
-} from "./yoo-learn.js";
+} from "./wai-learn.js";
 
-describe("yoo-learn", () => {
+describe("wai-learn", () => {
   let cwd: string;
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "yoo-learn-test-"));
+    cwd = mkdtempSync(join(tmpdir(), "wai-learn-test-"));
   });
 
   it("records and loads facts", () => {
@@ -50,7 +50,7 @@ describe("yoo-learn", () => {
     recordLearnedFact(cwd, "Use camelCase.");
     clearLearnedFacts(cwd);
     assert.equal(loadLearnedFacts(cwd).length, 0);
-    assert.ok(existsSync(join(cwd, ".pi", "heyyoo", "learned.json")));
+    assert.ok(existsSync(join(cwd, ".pi", "yoowai", "learned.json")));
   });
 
   it("flags outdated facts with missing files", () => {

@@ -4,7 +4,7 @@ const PROVIDER_API_MAP: Record<string, ProviderApiInfo> = {
   // Note: opencode-go and opencode are intentionally excluded from the HTTP map.
   // Their models have complex compat requirements (per-model API styles, 8+
   // thinking formats, max_completion_tokens vs max_tokens, reasoning_effort
-  // mapping) that pi-heyyoo cannot replicate without duplicating Pi's entire
+  // mapping) that pi-yoowai cannot replicate without duplicating Pi's entire
   // openai-completions compat layer. They default to the sdk backend which uses
   // Pi's pi-ai provider layer directly; users can still force the pi process via
   // backend: "pi".
@@ -222,7 +222,12 @@ export function resolveProviderApiInfo(
     return {
       style,
       baseUrl: secondary.baseUrl.replace(/\/$/, ""),
-      authHeader: secondary.authHeader ?? (style === "anthropic" ? "x-api-key" : "Authorization"),
+      authHeader:
+        typeof secondary.authHeader === "string" && secondary.authHeader.length > 0
+          ? secondary.authHeader
+          : style === "anthropic"
+            ? "x-api-key"
+            : "Authorization",
       authPrefix: secondary.authPrefix ?? (style === "anthropic" ? "" : "Bearer "),
       supportsJsonObject: style === "openai-compatible",
     };

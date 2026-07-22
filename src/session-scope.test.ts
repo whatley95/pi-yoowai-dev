@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { clearSessionId, getSessionConfigPath, getSessionId, pruneSessionDirs, setSessionId } from "./session-scope.js";
 
 function createFakeSessionDir(cwd: string, hash: string, mtime: Date): string {
-  const dir = join(cwd, ".pi", "heyyoo", "sessions", hash);
+  const dir = join(cwd, ".pi", "yoowai", "sessions", hash);
   mkdirSync(dir, { recursive: true });
   const file = join(dir, "plan.json");
   writeFileSync(file, "{}", "utf-8");
@@ -16,11 +16,11 @@ function createFakeSessionDir(cwd: string, hash: string, mtime: Date): string {
 }
 
 describe("session-scope", () => {
-  const cwd = mkdtempSync(join(tmpdir(), "yoo-session-test-"));
+  const cwd = mkdtempSync(join(tmpdir(), "wai-session-test-"));
 
   beforeEach(() => {
     clearSessionId(cwd);
-    const sessionsRoot = join(cwd, ".pi", "heyyoo", "sessions");
+    const sessionsRoot = join(cwd, ".pi", "yoowai", "sessions");
     if (existsSync(sessionsRoot)) {
       rmSync(sessionsRoot, { recursive: true, force: true });
     }
@@ -28,13 +28,13 @@ describe("session-scope", () => {
 
   it("falls back to project-scoped path when no session id is set", () => {
     const path = getSessionConfigPath(cwd, "plan.json");
-    assert.match(path, /[\\/]\.pi[\\/]heyyoo[\\/]plan\.json$/);
+    assert.match(path, /[\\/]\.pi[\\/]yoowai[\\/]plan\.json$/);
   });
 
   it("uses a session-scoped path when a session id is set", () => {
     setSessionId(cwd, "session-abc-123");
     const path = getSessionConfigPath(cwd, "memory.json");
-    assert.match(path, /[\\/]\.pi[\\/]heyyoo[\\/]sessions[\\/][a-f0-9]+[\\/]memory\.json$/);
+    assert.match(path, /[\\/]\.pi[\\/]yoowai[\\/]sessions[\\/][a-f0-9]+[\\/]memory\.json$/);
     assert.ok(!path.includes("session-abc-123"), "raw session id should not appear in the path");
   });
 
@@ -81,7 +81,7 @@ describe("session-scope", () => {
     assert.ok(existsSync(currentDir), "current session dir should survive");
     assert.ok(!existsSync(oldestDir), "oldest dir should be pruned");
 
-    const sessionsRoot = join(cwd, ".pi", "heyyoo", "sessions");
+    const sessionsRoot = join(cwd, ".pi", "yoowai", "sessions");
     const remaining = readdirSync(sessionsRoot, { withFileTypes: true }).filter((e) => e.isDirectory());
     assert.equal(remaining.length, 3, "should keep current plus maxSessions-1 most recent dirs");
   });

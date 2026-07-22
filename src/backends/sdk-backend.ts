@@ -239,7 +239,7 @@ export async function callSdkBackend(
 ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> {
   const { signal, thinking, cwd, secondary, modelInfoOverride, sdkModelInfo } = options;
 
-  // Prefer pi-heyyoo's auth resolution (auth.json with indirection, env vars,
+  // Prefer pi-yoowai's auth resolution (auth.json with indirection, env vars,
   // inline key, or OAuth credential refresh), but fall back to the SDK's own
   // credential/env lookup when no explicit key is configured. The pi-ai SDK can
   // read Pi's CredentialStore (e.g. ~/.pi/agent/auth.json) and provider env vars

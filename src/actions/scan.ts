@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import {
@@ -23,19 +23,19 @@ import {
   continuationMeta,
 } from "./shared.js";
 import type { ProgressReporter } from "../progress.js";
-import type { YooToolResult } from "../types.js";
+import type { WaiToolResult } from "../types.js";
 
-export async function executeYooScan(
+export async function executeWaiScan(
   cwd: string,
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
   sessionManager?: ExtensionContext["sessionManager"],
   deepOverride?: boolean | number,
-): Promise<YooToolResult> {
-  const config = loadHeyyooConfig(cwd);
+): Promise<WaiToolResult> {
+  const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "scan");
   if (!modelConfig.provider || !modelConfig.id) {
-    return { action: "scan", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
+    return { action: "scan", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
   const modelProfile = {
     provider: modelConfig.provider,

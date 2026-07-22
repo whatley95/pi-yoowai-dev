@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadHeyyooConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { findRelevantFiles } from "../project-index.js";
 import { loadRelevantFileContents } from "../project-snapshot.js";
@@ -24,20 +24,20 @@ import {
   mergeUsageCost,
 } from "./shared.js";
 import type { ProgressReporter } from "../progress.js";
-import type { YooToolResult, UsageCost } from "../types.js";
+import type { WaiToolResult, UsageCost } from "../types.js";
 
-export async function executeYooSuggest(
+export async function executeWaiSuggest(
   cwd: string,
   question: string,
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
   sessionManager?: ExtensionContext["sessionManager"],
   docRequest: DocContextRequest = {},
-): Promise<YooToolResult> {
-  const config = loadHeyyooConfig(cwd);
+): Promise<WaiToolResult> {
+  const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "suggest");
   if (!modelConfig.provider || !modelConfig.id) {
-    return { action: "suggest", error: "No secondary model configured. Set pi-heyyoo.secondary in settings.json." };
+    return { action: "suggest", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
   const modelProfile = {
     provider: modelConfig.provider,
@@ -53,7 +53,7 @@ export async function executeYooSuggest(
 
   const relevantFiles = findRelevantFiles(cwd, question, 5);
   if (relevantFiles.length === 0) {
-    logEvent(cwd, "info", "yoo suggest found no indexed relevant files; consider running yoo scan deep", {
+    logEvent(cwd, "info", "wai suggest found no indexed relevant files; consider running wai scan deep", {
       query: question.slice(0, 200),
     });
   }
@@ -91,10 +91,10 @@ export async function executeYooSuggest(
   } catch (err) {
     if (signal?.aborted) throw err;
     const msg = err instanceof Error ? err.message : String(err);
-    logEvent(cwd, "error", "yoo tool suggest failed", { error: msg });
+    logEvent(cwd, "error", "wai tool suggest failed", { error: msg });
     return {
       action: "suggest",
-      error: `Secondary model unavailable: ${msg.slice(0, 200)}. Try again or configure a different model via /yoo-model.`,
+      error: `Secondary model unavailable: ${msg.slice(0, 200)}. Try again or configure a different model via /wai-model.`,
       model: modelProfile,
     };
   }

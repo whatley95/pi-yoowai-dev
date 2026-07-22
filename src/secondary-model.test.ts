@@ -31,7 +31,7 @@ function writeSettings(cwd: string, secondary: Record<string, unknown>, extra: R
   mkdirSync(piDir, { recursive: true });
   writeFileSync(
     join(piDir, "settings.json"),
-    JSON.stringify({ "pi-heyyoo": { secondary, ...extra } }, null, 2),
+    JSON.stringify({ "pi-yoowai": { secondary, ...extra } }, null, 2),
     "utf-8",
   );
 }
@@ -78,7 +78,7 @@ describe("secondary-model backends", () => {
   });
 
   it("uses pi backend when backend: pi is configured", async () => {
-    const cwd = makeTempDir("pi-heyyoo-pi-default-");
+    const cwd = makeTempDir("pi-yoowai-pi-default-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
@@ -102,7 +102,7 @@ describe("secondary-model backends", () => {
   });
 
   it("uses http backend when configured and returns fetch response", async () => {
-    const cwd = makeTempDir("pi-heyyoo-http-");
+    const cwd = makeTempDir("pi-yoowai-http-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "http", apiKey: "sk-test" });
 
@@ -132,7 +132,7 @@ describe("secondary-model backends", () => {
   });
 
   it("throws when pi backend exits with no assistant text", async () => {
-    const cwd = makeTempDir("pi-heyyoo-pi-fail-");
+    const cwd = makeTempDir("pi-yoowai-pi-fail-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
@@ -147,7 +147,7 @@ describe("secondary-model backends", () => {
   });
 
   it("retries pi backend on empty output then succeeds", async () => {
-    const cwd = makeTempDir("pi-heyyoo-pi-retry-");
+    const cwd = makeTempDir("pi-yoowai-pi-retry-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
@@ -177,7 +177,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("throws with attempt count after exhausting pi backend retries", async () => {
-    const cwd = makeTempDir("pi-heyyoo-pi-retry-exhaust-");
+    const cwd = makeTempDir("pi-yoowai-pi-retry-exhaust-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
@@ -193,7 +193,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("pi backend inherits a sanitized session snapshot when sessionManager is provided", async () => {
-    const cwd = makeTempDir("pi-heyyoo-pi-session-");
+    const cwd = makeTempDir("pi-yoowai-pi-session-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
@@ -231,7 +231,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("filters inherited branch to conversation messages and excludes noise", async () => {
-    const cwd = makeTempDir("pi-heyyoo-pi-filter-");
+    const cwd = makeTempDir("pi-yoowai-pi-filter-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
@@ -291,7 +291,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("prioritizes relevant paths when selecting inherited branch entries", async () => {
-    const cwd = makeTempDir("pi-heyyoo-pi-relevant-");
+    const cwd = makeTempDir("pi-yoowai-pi-relevant-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
@@ -348,7 +348,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("skips malformed session entries with undefined message objects", async () => {
-    const cwd = makeTempDir("pi-heyyoo-pi-malformed-");
+    const cwd = makeTempDir("pi-yoowai-pi-malformed-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
 
@@ -397,7 +397,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("uses task model override when task option is provided", async () => {
-    const cwd = makeTempDir("pi-heyyoo-pi-task-");
+    const cwd = makeTempDir("pi-yoowai-pi-task-");
     tmpDirs.push(cwd);
     writeSettings(
       cwd,
@@ -428,7 +428,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("adds response_format json_object for supported providers when structuredOutput is true", async () => {
-    const cwd = makeTempDir("pi-heyyoo-http-json-");
+    const cwd = makeTempDir("pi-yoowai-http-json-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "http", apiKey: "sk-test" });
 
@@ -456,7 +456,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("uses full model max_tokens for structured output when thinking is off", async () => {
-    const cwd = makeTempDir("pi-heyyoo-http-struct-tokens-");
+    const cwd = makeTempDir("pi-yoowai-http-struct-tokens-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "http", apiKey: "sk-test" });
 
@@ -485,7 +485,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("omits response_format for unsupported providers even when structuredOutput is true", async () => {
-    const cwd = makeTempDir("pi-heyyoo-http-no-json-");
+    const cwd = makeTempDir("pi-yoowai-http-no-json-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "anthropic", id: "claude-3-5-sonnet", backend: "http", apiKey: "sk-test" });
 
@@ -512,7 +512,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("streams Anthropic-style SSE responses and accumulates text deltas", async () => {
-    const cwd = makeTempDir("pi-heyyoo-http-anthropic-sse-");
+    const cwd = makeTempDir("pi-yoowai-http-anthropic-sse-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "anthropic", id: "claude-3-5-sonnet", backend: "http", apiKey: "sk-test" });
 
@@ -544,7 +544,7 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
   });
 
   it("omits response_format when structuredOutput is false", async () => {
-    const cwd = makeTempDir("pi-heyyoo-http-no-struct-");
+    const cwd = makeTempDir("pi-yoowai-http-no-struct-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "http", apiKey: "sk-test" });
 
@@ -610,7 +610,7 @@ describe("providerSupportsJsonObject", () => {
 
 describe("PROVIDER_API_MAP coverage", () => {
   it("includes all providers from Pi's built-in list", () => {
-    // These are the providers pi-heyyoo can call directly via HTTP.
+    // These are the providers pi-yoowai can call directly via HTTP.
     // Complex providers (bedrock, vertex, azure, github-copilot, cloudflare) are
     // intentionally excluded — they fall back to the pi process backend.
     const expected = [
@@ -686,7 +686,7 @@ describe("auto-detect backend", () => {
   });
 
   it("defaults to sdk backend for known provider without explicit backend config", async () => {
-    const cwd = makeTempDir("yoo-auto-sdk-known-");
+    const cwd = makeTempDir("wai-auto-sdk-known-");
     writeSettings(cwd, { provider: "deepseek", id: "deepseek-chat", apiKey: "sk-test" });
     let sdkCalled = false;
     setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
@@ -704,7 +704,7 @@ describe("auto-detect backend", () => {
   });
 
   it("defaults to sdk backend for unknown provider without explicit backend config", async () => {
-    const cwd = makeTempDir("yoo-auto-sdk-unknown-");
+    const cwd = makeTempDir("wai-auto-sdk-unknown-");
     writeSettings(cwd, { provider: "some-unknown-provider", id: "x", apiKey: "sk-test" });
     let sdkCalled = false;
     setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
@@ -722,7 +722,7 @@ describe("auto-detect backend", () => {
   });
 
   it("uses http backend when baseUrl is set even for unknown provider", async () => {
-    const cwd = makeTempDir("yoo-auto-url-");
+    const cwd = makeTempDir("wai-auto-url-");
     writeSettings(cwd, {
       provider: "custom-provider",
       id: "x",
@@ -839,7 +839,7 @@ describe("sdk backend", () => {
   });
 
   it("opencode-go defaults to sdk backend", async () => {
-    const cwd = makeTempDir("yoo-sdk-default-");
+    const cwd = makeTempDir("wai-sdk-default-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -865,7 +865,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend returns text and usage", async () => {
-    const cwd = makeTempDir("yoo-sdk-usage-");
+    const cwd = makeTempDir("wai-sdk-usage-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -881,7 +881,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend throws with clear message on stopReason error", async () => {
-    const cwd = makeTempDir("yoo-sdk-error-");
+    const cwd = makeTempDir("wai-sdk-error-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -900,7 +900,7 @@ describe("sdk backend", () => {
   });
 
   it("backend: pi overrides sdk default for opencode-go", async () => {
-    const cwd = makeTempDir("yoo-sdk-pi-override-");
+    const cwd = makeTempDir("wai-sdk-pi-override-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", backend: "pi", apiKey: "opencode-test" });
 
@@ -924,7 +924,7 @@ describe("sdk backend", () => {
   });
 
   it("backend: sdk works for non-opencode provider", async () => {
-    const cwd = makeTempDir("yoo-sdk-explicit-");
+    const cwd = makeTempDir("wai-sdk-explicit-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "sdk", apiKey: "sk-test" });
 
@@ -941,8 +941,8 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend resolves OAuth API key for openai-codex", async () => {
-    const cwd = makeTempDir("yoo-sdk-oauth-");
-    const agentDir = makeTempDir("yoo-sdk-oauth-agent-");
+    const cwd = makeTempDir("wai-sdk-oauth-");
+    const agentDir = makeTempDir("wai-sdk-oauth-agent-");
     tmpDirs.push(cwd);
     tempAgentDirs.push(agentDir);
     mkdirSync(agentDir, { recursive: true });
@@ -967,7 +967,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend throws when model is not in Pi catalog and backend is explicit", async () => {
-    const cwd = makeTempDir("yoo-sdk-no-catalog-");
+    const cwd = makeTempDir("wai-sdk-no-catalog-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "unknown-model", apiKey: "opencode-test", backend: "sdk" });
 
@@ -980,7 +980,7 @@ describe("sdk backend", () => {
   });
 
   it("auto-falls back to pi backend when sdk model is not in catalog", async () => {
-    const cwd = makeTempDir("yoo-sdk-fallback-pi-");
+    const cwd = makeTempDir("wai-sdk-fallback-pi-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "cursor", id: "composer-2.5" });
 
@@ -998,7 +998,7 @@ describe("sdk backend", () => {
   });
 
   it("auto-falls back to pi backend when sdk reports missing API key", async () => {
-    const cwd = makeTempDir("yoo-sdk-missing-key-fallback-");
+    const cwd = makeTempDir("wai-sdk-missing-key-fallback-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "kimi-coding", id: "k3" });
 
@@ -1020,7 +1020,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend passes reasoning option when thinking is enabled", async () => {
-    const cwd = makeTempDir("yoo-sdk-reasoning-");
+    const cwd = makeTempDir("wai-sdk-reasoning-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1036,7 +1036,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend passes max reasoning option", async () => {
-    const cwd = makeTempDir("yoo-sdk-reasoning-max-");
+    const cwd = makeTempDir("wai-sdk-reasoning-max-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1052,7 +1052,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend uses catalog maxTokens for non-thinking calls", async () => {
-    const cwd = makeTempDir("yoo-sdk-catalog-tokens-");
+    const cwd = makeTempDir("wai-sdk-catalog-tokens-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1068,7 +1068,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend uses full catalog maxTokens for structured output when thinking is off", async () => {
-    const cwd = makeTempDir("yoo-sdk-struct-tokens-");
+    const cwd = makeTempDir("wai-sdk-struct-tokens-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1088,7 +1088,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend passes cacheRetention, transport, and retry options", async () => {
-    const cwd = makeTempDir("yoo-sdk-options-");
+    const cwd = makeTempDir("wai-sdk-options-");
     tmpDirs.push(cwd);
     writeSettings(cwd, {
       provider: "opencode-go",
@@ -1117,7 +1117,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend applies Pi agent default options when not configured", async () => {
-    const cwd = makeTempDir("yoo-sdk-defaults-");
+    const cwd = makeTempDir("wai-sdk-defaults-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1135,10 +1135,10 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend sends opencode attribution headers when sessionId is set", async () => {
-    const cwd = makeTempDir("yoo-sdk-opencode-headers-");
+    const cwd = makeTempDir("wai-sdk-opencode-headers-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
-    setPiSessionId(cwd, "yoo-session-123");
+    setPiSessionId(cwd, "wai-session-123");
 
     setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId, "anthropic-messages"));
     let receivedOptions: SimpleStreamOptions | undefined;
@@ -1148,15 +1148,15 @@ describe("sdk backend", () => {
     });
 
     await callSecondaryModel("opencode-go", "qwen3.7-max", "system", "user", { cwd });
-    assert.equal(receivedOptions?.headers?.["x-opencode-session"], "yoo-session-123");
+    assert.equal(receivedOptions?.headers?.["x-opencode-session"], "wai-session-123");
     assert.equal(receivedOptions?.headers?.["x-opencode-client"], "pi");
   });
 
   it("sdk backend omits opencode headers for non-opencode providers", async () => {
-    const cwd = makeTempDir("yoo-sdk-no-opencode-headers-");
+    const cwd = makeTempDir("wai-sdk-no-opencode-headers-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "sdk", apiKey: "sk-test" });
-    setPiSessionId(cwd, "yoo-session-456");
+    setPiSessionId(cwd, "wai-session-456");
 
     setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
     let receivedOptions: SimpleStreamOptions | undefined;
@@ -1171,7 +1171,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend invokes onStreamProgress with accumulated text", async () => {
-    const cwd = makeTempDir("yoo-sdk-stream-progress-");
+    const cwd = makeTempDir("wai-sdk-stream-progress-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1192,7 +1192,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend maps cacheRetention auto to short", async () => {
-    const cwd = makeTempDir("yoo-sdk-auto-cache-");
+    const cwd = makeTempDir("wai-sdk-auto-cache-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test", cacheRetention: "auto" });
 
@@ -1208,9 +1208,9 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend falls back to SDK credential resolution when no explicit key is configured", async () => {
-    const cwd = makeTempDir("yoo-sdk-credential-store-");
+    const cwd = makeTempDir("wai-sdk-credential-store-");
     tmpDirs.push(cwd);
-    // Use a provider name with no env var mapping so pi-heyyoo's auth-reader
+    // Use a provider name with no env var mapping so pi-yoowai's auth-reader
     // returns undefined, forcing reliance on the SDK's own credential lookup.
     writeSettings(cwd, { provider: "no-env-provider", id: "model-x" });
 
@@ -1228,7 +1228,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk backend falls back to pi backend on retryable SDK error", async () => {
-    const cwd = makeTempDir("yoo-sdk-fallback-pi-");
+    const cwd = makeTempDir("wai-sdk-fallback-pi-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1250,7 +1250,7 @@ describe("sdk backend", () => {
   });
 
   it("sdk fallback surfaces both errors when pi backend also fails", async () => {
-    const cwd = makeTempDir("yoo-sdk-fallback-pi-fail-");
+    const cwd = makeTempDir("wai-sdk-fallback-pi-fail-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1277,7 +1277,7 @@ describe("sdk backend truncation continuation", () => {
   function isolateAgentDir(): void {
     // Isolate from the user's ~/.pi/agent/settings.json so its `thinking`/`costBudget`
     // don't leak into truncation tests.
-    testAgentDir = makeTempDir("yoo-trunc-agent-");
+    testAgentDir = makeTempDir("wai-trunc-agent-");
     tempAgentDirs.push(testAgentDir);
     setAgentDirForTests(() => testAgentDir!);
   }
@@ -1306,7 +1306,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("continues a single truncated response and concatenates content", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-single-");
+    const cwd = makeTempDir("wai-trunc-single-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1342,7 +1342,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("stops after max continuations and returns best-effort content without throwing", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-cap-");
+    const cwd = makeTempDir("wai-trunc-cap-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
     clearLogs(cwd);
@@ -1369,7 +1369,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("does not issue continuation when response is not truncated", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-none-");
+    const cwd = makeTempDir("wai-trunc-none-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1387,7 +1387,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("treats empty continuation content as no-more and keeps accumulated text", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-empty-");
+    const cwd = makeTempDir("wai-trunc-empty-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1410,7 +1410,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("strips overlapping leading text from continuation content", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-overlap-");
+    const cwd = makeTempDir("wai-trunc-overlap-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1434,7 +1434,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("stops continuation when cost budget is reached mid-loop", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-budget-");
+    const cwd = makeTempDir("wai-trunc-budget-");
     tmpDirs.push(cwd);
     clearLogs(cwd);
     // Budget large enough for the first call's pre-check estimate (~$0.0123, 2048-output
@@ -1478,7 +1478,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("echoes only a resume anchor (last ~2k chars) in the continuation prompt", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-anchor-");
+    const cwd = makeTempDir("wai-trunc-anchor-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1513,7 +1513,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("stops early when a continuation round makes no progress (<16 chars)", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-noprogress-");
+    const cwd = makeTempDir("wai-trunc-noprogress-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
     clearLogs(cwd);
@@ -1543,7 +1543,7 @@ describe("sdk backend truncation continuation", () => {
     // The default config sets thinking: "xhigh". Confirm truncation handling does not
     // inject extra thinking-disabled retries — continuation is just initial + rounds.
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-thinking-noop-");
+    const cwd = makeTempDir("wai-trunc-thinking-noop-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1569,7 +1569,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("maxContinuations config caps the number of continuation rounds", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-maxcfg-");
+    const cwd = makeTempDir("wai-trunc-maxcfg-");
     tmpDirs.push(cwd);
     writeSettings(
       cwd,
@@ -1593,7 +1593,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("forwards onStreamProgress into each continuation round", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-progress-cb-");
+    const cwd = makeTempDir("wai-trunc-progress-cb-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1626,7 +1626,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("stripLeadingOverlap is whitespace-tolerant", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-ws-");
+    const cwd = makeTempDir("wai-trunc-ws-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
 
@@ -1663,7 +1663,7 @@ describe("sdk backend truncation continuation", () => {
 
   it("retry-with-reasoning-off path preserves truncated signal (http openai)", async () => {
     isolateAgentDir();
-    const cwd = makeTempDir("yoo-trunc-rro-");
+    const cwd = makeTempDir("wai-trunc-rro-");
     tmpDirs.push(cwd);
     // o3-mini is in supportsReasoningEffort's known set, so reasoning_effort is sent on the first call.
     writeSettings(cwd, { provider: "openai", id: "o3-mini", backend: "http", apiKey: "sk-test" });
@@ -1737,10 +1737,10 @@ describe("http backend anthropic truncation continuation", () => {
   });
 
   it("continues anthropic non-streaming fallback when stop_reason is max_tokens", async () => {
-    const agentDir = makeTempDir("yoo-ca-anthropic-");
+    const agentDir = makeTempDir("wai-ca-anthropic-");
     tempAgentDirs.push(agentDir);
     setAgentDirForTests(() => agentDir);
-    const cwd = makeTempDir("yoo-trunc-anthropic-fallback-");
+    const cwd = makeTempDir("wai-trunc-anthropic-fallback-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "anthropic", id: "claude-3-5-sonnet", backend: "http", apiKey: "sk-test" });
 
@@ -1768,10 +1768,10 @@ describe("http backend anthropic truncation continuation", () => {
   });
 
   it("continues anthropic streaming when message_delta stop_reason is max_tokens", async () => {
-    const agentDir = makeTempDir("yoo-ca-anthropic-sse-");
+    const agentDir = makeTempDir("wai-ca-anthropic-sse-");
     tempAgentDirs.push(agentDir);
     setAgentDirForTests(() => agentDir);
-    const cwd = makeTempDir("yoo-trunc-anthropic-sse-");
+    const cwd = makeTempDir("wai-trunc-anthropic-sse-");
     tmpDirs.push(cwd);
     writeSettings(cwd, { provider: "anthropic", id: "claude-3-5-sonnet", backend: "http", apiKey: "sk-test" });
 

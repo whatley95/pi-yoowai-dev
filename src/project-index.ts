@@ -10,7 +10,7 @@ import type { Conventions } from "./types.js";
  * TypeScript compiler API, loaded lazily on first use. A missing or broken
  * typescript install then degrades project indexing with a logged warning
  * instead of failing extension startup at import time (which would take down
- * every yoo command). Mirrors the lazy duck-duck-scrape import in
+ * every wai command). Mirrors the lazy duck-duck-scrape import in
  * doc-fetcher.ts.
  */
 let tsModule: typeof import("typescript") | null = null;
@@ -61,7 +61,7 @@ const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cj
 const MAX_FILE_BYTES = 500 * 1024;
 
 function getIndexPath(cwd: string): string {
-  return getProjectConfigPath(cwd, "heyyoo", "index.json");
+  return getProjectConfigPath(cwd, "yoowai", "index.json");
 }
 
 export function loadProjectIndex(cwd: string): ProjectIndex | null {

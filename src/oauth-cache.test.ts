@@ -13,7 +13,7 @@ describe("oauth-cache", () => {
   let cwd: string;
 
   beforeEach(() => {
-    cwd = makeTempDir("pi-heyyoo-oauth-cache-");
+    cwd = makeTempDir("pi-yoowai-oauth-cache-");
   });
 
   afterEach(() => {

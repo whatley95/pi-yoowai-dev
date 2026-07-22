@@ -1,5 +1,5 @@
 {
-  "name": "pi-heyyoo",
+  "name": "pi-yoowai",
   "version": "1.2.0",
   "description": "Pair-programmer extension for Pi. Secondary model reviews, judges, suggests, and plans — catches mistakes the main agent misses.",
   "homepage": "https://whatley.xyz",
@@ -20,7 +20,7 @@
   },
   "keywords": [
     "pi",
-    "heyyoo",
+    "yoowai",
     "yoo",
     "review",
     "judge",

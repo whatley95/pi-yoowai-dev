@@ -14,7 +14,7 @@ describe("review-cache", () => {
   let cwd: string;
 
   beforeEach(() => {
-    cwd = makeTempDir("pi-heyyoo-review-cache-");
+    cwd = makeTempDir("pi-yoowai-review-cache-");
   });
 
   afterEach(() => {
