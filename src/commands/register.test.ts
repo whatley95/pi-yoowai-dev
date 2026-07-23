@@ -342,6 +342,37 @@ describe("model picker helpers", () => {
     assert.strictEqual(result, "openai/model-3");
   });
 
+  it("pickModelFromProvider uses a searchable family list when there are many families", async () => {
+    let inputCb: (data: string) => { consume: boolean } = () => ({ consume: false });
+    const ctx = {
+      ui: {
+        onTerminalInput: (cb: (data: string) => { consume: boolean }) => {
+          inputCb = cb;
+          return () => {};
+        },
+        setWidget: () => {},
+        select: async () => "openai/m1",
+        input: async () => undefined,
+        notify: () => {},
+      },
+    } as unknown as ExtensionContext;
+
+    // 26 families (exceeds SOFT_CAP=20) so the searchable family path is used.
+    // The "openai" family has a single model so the inner drill-down is a plain select.
+    const models: ModelRef[] = [];
+    for (let i = 0; i < 25; i++) {
+      models.push({ id: `fam${i}/m${i}`, provider: "openrouter" });
+    }
+    models.push({ id: "openai/m1", provider: "openrouter" });
+
+    const promise = pickModelFromProvider(ctx, "openrouter", models, "");
+    // Type "openai" to narrow the family list, then Enter on the match.
+    inputCb("openai");
+    inputCb("\r");
+    const result = await promise;
+    assert.strictEqual(result, "openai/m1");
+  });
+
   it("pickModelFromProvider applies a filter argument", async () => {
     const ctx = fakeContext(["openai/gpt-4o"]);
     const models: ModelRef[] = [

@@ -284,9 +284,15 @@ export async function pickModelFromProvider(
   // the flat list is unmanageable, with a search escape hatch that filters
   // across every family. Cancelling search returns to the family list.
   const SEARCH_ALL = `Search all ${provider} models…`;
+  const familyOptions = [SEARCH_ALL, ...groupNames.map((g) => `${g} (${groups[g].length} models)`)];
+  // Many families: make the family list itself searchable (type "open" -> openai/
+  // openrouter) via the same widget the model list uses. Small family counts keep
+  // the plain select. "Search all…" stays first so full-catalog search is one pick.
+  const useSearchableFamilies = groupNames.length > MODEL_PICKER_SOFT_CAP;
   for (;;) {
-    const groupItems = [SEARCH_ALL, ...groupNames.map((g) => `${g} (${groups[g].length} models)`)];
-    const picked = await ctx.ui.select(`Pick ${provider} model family:`, groupItems);
+    const picked = useSearchableFamilies
+      ? await searchableSelect(ctx, `Pick ${provider} model family:`, familyOptions)
+      : await ctx.ui.select(`Pick ${provider} model family:`, familyOptions);
     if (!picked) return undefined;
     if (picked === SEARCH_ALL) {
       const searchResult = await searchOrSelectModel(ctx, provider, candidates, currentId);
