@@ -109,8 +109,8 @@ export async function resolveModelThinkingDetails(
 
 const MODEL_PICKER_SOFT_CAP = 20;
 const MODEL_PICKER_GROUP_CAP = 20;
-const FILTER_SENTINEL = "__wai_filter_more_models__";
-const SEARCH_SENTINEL = "__wai_search_models__";
+const SEARCH_OPTION_PREFIX = "🔎 Search";
+const FILTER_OPTION_SUFFIX = " more models…";
 
 export interface ModelRef {
   id: string;
@@ -174,15 +174,15 @@ export async function pickModelFromFlatList(
   const displayed = models.slice(0, MODEL_PICKER_GROUP_CAP);
   const remaining = models.length - MODEL_PICKER_GROUP_CAP;
   const items = displayed.map((m) => formatModelItem(m, currentId));
-  items.unshift(`${SEARCH_SENTINEL}: 🔎 Search ${groupLabel ?? provider} models…`);
-  items.push(`${FILTER_SENTINEL}: Filter ${remaining} more models…`);
+  items.unshift(`${SEARCH_OPTION_PREFIX} ${groupLabel ?? provider} models…`);
+  items.push(`Filter ${remaining}${FILTER_OPTION_SUFFIX}`);
   const title = groupLabel ? `Pick ${provider} ${groupLabel} model:` : `Pick model for ${provider}:`;
   const picked = await ctx.ui.select(title, items);
   if (!picked) return undefined;
-  if (picked.startsWith(SEARCH_SENTINEL)) {
+  if (picked.startsWith(SEARCH_OPTION_PREFIX)) {
     return promptSearchModels(ctx, provider, models, currentId);
   }
-  if (picked.startsWith(FILTER_SENTINEL)) {
+  if (picked.endsWith(FILTER_OPTION_SUFFIX)) {
     ctx.ui.notify(`Too many models. Narrow with /wai-model ${provider} <filter>`, "warning");
     return undefined;
   }
@@ -217,10 +217,10 @@ export async function pickModelFromProvider(
 
   if (useGroups) {
     const groupItems = groupNames.map((g) => `${g} (${groups[g].length} models)`);
-    groupItems.unshift(`${SEARCH_SENTINEL}: 🔎 Search all ${provider} models…`);
+    groupItems.unshift(`${SEARCH_OPTION_PREFIX} all ${provider} models…`);
     const picked = await ctx.ui.select(`Pick ${provider} model family:`, groupItems);
     if (!picked) return undefined;
-    if (picked.startsWith(SEARCH_SENTINEL)) {
+    if (picked.startsWith(SEARCH_OPTION_PREFIX)) {
       return promptSearchModels(ctx, provider, candidates, currentId);
     }
     const groupName = picked.replace(/ \(\d+ models\)$/, "");

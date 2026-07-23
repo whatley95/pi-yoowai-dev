@@ -192,7 +192,7 @@ describe("model picker helpers", () => {
   });
 
   it("pickModelFromFlatList warns and returns undefined when filter sentinel is selected", async () => {
-    const ctx = fakeContext(["__wai_filter_more_models__: Filter 5 more models…"]);
+    const ctx = fakeContext(["Filter 5 more models…"]);
     const models: ModelRef[] = Array.from({ length: 25 }, (_, i) => ({
       id: `openai/model-${i}`,
       provider: "openrouter",
@@ -288,7 +288,7 @@ describe("model picker helpers", () => {
   });
 
   it("pickModelFromProvider opens search when the search sentinel is selected", async () => {
-    const ctx = fakeContext(["__wai_search_models__: 🔎 Search all openrouter models…", "openai/model-3"], ["model-3"]);
+    const ctx = fakeContext(["🔎 Search all openrouter models…", "openai/model-3"], ["model-3"]);
     const models: ModelRef[] = [
       ...Array.from({ length: 11 }, (_, i) => ({ id: `openai/model-${i}`, provider: "openrouter" })),
       ...Array.from({ length: 11 }, (_, i) => ({ id: `anthropic/model-${i}`, provider: "openrouter" })),
@@ -298,7 +298,7 @@ describe("model picker helpers", () => {
   });
 
   it("pickModelFromFlatList opens search when the search sentinel is selected", async () => {
-    const ctx = fakeContext(["__wai_search_models__: 🔎 Search openai models…", "openai/model-3"], ["model-3"]);
+    const ctx = fakeContext(["🔎 Search openai models…", "openai/model-3"], ["model-3"]);
     const models: ModelRef[] = Array.from({ length: 25 }, (_, i) => ({
       id: `openai/model-${i}`,
       provider: "openrouter",
