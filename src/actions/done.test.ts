@@ -52,3 +52,16 @@ test("executeWaiDone advances when there are no edits since last done", async ()
   // No edits since last done means verification is skipped, so `verified` is not claimed.
   assert.equal(result.verified, undefined);
 });
+
+test("executeWaiDone marks up to an explicit target without claim verification", async () => {
+  const cwd = tempCwd();
+  // Verification is enabled and there are unrecorded edits, but an explicit
+  // target is a tracker correction, not a done-claim — it must not be gated.
+  writeConfig(cwd, true);
+  setPlan(cwd, plan);
+  recordFileEdit(cwd);
+  const result = await executeWaiDone(cwd, 2);
+  assert.equal(result.completedStep, 2);
+  assert.equal(result.verified, undefined);
+  assert.ok(result.message.includes("Marked steps up to 2"));
+});

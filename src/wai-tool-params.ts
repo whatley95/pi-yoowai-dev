@@ -85,6 +85,7 @@ export function validateWaiToolParams(params: unknown): ValidationResult {
     recommend: action === "recommend" ? (p.recommend as string) : undefined,
     judge: action === "judge" ? (p.judge as string) : undefined,
     scan: action === "scan" ? true : undefined,
+    scanDeep: action === "scan" && p.scanDeep === true ? true : undefined,
     test: action === "test" ? (p.test as string) : undefined,
     security: action === "security" ? (p.security as string) : undefined,
     done: action === "done" ? (p.done === true ? "" : (p.done as string | number)) : undefined,

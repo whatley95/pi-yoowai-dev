@@ -239,11 +239,17 @@ export async function executeWaiJudge(
     );
   }
 
-  if (judge.verdict === "pass" && judge.consensus && judge.completedStepIds && judge.completedStepIds.length > 0) {
+  // The judge is the holistic authority on which plan steps the code actually
+  // completes, so sync the tracker whenever it reports step IDs — even on a
+  // needs-work verdict (quality issues do not mean the steps are not done).
+  // The "reviewed" flag stays tied to a passing verdict so judge history is
+  // not falsified. Sync is advance-only; it never regresses the tracker.
+  if (judge.completedStepIds && judge.completedStepIds.length > 0) {
     const state = getState(cwd);
     if (state.totalSteps > 0) {
+      const reviewed = judge.verdict === "pass" && judge.consensus;
       const previousCompleted = state.completedSteps;
-      const newCompleted = markStepsDoneByIds(cwd, judge.completedStepIds, true);
+      const newCompleted = markStepsDoneByIds(cwd, judge.completedStepIds, reviewed);
       if (newCompleted > previousCompleted) {
         const progress = getProgress(cwd);
         judge.planProgress = `${progress.completed}/${progress.total} steps done`;
@@ -252,6 +258,7 @@ export async function executeWaiJudge(
           previousCompleted,
           newCompleted,
           completedStepIds: judge.completedStepIds,
+          verdict: judge.verdict,
         });
       }
     }

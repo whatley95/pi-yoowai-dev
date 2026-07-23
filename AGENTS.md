@@ -25,6 +25,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 | Command                | Purpose                                                                                              |
 | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | `/wai`                 | Run an action or show status: `/wai <plan|review|suggest|recommend|judge|scan|test|security|status> [args]`; `scan` accepts `--deep`. |
+| `/wai-scan-deep`       | Alias for `/wai scan --deep` (deep scan with source-file sampling and symbol index build).             |
 | `/wai-status`          | Detailed diagnostics (config, plan, VCS, conventions, cost).                                     |
 | `/wai-model`           | Interactively pick the secondary model (optionally per tool) and write it to `~/.pi/agent/settings.json`. |
 | `/wai-config`          | View/edit pi-yoowai settings: `/wai-config <get|set|list> [key] [value]` or shorthand `/wai-config <provider.model>`. |

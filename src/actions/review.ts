@@ -659,9 +659,13 @@ export async function executeWaiReview(
   }
 
   if (review.consensus) {
+    // The model reports completedSteps as a RELATIVE count (how many plan
+    // steps this diff completes, including the current one), but
+    // markStepsComplete takes an ABSOLUTE target step — convert, otherwise a
+    // reported 1 (the common case) pins the tracker at step 1 forever.
     const completedCount =
       typeof review.completedSteps === "number" && review.completedSteps > 1 ? review.completedSteps : 1;
-    markStepsComplete(cwd, completedCount, true);
+    markStepsComplete(cwd, state.completedSteps + completedCount, true);
     const planProgress = getProgress(cwd);
     review.planProgress = `${planProgress.completed}/${planProgress.total} steps done`;
     if (planProgress.nextStep) {

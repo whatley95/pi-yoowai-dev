@@ -20,6 +20,8 @@ import { executeWaiDone } from "../actions/done.js";
 import { executeWaiJudge } from "../actions/judge.js";
 import { triggerAutoJudge } from "../integration/lifecycle.js";
 import { publishWaiResult } from "../integration/publish.js";
+import { updateWaiStatus } from "../integration/status.js";
+import { updateWaiPlanWidget } from "../integration/widget.js";
 import { refreshWaiProvider } from "../integration/provider.js";
 import { executeWaiTest } from "../actions/test.js";
 import { executeWaiSecurity } from "../actions/security.js";
@@ -322,6 +324,11 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     description:
       "Run a wai action or show status. Usage: /wai [plan|review|suggest|recommend|judge|scan|test|security|status] [args] — 'scan' accepts --deep for deep source-file sampling",
     handler: waiHandler,
+  });
+
+  pi.registerCommand("wai-scan-deep", {
+    description: "Alias for /wai scan --deep — deep scan with source-file sampling and symbol index build",
+    handler: async (_args, ctx) => waiHandler("scan --deep", ctx),
   });
 
   const configHandler = async (args: string, ctx: ExtensionCommandContext) => {
@@ -837,6 +844,9 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     clearLearnedFacts(ctx.cwd);
     clearPromptCache();
     clearReviewCache(ctx.cwd);
+    // Refresh the UI surfaces so the cleared plan does not linger on screen.
+    updateWaiStatus(ctx);
+    updateWaiPlanWidget(ctx);
     ctx.ui.notify(
       "wai plan, state, cost, memory, conventions, learned facts, loop history, and inherited session cleared.",
       "info",

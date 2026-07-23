@@ -217,7 +217,7 @@ export default async function (pi: ExtensionAPI) {
           done: await executeWaiPlanUpdate(ctx.cwd, p.planUpdate as string, signal, progress, ctx.sessionManager),
         };
       } else {
-        result = await executeWaiScan(ctx.cwd, signal, progress, ctx.sessionManager);
+        result = await executeWaiScan(ctx.cwd, signal, progress, ctx.sessionManager, p.scanDeep);
       }
 
       if (p.review) resetEditsSinceReview(ctx.cwd);
@@ -266,7 +266,7 @@ export default async function (pi: ExtensionAPI) {
       "Always use wai with plan:true before starting any non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria; do not write code without a plan.",
       "Always use wai with review:true after every code change. Treat review feedback as blocking; fix issues and re-run review until it returns 'pass'.",
       "Use wai with review:true and files:[...] to limit the review to specific files, or exclude:[...] to skip files like generated output.",
-      "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans.",
+      "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans. Add scanDeep:true on that first scan to also sample source files and build the project symbol index.",
       "Use wai with suggest:true whenever you are uncertain about the best approach for a specific technical question. If you are stuck, looping, or about to ask the user for help, call wai.suggest first.",
       "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call wai.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without wai.",
       "Use wai with recommend:true whenever you need to decide what step to take next. If you have spent more than one turn without clear progress, call wai.recommend.",
@@ -274,6 +274,7 @@ export default async function (pi: ExtensionAPI) {
       "Use wai with security:true when the change involves auth, input handling, secrets, dependencies, or any security-sensitive area. Pass a description of the function or API to audit and scope it with files:[...] if needed.",
       "Use wai with judge:true after completing all work for a final holistic review against the original plan.",
       "Use wai with done:true to mark the current plan step complete. Use it after finishing a step so the tracker stays in sync.",
+      "If the plan tracker drifts from reality (e.g. progress % looks wrong for the work actually completed), correct it with wai done:<step number> or done:'all'. wai.judge also re-syncs the tracker from its completedStepIds whenever it runs.",
       "Use wai with planUpdate:'<new task description>' when the original plan no longer matches the implementation. The plan is regenerated and already-completed progress is preserved.",
       "Enable autoJudge in settings.json to automatically run judge when the last plan step is completed (passes review or is marked done via /wai-done).",
 
@@ -316,6 +317,12 @@ export default async function (pi: ExtensionAPI) {
         Type.Boolean({
           description:
             "If true, scan project conventions and architecture patterns. Stores results for future reviews.",
+        }),
+      ),
+      scanDeep: Type.Optional(
+        Type.Boolean({
+          description:
+            "For scan: also sample representative source files and build the project symbol index. Recommended on the first scan of a project.",
         }),
       ),
       test: Type.Optional(

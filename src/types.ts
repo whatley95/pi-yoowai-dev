@@ -201,6 +201,7 @@ export interface WaiToolParams {
   recommend?: string;
   judge?: string;
   scan?: boolean;
+  scanDeep?: boolean;
   test?: string;
   security?: string;
   done?: string | number | boolean;

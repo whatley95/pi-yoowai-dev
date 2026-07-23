@@ -75,7 +75,16 @@ export async function executeWaiDone(cwd: string, value?: string | number, signa
       : "";
 
   let verified: boolean | undefined = undefined;
-  if (config.verifyDoneClaims !== false && getEditTracker(cwd).editsSinceLastDone > 0 && stepDescription) {
+  // Verification applies only to a bare "current step is done" claim. An
+  // explicit target (done:3 / done:"all") is the agent correcting the
+  // tracker, not claiming fresh work — verifying the current step there would
+  // both block legitimate corrections and check the wrong step.
+  if (
+    targetStep === undefined &&
+    config.verifyDoneClaims !== false &&
+    getEditTracker(cwd).editsSinceLastDone > 0 &&
+    stepDescription
+  ) {
     try {
       const { diff } = getDiff(cwd, { maxDiffChars: config.reviewMaxDiffChars, untracked: true, revision: "HEAD" });
       const modelConfig = resolveTaskModel(config, "done");

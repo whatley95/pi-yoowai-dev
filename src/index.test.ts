@@ -50,6 +50,21 @@ describe("validateWaiToolParams", () => {
       assert.match(result.error, /No action specified/);
     }
   });
+
+  it("passes scanDeep through only for the scan action", () => {
+    const scan = validateWaiToolParams({ scan: true, scanDeep: true });
+    assert.equal(scan.ok, true);
+    if (scan.ok) {
+      assert.equal(scan.action, "scan");
+      assert.equal(scan.params.scanDeep, true);
+    }
+
+    const other = validateWaiToolParams({ suggest: "q", scanDeep: true });
+    assert.equal(other.ok, true);
+    if (other.ok) {
+      assert.equal(other.params.scanDeep, undefined);
+    }
+  });
 });
 
 describe("handleWaiSearchCommand", () => {

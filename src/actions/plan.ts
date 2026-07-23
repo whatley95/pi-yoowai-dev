@@ -89,10 +89,13 @@ export async function executeWaiPlan(
   });
 
   if (!plan) {
+    // Return an unambiguous error result: no synthetic plan is attached or
+    // persisted, so downstream consumers (format.ts renders error-only) and
+    // the plan tracker never see a plan that does not really exist. The raw
+    // model output is already logged by parseStructuredResult.
     return {
       action: "plan",
       error: "Failed to parse plan from secondary model response.",
-      plan: { todo: [task], acceptanceCriteria: [], summary: raw.slice(0, 200) },
       cost,
       model: modelProfile,
     };

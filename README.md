@@ -229,6 +229,7 @@ The `wai` tool is called by the main agent during development:
 | `wai({ recommend: "...", docs: ["pi"] })`                             | When unsure                    | Includes configured docs in the recommendation prompt               |
 | `wai({ judge: "all done" })`                                          | Final review                   | Holistic review against original plan                               |
 | `wai({ scan: true })`                                                 | Once per project               | Learns project conventions and architecture                         |
+| `wai({ scan: true, scanDeep: true })`                                 | First scan of a project        | Also samples source files and builds the project symbol index       |
 | `wai({ test: "added payment service" })`                              | After code changes             | Checks for failing tests, missing tests, and test-quality issues    |
 | `wai({ security: "auth changes" })`                                   | Security-sensitive changes     | Audits diff for secrets, injection, auth, and other vulnerabilities |
 | `wai({ done: true })`                                                 | After completing a step        | Mark the current plan step complete; use a number or `"all"` to mark multiple steps |
@@ -306,6 +307,7 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 | `/wai judge "auth refactor complete"`         | Final holistic review                                                     |
 | `/wai scan`                                   | Scan project conventions                                                  |
 | `/wai scan --deep`                            | Deep scan with code samples and symbol index build                        |
+| `/wai-scan-deep`                              | Alias for `/wai scan --deep`                                              |
 | `/wai-next`                                   | Recommend the next step based on the active plan                          |
 | `/wai-done [description]`                     | Mark the current plan step complete and recommend the next step           |
 | `/wai-done 3`                                 | Mark steps 1–3 complete                                                   |
