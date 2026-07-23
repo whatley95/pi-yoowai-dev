@@ -110,10 +110,29 @@ export async function resolveModelThinkingDetails(
 const MODEL_PICKER_SOFT_CAP = 20;
 const MODEL_PICKER_GROUP_CAP = 20;
 const FILTER_SENTINEL = "__wai_filter_more_models__";
+const SEARCH_SENTINEL = "__wai_search_models__";
 
 export interface ModelRef {
   id: string;
   provider: string;
+}
+
+export async function promptSearchModels(
+  ctx: ExtensionContext,
+  provider: string,
+  models: ModelRef[],
+  currentId: string,
+): Promise<string | undefined> {
+  const query = await ctx.ui.input(`Search ${provider} models`);
+  if (!query) return undefined;
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return undefined;
+  const filtered = models.filter((m) => m.id.toLowerCase().includes(normalized));
+  if (filtered.length === 0) {
+    ctx.ui.notify(`No ${provider} models match "${query}".`, "warning");
+    return undefined;
+  }
+  return pickModelFromFlatList(ctx, provider, filtered, currentId);
 }
 
 export function formatModelItem(model: ModelRef, currentId?: string): string {
@@ -155,10 +174,14 @@ export async function pickModelFromFlatList(
   const displayed = models.slice(0, MODEL_PICKER_GROUP_CAP);
   const remaining = models.length - MODEL_PICKER_GROUP_CAP;
   const items = displayed.map((m) => formatModelItem(m, currentId));
+  items.unshift(`${SEARCH_SENTINEL}: 🔎 Search ${groupLabel ?? provider} models…`);
   items.push(`${FILTER_SENTINEL}: Filter ${remaining} more models…`);
   const title = groupLabel ? `Pick ${provider} ${groupLabel} model:` : `Pick model for ${provider}:`;
   const picked = await ctx.ui.select(title, items);
   if (!picked) return undefined;
+  if (picked.startsWith(SEARCH_SENTINEL)) {
+    return promptSearchModels(ctx, provider, models, currentId);
+  }
   if (picked.startsWith(FILTER_SENTINEL)) {
     ctx.ui.notify(`Too many models. Narrow with /wai-model ${provider} <filter>`, "warning");
     return undefined;
@@ -194,8 +217,12 @@ export async function pickModelFromProvider(
 
   if (useGroups) {
     const groupItems = groupNames.map((g) => `${g} (${groups[g].length} models)`);
+    groupItems.unshift(`${SEARCH_SENTINEL}: 🔎 Search all ${provider} models…`);
     const picked = await ctx.ui.select(`Pick ${provider} model family:`, groupItems);
     if (!picked) return undefined;
+    if (picked.startsWith(SEARCH_SENTINEL)) {
+      return promptSearchModels(ctx, provider, candidates, currentId);
+    }
     const groupName = picked.replace(/ \(\d+ models\)$/, "");
     return pickModelFromFlatList(ctx, provider, groups[groupName] ?? [], currentId, groupName);
   }

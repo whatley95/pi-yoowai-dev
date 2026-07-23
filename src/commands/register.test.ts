@@ -9,6 +9,7 @@ import {
   pickModelFromFlatList,
   pickModelFromProvider,
   pickRecentModel,
+  promptSearchModels,
   type ModelRef,
 } from "./register.js";
 import { setSdkGetModelOverride } from "../backends/sdk-backend.js";
@@ -17,11 +18,18 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const canonicalLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-function fakeContext(selectQueue: (string | undefined)[]): ExtensionContext {
+function fakeContext(
+  selectQueue: (string | undefined)[] = [],
+  inputQueue: (string | undefined)[] = [],
+): ExtensionContext {
   return {
     ui: {
       select: async () => {
         const next = selectQueue.shift();
+        return next ?? undefined;
+      },
+      input: async () => {
+        const next = inputQueue.shift();
         return next ?? undefined;
       },
       notify: () => {},
@@ -252,5 +260,50 @@ describe("model picker helpers", () => {
     const ctx = fakeContext([undefined]);
     const result = await pickRecentModel(ctx, recent);
     assert.strictEqual(result, undefined);
+  });
+
+  it("promptSearchModels filters models by user input and returns a selection", async () => {
+    const ctx = fakeContext(["openai/gpt-4o"], ["gpt-4o"]);
+    const models: ModelRef[] = [
+      { id: "openai/gpt-4o", provider: "openrouter" },
+      { id: "openai/gpt-3.5", provider: "openrouter" },
+      { id: "anthropic/claude-sonnet", provider: "openrouter" },
+    ];
+    const result = await promptSearchModels(ctx, "openrouter", models, "");
+    assert.strictEqual(result, "openai/gpt-4o");
+  });
+
+  it("promptSearchModels returns undefined when cancelled", async () => {
+    const ctx = fakeContext([], [undefined]);
+    const models: ModelRef[] = [{ id: "openai/gpt-4o", provider: "openrouter" }];
+    const result = await promptSearchModels(ctx, "openrouter", models, "");
+    assert.strictEqual(result, undefined);
+  });
+
+  it("promptSearchModels returns undefined when no models match", async () => {
+    const ctx = fakeContext([], ["llama"]);
+    const models: ModelRef[] = [{ id: "openai/gpt-4o", provider: "openrouter" }];
+    const result = await promptSearchModels(ctx, "openrouter", models, "");
+    assert.strictEqual(result, undefined);
+  });
+
+  it("pickModelFromProvider opens search when the search sentinel is selected", async () => {
+    const ctx = fakeContext(["__wai_search_models__: 🔎 Search all openrouter models…", "openai/model-3"], ["model-3"]);
+    const models: ModelRef[] = [
+      ...Array.from({ length: 11 }, (_, i) => ({ id: `openai/model-${i}`, provider: "openrouter" })),
+      ...Array.from({ length: 11 }, (_, i) => ({ id: `anthropic/model-${i}`, provider: "openrouter" })),
+    ];
+    const result = await pickModelFromProvider(ctx, "openrouter", models, "");
+    assert.strictEqual(result, "openai/model-3");
+  });
+
+  it("pickModelFromFlatList opens search when the search sentinel is selected", async () => {
+    const ctx = fakeContext(["__wai_search_models__: 🔎 Search openai models…", "openai/model-3"], ["model-3"]);
+    const models: ModelRef[] = Array.from({ length: 25 }, (_, i) => ({
+      id: `openai/model-${i}`,
+      provider: "openrouter",
+    }));
+    const result = await pickModelFromFlatList(ctx, "openrouter", models, "", "openai");
+    assert.strictEqual(result, "openai/model-3");
   });
 });
