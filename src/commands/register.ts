@@ -61,14 +61,18 @@ export interface ModelThinkingDetails {
 export function computeThinkingLevels(
   modelDetails: ModelThinkingDetails | undefined,
   canonicalLevels: readonly string[],
-): string[] {
+): string[] | null {
   if (modelDetails?.reasoning === false) {
     return ["off"];
   }
   const map = modelDetails?.thinkingLevelMap;
   const hasMap = map && typeof map === "object" && Object.keys(map).length > 0;
   if (!hasMap) {
-    return [...canonicalLevels];
+    // No thinkingLevelMap from the SDK catalog or registry: signal "unknown"
+    // so the caller falls back to a safe set instead of offering every canonical
+    // level (which would let the user pick an unsupported level that errors at
+    // runtime in callSdkBackend).
+    return null;
   }
   const supported = new Set<string>();
   for (const [level, value] of Object.entries(map!)) {
@@ -79,6 +83,26 @@ export function computeThinkingLevels(
   }
   supported.add("off");
   return canonicalLevels.filter((l) => supported.has(l));
+}
+
+/** Resolve the thinking levels to offer for a model. When the SDK catalog or
+ *  registry exposes a thinkingLevelMap, returns those advertised levels. When
+ *  neither source has a map (common for gateway providers like OpenRouter),
+ *  returns a safe fallback of "off" plus the model's currently-configured /
+ *  default level, so the user can keep their setting or disable reasoning
+ *  without selecting an unverified level that would error at runtime. */
+export function resolveThinkingLevelOptions(
+  modelDetails: ModelThinkingDetails | undefined,
+  canonicalLevels: readonly string[],
+  effectiveThinking: string,
+): string[] {
+  const advertised = computeThinkingLevels(modelDetails, canonicalLevels);
+  if (advertised) return advertised;
+  const levels = ["off"];
+  if (effectiveThinking && effectiveThinking !== "off" && !levels.includes(effectiveThinking)) {
+    levels.push(effectiveThinking);
+  }
+  return levels;
 }
 
 /** Resolve a model's advertised thinking levels. The Pi model registry does not
@@ -842,11 +866,14 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       }
 
       // 3. Pick thinking level.
-      // Prefer the model's advertised supported levels from the Pi SDK catalog.
+      // Prefer the model's advertised supported levels from the Pi SDK catalog /
+      // registry. When neither exposes a thinkingLevelMap (e.g. gateway
+      // providers), resolveThinkingLevelOptions falls back to a safe set
+      // ("off" + the current default) instead of the full canonical list.
       const canonicalThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
       const registryModel = typeof registry.getModel === "function" ? registry.getModel(provider, modelId) : undefined;
       const modelDetails = await resolveModelThinkingDetails(provider, modelId, registryModel);
-      const thinkingLevels = computeThinkingLevels(modelDetails, canonicalThinkingLevels);
+      const thinkingLevels = resolveThinkingLevelOptions(modelDetails, canonicalThinkingLevels, effectiveThinking);
       if (thinkingLevels.length === 0) {
         ctx.ui.notify(`Model ${provider}:${modelId} does not advertise any thinking levels.`, "warning");
         return;

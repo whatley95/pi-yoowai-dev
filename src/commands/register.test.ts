@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import {
   computeThinkingLevels,
+  resolveThinkingLevelOptions,
   resolveModelThinkingDetails,
   formatModelItem,
   parseModelIdFromItem,
@@ -44,10 +45,10 @@ describe("computeThinkingLevels", () => {
     assert.deepStrictEqual(computeThinkingLevels({ reasoning: false }, canonicalLevels), ["off"]);
   });
 
-  it("falls back to canonical list when no map is provided", () => {
-    assert.deepStrictEqual(computeThinkingLevels({}, canonicalLevels), canonicalLevels);
-    assert.deepStrictEqual(computeThinkingLevels({ reasoning: true }, canonicalLevels), canonicalLevels);
-    assert.deepStrictEqual(computeThinkingLevels(undefined, canonicalLevels), canonicalLevels);
+  it("returns null (no data) when no map is provided", () => {
+    assert.strictEqual(computeThinkingLevels({}, canonicalLevels), null);
+    assert.strictEqual(computeThinkingLevels({ reasoning: true }, canonicalLevels), null);
+    assert.strictEqual(computeThinkingLevels(undefined, canonicalLevels), null);
   });
 
   it("filters to advertised non-null levels plus off", () => {
@@ -80,6 +81,29 @@ describe("computeThinkingLevels", () => {
       } as Record<string, string | null>,
     };
     assert.deepStrictEqual(computeThinkingLevels(modelDetails, canonicalLevels), ["off"]);
+  });
+});
+
+describe("resolveThinkingLevelOptions", () => {
+  it("returns advertised levels when a thinkingLevelMap is present", () => {
+    const modelDetails = {
+      reasoning: true,
+      thinkingLevelMap: { off: null, high: "high", max: "max" } as Record<string, string | null>,
+    };
+    assert.deepStrictEqual(
+      resolveThinkingLevelOptions(modelDetails, canonicalLevels, "xhigh"),
+      ["off", "high", "max"],
+    );
+  });
+
+  it("falls back to off plus the current default when no map is present", () => {
+    assert.deepStrictEqual(resolveThinkingLevelOptions(undefined, canonicalLevels, "xhigh"), ["off", "xhigh"]);
+    assert.deepStrictEqual(resolveThinkingLevelOptions({}, canonicalLevels, "high"), ["off", "high"]);
+  });
+
+  it("falls back to just off when the current default is off or absent", () => {
+    assert.deepStrictEqual(resolveThinkingLevelOptions(undefined, canonicalLevels, "off"), ["off"]);
+    assert.deepStrictEqual(resolveThinkingLevelOptions(undefined, canonicalLevels, ""), ["off"]);
   });
 });
 
