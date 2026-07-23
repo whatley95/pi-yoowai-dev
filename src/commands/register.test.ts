@@ -191,8 +191,18 @@ describe("model picker helpers", () => {
     assert.strictEqual(result, undefined);
   });
 
-  it("pickModelFromFlatList warns and returns undefined when filter sentinel is selected", async () => {
-    const ctx = fakeContext(["Filter 5 more models…"]);
+  it("pickModelFromFlatList falls back to prompt search for large lists", async () => {
+    const ctx = fakeContext(["openai/model-3"], ["model-3"]);
+    const models: ModelRef[] = Array.from({ length: 25 }, (_, i) => ({
+      id: `openai/model-${i}`,
+      provider: "openrouter",
+    }));
+    const result = await pickModelFromFlatList(ctx, "openrouter", models, "");
+    assert.strictEqual(result, "openai/model-3");
+  });
+
+  it("pickModelFromFlatList returns undefined when prompt search is cancelled", async () => {
+    const ctx = fakeContext([], [undefined]);
     const models: ModelRef[] = Array.from({ length: 25 }, (_, i) => ({
       id: `openai/model-${i}`,
       provider: "openrouter",
@@ -297,8 +307,8 @@ describe("model picker helpers", () => {
     assert.strictEqual(result, undefined);
   });
 
-  it("pickModelFromFlatList opens search when the search sentinel is selected", async () => {
-    const ctx = fakeContext(["🔎 Search openai models…", "openai/model-3"], ["model-3"]);
+  it("pickModelFromFlatList falls back to prompt search for large grouped lists", async () => {
+    const ctx = fakeContext(["openai/model-3"], ["model-3"]);
     const models: ModelRef[] = Array.from({ length: 25 }, (_, i) => ({
       id: `openai/model-${i}`,
       provider: "openrouter",
