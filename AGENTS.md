@@ -16,7 +16,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 
 ### What the extension exposes
 
-**Tool `wai`** — the main API used by the primary agent. Actions: `plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`.
+**Tool `wai`** — the main API used by the primary agent. Actions: `plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `planUpdate`.
 
 **Additional tools** — `wai_index`, `wai_explain`, and `wai_learn`.
 
@@ -38,6 +38,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 | `/wai-search-config`   | Configure the web search provider and save the Brave API key to `auth.json`.                         |
 | `/wai-next`            | Recommend the next step based on the active plan.                                                    |
 | `/wai-done`            | Mark the current plan step complete and recommend the next step. `/wai-done N` sets progress to step N (lower N regresses, `0` resets); `all` completes everything. |
+| `/wai-plan-update`     | Update the active plan (add/modify/remove steps) via the plan model.                                        |
 | `/wai-logs`            | Show recent wai error/event log entries for this project.                                            |
 | `/wai-test`            | Test connectivity to the configured secondary model(s); an optional task name scopes the check.     |
 | `/wai-backend`         | Switch the secondary model backend: `sdk` (default), `pi`, or `http`.                                |
@@ -51,6 +52,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 - **Runtime:** Node.js.
 - **Host platform:** Pi coding agent (`@earendil-works/pi-coding-agent`).
 - **Validation schemas:** `@sinclair/typebox` (used only for tool parameter shapes).
+- **Runtime dependencies:** `typescript` (used lazily by `ast-context.ts` / `project-index.ts` via the compiler API) and `duck-duck-scrape` (lazy-loaded for DuckDuckGo web search in `doc-fetcher.ts`). Everything else is a peer/dev dependency of the Pi host.
 - **TUI components:** `@earendil-works/pi-tui` (peer dependency; used in `src/render.ts` for tool call/result rendering).
 - **Linting:** ESLint 10 with `@eslint/js` and `typescript-eslint` recommended configs.
 - **Package manager:** npm (lockfile `package-lock.json`).
@@ -111,6 +113,11 @@ pi-yoowai/
     ├── wai-learn.ts      # /wai-learn terminal command handler
     ├── wai-search.ts     # /wai-search terminal command handler
     ├── wai-search-config.ts # /wai-search-config terminal command handler
+    ├── ast-context.ts    # TypeScript compiler-API context for changed files (lazy-loaded, token-bounded)
+    ├── context-retrieval.ts # Compact outlines of files related to changed files via relative imports
+    ├── review-cache.ts   # On-disk TTL cache for review/test/security/judge results
+    ├── oauth-cache.ts    # Short-lived cache of exchanged OAuth credentials
+    ├── model-history.ts  # Recently used secondary models (drives /wai-model recents)
     ├── actions/          # One executor per wai action + shared helpers
     │   ├── plan.ts       #   plan action executor
     │   ├── review.ts     #   review action executor
@@ -144,6 +151,7 @@ pi-yoowai/
     │   └── provider.test.ts
     ├── commands/         # Terminal command helpers (argument parsers + registration)
     │   ├── arg-parsers.ts # parseReviewCommandArgs / parseTestCommandArgs / parseSecurityCommandArgs
+    │   ├── searchable-select.ts # Filterable interactive option-picker state used by /wai-model (pi-tui fuzzyFilter when available, substring fallback)
     │   └── register.ts    # Registers all /wai-* slash commands and delegates to the action executors
     ├── backends/         # Pluggable model-call backends
     │   ├── backend-resolver.ts # pick backend; resolve SDK catalog metadata for token budgets
@@ -219,6 +227,11 @@ pi-yoowai/
 - **`wai-learn.ts`** — Handles `/wai-learn`: records/verifies project facts for future sessions.
 - **`wai-search.ts`** — Handles `/wai-search`: validates the query, checks `pi-yoowai.docs.webSearch.enabled`, runs web search via `doc-fetcher.ts`, and formats raw results.
 - **`wai-search-config.ts`** — Handles `/wai-search-config`: lets the user pick DuckDuckGo or Brave Search, and saves the Brave API key to `~/.pi/agent/auth.json` when provided inline.
+- **`ast-context.ts`** — Builds a token-bounded TypeScript compiler-API context (declarations/signatures) for changed files. The `typescript` package is imported lazily; a missing or broken install disables AST context with a logged warning instead of failing startup.
+- **`context-retrieval.ts`** — Finds files related to changed files through relative `import`/`export` edges and includes compact outlines (token-bounded) as extra review context.
+- **`review-cache.ts`** — On-disk TTL cache (1 hour, max 100 entries) for `review`/`test`/`security`/`judge` results, keyed by content hash, stored under `.pi/yoowai/`.
+- **`oauth-cache.ts`** — Short-lived cache (default 55 minutes) of exchanged OAuth credentials under `.pi/yoowai/oauth-cache.json`, keyed by credential hash.
+- **`model-history.ts`** — Persists recently used secondary models (`recent-models.json`, max 10) so `/wai-model` can offer recents.
 - **`types/`** — Shared types: `docs.ts` (doc sources), `secondary-model.ts` (backend/SDK types), and `stubs/` ambient declarations (`pi-ai.d.ts`, `pi-tui.d.ts`).
 
 ---
@@ -336,6 +349,9 @@ Relevant keys:
 - API keys are resolved by pi-yoowai (`secondary.apiKey` → `~/.pi/agent/auth.json` → env vars → `!command`), then by the `pi-ai` SDK's own credential/env lookup if no explicit key is found.
 - If the SDK backend hits a retryable provider error, pi-yoowai falls back to the `pi` backend once.
 - `modelInfo` — optional per-model token budget overrides, keyed by model id.
+- `taskModels` — optional per-tool model overrides (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `explain`), each a partial secondary config (`provider`, `id`, `thinking`, ...). `planUpdate` intentionally shares the plan model.
+- `reviewStrategy` — `auto` (default), `diff-only`, or `full-files`; controls how much source is sent with reviews.
+- `reviewFullFileThresholdLines` / `reviewMaxInputTokens` — tuning for when reviews fall back to full-file inclusion and the cap on review input tokens.
 - `autoJudge` — run `judge` automatically when the last plan step passes review, when `/wai-done` marks the final step complete, or when `agent_settled` fires after all steps are complete.
 - `autoInjectContext` — prepend the active plan summary, current step, and scanned conventions to the main agent's context before every LLM call (default: `true`).
 - `contextInjectMaxTokens` — token budget for the injected context (default: `800`).
@@ -382,6 +398,9 @@ The extension stores per-project runtime data under `.pi/yoowai/`:
 - `conventions.json` — cached project conventions.
 - `cost.json` — estimated spend for the current Pi session.
 - `memory.json` — recent issues per file.
+- `review-cache.json` — cached review/test/security/judge results (see `review-cache.ts`).
+- `oauth-cache.json` — cached exchanged OAuth credentials (see `oauth-cache.ts`).
+- `recent-models.json` — recently used secondary models (see `model-history.ts`).
 
 `.pi/` is gitignored. Do not commit it.
 
@@ -427,7 +446,7 @@ The extension stores per-project runtime data under `.pi/yoowai/`:
 
 ## Notes for agents
 
-- The previous `AGENTS.md` did not exist; this file was created from the actual project contents.
+- This file is maintained alongside the code; it was written from the actual project contents and should be updated whenever the structure, commands, or conventions change.
 - Do not assume a build step. Changes are validated with `npm run typecheck` and `npm run lint`.
 - When editing source, keep the kebab-case filenames, `.js` relative imports, and `node:` prefix for built-ins.
 - If you change validation schemas or tool parameters, also update the corresponding prompt builders and validators in `src/prompts/` (`builders.ts`, `validation.ts`).

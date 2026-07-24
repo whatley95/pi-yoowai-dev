@@ -62,42 +62,38 @@ export function computeThinkingLevels(
   modelDetails: ModelThinkingDetails | undefined,
   canonicalLevels: readonly string[],
 ): string[] | null {
-  if (modelDetails?.reasoning === false) {
-    return ["off"];
-  }
-  const map = modelDetails?.thinkingLevelMap;
-  const hasMap = map && typeof map === "object" && Object.keys(map).length > 0;
-  if (!hasMap) {
-    // No thinkingLevelMap from the SDK catalog or registry: signal "unknown"
-    // so the caller falls back to a safe set instead of offering every canonical
-    // level (which would let the user pick an unsupported level that errors at
-    // runtime in callSdkBackend).
-    return null;
-  }
-  const supported = new Set<string>();
-  for (const [level, value] of Object.entries(map!)) {
-    if (level === "off" || value === null || value === undefined) {
-      continue;
-    }
-    supported.add(level);
-  }
-  supported.add("off");
-  return canonicalLevels.filter((l) => supported.has(l));
+  // No catalog data at all: signal "unknown" so the caller falls back to a
+  // safe set instead of guessing.
+  if (!modelDetails) return null;
+  // Mirror pi-ai's getSupportedThinkingLevels (the same source the main Pi
+  // model picker uses): non-reasoning models support only "off"; a level
+  // mapped to null is NOT supported (including "off" itself, e.g. gpt-5);
+  // xhigh/max require an explicit mapping; every other level is supported by
+  // default when the model reasons — even with no map at all, which is the
+  // common case for gateway providers like OpenRouter.
+  if (!modelDetails.reasoning) return ["off"];
+  const map = modelDetails.thinkingLevelMap;
+  return canonicalLevels.filter((level) => {
+    const mapped = map?.[level];
+    if (mapped === null) return false;
+    if (level === "xhigh" || level === "max") return mapped !== undefined;
+    return true;
+  });
 }
 
-/** Resolve the thinking levels to offer for a model. When the SDK catalog or
- *  registry exposes a thinkingLevelMap, returns those advertised levels. When
- *  neither source has a map (common for gateway providers like OpenRouter),
- *  returns a safe fallback of "off" plus the model's currently-configured /
- *  default level, so the user can keep their setting or disable reasoning
- *  without selecting an unverified level that would error at runtime. */
+/** Resolve the thinking levels to offer for a model. Uses the model's
+ *  advertised supported levels (mirroring pi-ai's own semantics). When the
+ *  model is entirely unknown to the SDK catalog and registry (or advertises
+ *  nothing selectable), returns a safe fallback of "off" plus the model's
+ *  currently-configured / default level, so the user can keep their setting
+ *  or disable reasoning without selecting an unverified level. */
 export function resolveThinkingLevelOptions(
   modelDetails: ModelThinkingDetails | undefined,
   canonicalLevels: readonly string[],
   effectiveThinking: string,
 ): string[] {
   const advertised = computeThinkingLevels(modelDetails, canonicalLevels);
-  if (advertised) return advertised;
+  if (advertised && advertised.length > 0) return advertised;
   const levels = ["off"];
   if (effectiveThinking && effectiveThinking !== "off" && !levels.includes(effectiveThinking)) {
     levels.push(effectiveThinking);
@@ -866,10 +862,11 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       }
 
       // 3. Pick thinking level.
-      // Prefer the model's advertised supported levels from the Pi SDK catalog /
-      // registry. When neither exposes a thinkingLevelMap (e.g. gateway
-      // providers), resolveThinkingLevelOptions falls back to a safe set
-      // ("off" + the current default) instead of the full canonical list.
+      // Offer the model's advertised supported levels from the Pi SDK catalog /
+      // registry, mirroring pi-ai's getSupportedThinkingLevels semantics
+      // (gateway providers like OpenRouter get the default reasoning set).
+      // resolveThinkingLevelOptions falls back to a safe set ("off" + the
+      // current default) only for models unknown to both sources.
       const canonicalThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
       const registryModel = typeof registry.getModel === "function" ? registry.getModel(provider, modelId) : undefined;
       const modelDetails = await resolveModelThinkingDetails(provider, modelId, registryModel);

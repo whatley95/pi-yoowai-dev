@@ -45,13 +45,25 @@ describe("computeThinkingLevels", () => {
     assert.deepStrictEqual(computeThinkingLevels({ reasoning: false }, canonicalLevels), ["off"]);
   });
 
-  it("returns null (no data) when no map is provided", () => {
-    assert.strictEqual(computeThinkingLevels({}, canonicalLevels), null);
-    assert.strictEqual(computeThinkingLevels({ reasoning: true }, canonicalLevels), null);
+  it("returns null only when the model is entirely unknown", () => {
     assert.strictEqual(computeThinkingLevels(undefined, canonicalLevels), null);
   });
 
-  it("filters to advertised non-null levels plus off", () => {
+  it("treats a missing reasoning flag as non-reasoning (mirrors pi-ai)", () => {
+    assert.deepStrictEqual(computeThinkingLevels({}, canonicalLevels), ["off"]);
+  });
+
+  it("offers the default reasoning set for reasoning models with no map (OpenRouter case)", () => {
+    assert.deepStrictEqual(computeThinkingLevels({ reasoning: true }, canonicalLevels), [
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+    ]);
+  });
+
+  it("drops null-mapped levels, including off itself (gpt-5 case)", () => {
     const modelDetails = {
       reasoning: true,
       thinkingLevelMap: {
@@ -64,14 +76,27 @@ describe("computeThinkingLevels", () => {
         max: null,
       } as Record<string, string | null>,
     };
-    assert.deepStrictEqual(computeThinkingLevels(modelDetails, canonicalLevels), ["off", "minimal", "low", "high"]);
+    assert.deepStrictEqual(computeThinkingLevels(modelDetails, canonicalLevels), ["minimal", "low", "high"]);
   });
 
-  it("returns only off when every non-off level is unsupported", () => {
+  it("includes unmapped mid levels by default but requires explicit xhigh/max mappings", () => {
+    const modelDetails = {
+      reasoning: true,
+      thinkingLevelMap: { off: null, high: "high", max: "max" } as Record<string, string | null>,
+    };
+    assert.deepStrictEqual(computeThinkingLevels(modelDetails, canonicalLevels), [
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "max",
+    ]);
+  });
+
+  it("returns only off when every other level is unsupported", () => {
     const modelDetails = {
       reasoning: true,
       thinkingLevelMap: {
-        off: null,
         minimal: null,
         low: null,
         medium: null,
@@ -90,15 +115,28 @@ describe("resolveThinkingLevelOptions", () => {
       reasoning: true,
       thinkingLevelMap: { off: null, high: "high", max: "max" } as Record<string, string | null>,
     };
-    assert.deepStrictEqual(
-      resolveThinkingLevelOptions(modelDetails, canonicalLevels, "xhigh"),
-      ["off", "high", "max"],
-    );
+    assert.deepStrictEqual(resolveThinkingLevelOptions(modelDetails, canonicalLevels, "xhigh"), [
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "max",
+    ]);
   });
 
-  it("falls back to off plus the current default when no map is present", () => {
+  it("offers the default reasoning set for map-less reasoning models (OpenRouter case)", () => {
+    assert.deepStrictEqual(resolveThinkingLevelOptions({ reasoning: true }, canonicalLevels, "xhigh"), [
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+    ]);
+  });
+
+  it("falls back to off plus the current default only for unknown models", () => {
     assert.deepStrictEqual(resolveThinkingLevelOptions(undefined, canonicalLevels, "xhigh"), ["off", "xhigh"]);
-    assert.deepStrictEqual(resolveThinkingLevelOptions({}, canonicalLevels, "high"), ["off", "high"]);
+    assert.deepStrictEqual(resolveThinkingLevelOptions({}, canonicalLevels, "high"), ["off"]);
   });
 
   it("falls back to just off when the current default is off or absent", () => {
@@ -129,7 +167,13 @@ describe("resolveModelThinkingDetails", () => {
     try {
       const details = await resolveModelThinkingDetails("deepseek", "deepseek-chat", { reasoning: true });
       assert.deepStrictEqual(details?.thinkingLevelMap, { off: null, high: "high", max: "max" });
-      assert.deepStrictEqual(computeThinkingLevels(details, canonicalLevels), ["off", "high", "max"]);
+      assert.deepStrictEqual(computeThinkingLevels(details, canonicalLevels), [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max",
+      ]);
     } finally {
       setSdkGetModelOverride(null);
     }
@@ -188,7 +232,14 @@ describe("isScopeConfigured", () => {
 
 describe("buildModelConfigEntry", () => {
   it("preserves existing provider-specific fields when re-selecting the same provider", () => {
-    const prev = { provider: "opencode-custom", id: "old/model", thinking: "xhigh", baseUrl: "https://x/v1", style: "openai-compatible", backend: "http" };
+    const prev = {
+      provider: "opencode-custom",
+      id: "old/model",
+      thinking: "xhigh",
+      baseUrl: "https://x/v1",
+      style: "openai-compatible",
+      backend: "http",
+    };
     const entry = buildModelConfigEntry(prev, { provider: "opencode-custom", id: "new/model", thinking: "high" });
     assert.strictEqual(entry.baseUrl, "https://x/v1");
     assert.strictEqual(entry.style, "openai-compatible");
@@ -344,10 +395,7 @@ describe("model picker helpers", () => {
   });
 
   it("pickModelFromProvider returns to family browse when search matches nothing", async () => {
-    const ctx = fakeContext(
-      ["Search all openrouter models…", "openai (11 models)", "openai/model-3"],
-      ["zzz"],
-    );
+    const ctx = fakeContext(["Search all openrouter models…", "openai (11 models)", "openai/model-3"], ["zzz"]);
     const models: ModelRef[] = [
       ...Array.from({ length: 11 }, (_, i) => ({ id: `openai/model-${i}`, provider: "openrouter" })),
       ...Array.from({ length: 11 }, (_, i) => ({ id: `anthropic/model-${i}`, provider: "openrouter" })),

@@ -1,5 +1,42 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+/** Filters (and possibly ranks) options for a query. Empty query returns all. */
+export type SearchMatcher = (options: string[], query: string) => string[];
+
+const substringMatcher: SearchMatcher = (options, query) => {
+  const normalized = query.trim().toLowerCase();
+  return normalized ? options.filter((option) => option.toLowerCase().includes(normalized)) : [...options];
+};
+
+let matcherPromise: Promise<SearchMatcher> | undefined;
+let matcherOverrideForTests: SearchMatcher | undefined;
+
+/** Test hook: force the matcher so tests do not depend on whether the
+ *  optional pi-tui peer dependency happens to be installed. */
+export function setSearchMatcherForTests(matcher: SearchMatcher | undefined): void {
+  matcherOverrideForTests = matcher;
+}
+
+/** Resolve the best available matcher: pi-tui's fuzzyFilter (the same matching
+ *  Pi's own search uses — subsequence match, score-ranked, token-aware) when
+ *  the peer dependency is present, plain substring matching otherwise. */
+function loadSearchMatcher(): Promise<SearchMatcher> {
+  if (matcherOverrideForTests) return Promise.resolve(matcherOverrideForTests);
+  matcherPromise ??= (async () => {
+    try {
+      const mod = await import("@earendil-works/pi-tui");
+      if (typeof mod.fuzzyFilter === "function") {
+        return (options: string[], query: string) =>
+          query.trim() ? mod.fuzzyFilter(options, query.trim(), (option) => option) : [...options];
+      }
+    } catch {
+      // pi-tui unavailable; fall back to substring matching.
+    }
+    return substringMatcher;
+  })();
+  return matcherPromise;
+}
+
 export interface SearchState {
   options: string[];
   filtered: string[];
@@ -8,9 +45,10 @@ export interface SearchState {
   result?: string;
   cancelled: boolean;
   done: boolean;
+  matcher: SearchMatcher;
 }
 
-export function createSearchState(options: string[]): SearchState {
+export function createSearchState(options: string[], matcher: SearchMatcher = substringMatcher): SearchState {
   return {
     options: [...options],
     filtered: [...options],
@@ -19,14 +57,12 @@ export function createSearchState(options: string[]): SearchState {
     result: undefined,
     cancelled: false,
     done: false,
+    matcher,
   };
 }
 
 function updateFiltered(state: SearchState): void {
-  const normalized = state.query.trim().toLowerCase();
-  state.filtered = normalized
-    ? state.options.filter((option) => option.toLowerCase().includes(normalized))
-    : [...state.options];
+  state.filtered = state.matcher(state.options, state.query);
   state.selectedIndex = Math.min(state.selectedIndex, Math.max(0, state.filtered.length - 1));
 }
 
@@ -125,26 +161,45 @@ export async function searchableSelect(
     return ctx.ui.select(title, options);
   }
 
-  const state = createSearchState(options);
   const maxVisible = opts.maxVisible ?? 15;
   const widgetKey = "wai-model-search";
 
-  const render = () => {
-    ctx.ui.setWidget(widgetKey, renderSearchState(title, state, maxVisible));
-  };
-
   return new Promise<string | undefined>((resolve) => {
-    const unsubscribe = ctx.ui.onTerminalInput((data) => {
+    // The matcher loads asynchronously (dynamic pi-tui import). Subscribe
+    // immediately and buffer keystrokes so early input is not lost while it
+    // resolves.
+    let state: SearchState | undefined;
+    const pending: string[] = [];
+
+    const render = () => {
+      if (state) ctx.ui.setWidget(widgetKey, renderSearchState(title, state, maxVisible));
+    };
+
+    const handle = (data: string) => {
+      if (!state) return;
       handleSearchInput(state, data);
       if (state.done) {
         unsubscribe();
         ctx.ui.setWidget(widgetKey, undefined);
         resolve(state.cancelled ? undefined : state.result);
-        return { consume: true };
+        return;
       }
       render();
+    };
+
+    const unsubscribe = ctx.ui.onTerminalInput((data) => {
+      if (state) {
+        handle(data);
+      } else {
+        pending.push(data);
+      }
       return { consume: true };
     });
-    render();
+
+    void loadSearchMatcher().then((matcher) => {
+      state = createSearchState(options, matcher);
+      render();
+      for (const data of pending.splice(0)) handle(data);
+    });
   });
 }

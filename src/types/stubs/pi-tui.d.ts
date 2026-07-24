@@ -58,4 +58,11 @@ declare module "@earendil-works/pi-tui" {
   }
 
   export function getCapabilities(): { images?: "sixel" | "kitty" | "none" };
+
+  export interface FuzzyMatch {
+    matches: boolean;
+    score: number;
+  }
+  export function fuzzyMatch(query: string, text: string): FuzzyMatch;
+  export function fuzzyFilter<T>(items: T[], query: string, getText: (item: T) => string): T[];
 }
