@@ -26,6 +26,11 @@ export interface YoowaiConfig {
   secondary: import("./types/secondary-model.js").SecondaryModelConfig;
   /** Per-task model overrides. Any omitted field falls back to `secondary`. */
   taskModels?: Partial<Record<WaiModelTask, Partial<import("./types/secondary-model.js").SecondaryModelConfig>>>;
+  /** Council of models that judge in parallel when `wai.judge` runs; their verdicts are synthesized into one final judgment.
+   *  Each entry is a partial secondary config (a "provider/model-id" string in settings is normalized to `{ provider, id }`),
+   *  merged over `secondary` the same way `taskModels` overrides resolve. Prefer different model families per member.
+   *  Fewer than 2 valid members disables the council. Default: empty (single-model judge). */
+  judgeCouncil?: Array<Partial<import("./types/secondary-model.js").SecondaryModelConfig>>;
   /** Named model presets applied via `/wai-preset <name>`. */
   presets?: Record<string, YoowaiPreset>;
   /** Fallback secondary models to try if the primary model fails. Each fallback is tried in order. */
@@ -76,6 +81,12 @@ export interface YoowaiConfig {
   planWidget?: boolean;
   /** Register the configured secondary model as a Pi provider named "wai". Default false. */
   registerProvider?: boolean;
+  /** Consecutive turn_ends with unreviewed edits pending before the workflow steer escalates to an explicit stop directive. Default 3. */
+  steerEscalationThreshold?: number;
+  /** Block wai.done from marking steps complete while unreviewed edits are pending (overridable with force). Default false. */
+  requireReviewBeforeDone?: boolean;
+  /** Automatically run wai.review when the agent settles with unreviewed edits pending, before any auto-judge. Default false. */
+  autoReviewOnSettle?: boolean;
 }
 
 export interface PlanStep {
@@ -144,6 +155,21 @@ export interface RecommendResult {
   alternatives: string[];
 }
 
+export interface JudgeCouncilMemberOutcome {
+  /** "provider:id" label of the council member. */
+  model: string;
+  /** The member's verdict; undefined when the member failed. */
+  verdict?: ReviewVerdict;
+  /** Set when the member call failed or its response was unparseable. */
+  error?: string;
+}
+
+export interface JudgeCouncilSummary {
+  members: JudgeCouncilMemberOutcome[];
+  /** True when a synthesizer model merged the verdicts; false when the deterministic fallback merge was used. */
+  synthesized: boolean;
+}
+
 export interface JudgeResult extends ReviewResult {
   summary: string;
   completedStepIds?: number[];
@@ -152,6 +178,8 @@ export interface JudgeResult extends ReviewResult {
   planUpdateSuggested?: boolean;
   planUpdateReason?: string;
   unreviewedEdits?: boolean;
+  /** Present when the judgment was produced by a judge council (see `judgeCouncil` config). */
+  council?: JudgeCouncilSummary;
 }
 
 export interface TestFinding {
@@ -202,6 +230,12 @@ export interface YoowaiSessionState {
   editsSinceLastDone: number;
   /** Files edited since the last review (mirrors editsSinceLastReview), used for reminder file lists. */
   editedFiles?: string[];
+  /** Turns that ended with unreviewed edits pending and no review call in between. Reset when a review runs. */
+  unreviewedTurns?: number;
+  /** Cumulative edits that were still unreviewed when session state flushed to disk. */
+  unreviewedEditsTotal?: number;
+  /** Internal marker: editsSinceLastReview value already folded into unreviewedEditsTotal, so repeated flushes do not double count. */
+  unreviewedEditsFlushed?: number;
   lastSteerAt?: number;
   lastReviewedCommit?: string;
 }
@@ -218,6 +252,8 @@ export interface WaiToolParams {
   security?: string;
   done?: string | number | boolean;
   planUpdate?: string | boolean;
+  /** For done: override the requireReviewBeforeDone gate and mark the step complete without a review. */
+  force?: boolean;
   files?: string[];
   exclude?: string[];
   revision?: string;
@@ -287,6 +323,9 @@ export interface CallSecondaryModelOptions {
   relevantPaths?: string[];
   /** Wai task to resolve a per-task model override from settings. */
   task?: WaiModelTask;
+  /** Explicit per-call secondary config (e.g. a judge council member). Takes precedence over
+   *  taskModels/secondary resolution; auth, backend dispatch, retries, and cost budget still apply. */
+  secondaryOverride?: import("./types/secondary-model.js").SecondaryModelConfig;
   /** When true, request native structured JSON output if the provider supports it. */
   structuredOutput?: boolean;
   /** Optional callback invoked with accumulated generated text during SDK streaming. */
@@ -344,4 +383,6 @@ export interface DoneResult {
   message: string;
   verified?: boolean;
   verificationReason?: string;
+  /** True when requireReviewBeforeDone blocked completion because unreviewed edits are pending. */
+  blocked?: boolean;
 }

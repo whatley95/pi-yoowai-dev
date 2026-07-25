@@ -28,6 +28,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 | `/wai-scan-deep`       | Alias for `/wai scan --deep` (deep scan with source-file sampling and symbol index build).            |
 | `/wai-status`          | Detailed diagnostics (config, plan, VCS, conventions, cost).                                         |
 | `/wai-model`           | Interactively pick the secondary model (optionally per tool) and write it to `~/.pi/agent/settings.json`. |
+| `/wai-council`         | Interactively manage the judge council (add/remove members with the `/wai-model` pickers); writes `judgeCouncil` to `~/.pi/agent/settings.json`. |
 | `/wai-config`          | View/edit pi-yoowai settings: `/wai-config <get|set|list> [key] [value]` or shorthand `/wai-config <provider.model>`. |
 | `/wai-clear`           | Clear the active plan, state, cost, memory, conventions, learned facts, loop history, and inherited session. |
 | `/wai-clear-logs`      | Clear the per-project wai error/event log.                                                           |
@@ -37,7 +38,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 | `/wai-search`          | Web search via the configured provider (DuckDuckGo/Brave).                                           |
 | `/wai-search-config`   | Configure the web search provider and save the Brave API key to `auth.json`.                         |
 | `/wai-next`            | Recommend the next step based on the active plan.                                                    |
-| `/wai-done`            | Mark the current plan step complete and recommend the next step. `/wai-done N` sets progress to step N (lower N regresses, `0` resets); `all` completes everything. |
+| `/wai-done`            | Mark the current plan step complete and recommend the next step. `/wai-done N` sets progress to step N (lower N regresses, `0` resets); `all` completes everything; `--force` overrides the `requireReviewBeforeDone` gate. |
 | `/wai-plan-update`     | Update the active plan (add/modify/remove steps) via the plan model.                                 |
 | `/wai-logs`            | Show recent wai error/event log entries for this project.                                            |
 | `/wai-test`            | Test connectivity to the configured secondary model(s); an optional task name scopes the check.      |
@@ -102,6 +103,7 @@ pi-yoowai/
     ├── session-scope.ts  # Resolve per-project runtime directories and file paths
     ├── review-memory.ts  # Track recent issues per file for regression prompts
     ├── cost-tracker.ts   # Estimate, record, reserve/release, and budget secondary-model spend
+    ├── council-members.ts # Pure judge-council member helpers (key/dedup/display) for /wai-council
     ├── loop-detector.ts  # Detect review-fix loops and emit steer messages
     ├── tool-loop.ts      # Let the model request read_file/run_command tools (path-secure, pre-review guarded)
     ├── pre-review.ts     # Run configured pre-review shell commands (restricted interpreters/eval flags)
@@ -133,6 +135,7 @@ pi-yoowai/
     │   ├── suggest.ts    #   suggest action executor
     │   ├── recommend.ts  #   recommend action executor
     │   ├── judge.ts      #   judge action executor
+    │   ├── judge-council.ts # judge council fan-out + verdict synthesis (judgeCouncil config)
     │   ├── scan.ts       #   scan action executor
     │   ├── test.ts       #   test action executor
     │   ├── security.ts   #   security action executor
@@ -177,9 +180,9 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 
 - **`index.ts`** — Extension entry and main wiring. Wires the Pi session lifecycle (`session_start`/`session_shutdown`/`tool_execution_start`), registers the `wai` tool and the additional `wai_index`/`wai_explain`/`wai_learn` tools, registers the context injector (`registerContextInjector`) and lifecycle handlers (`registerLifecycleHandlers`), and delegates all `/wai-*` slash-command registration to `registerWaiCommands` (see `commands/register.ts`). Holds the per-`cwd` loop-detection state.
 - **`integration/context-injector.ts`** — Registers a Pi `context` event handler that prepends the active plan summary, current step, and scanned conventions to the main agent's context when `autoInjectContext` is enabled. Uses `setWaiToolExecuting` to skip injection while a `wai` tool is running and includes a workflow reminder when unreviewed edits exceed `reviewReminderEdits`.
-- **`integration/lifecycle.ts`** — Registers Pi lifecycle handlers: counts successful `write`/`edit` tool results, sends workflow-review steers at `turn_end`, triggers `wai.judge` on `agent_settled` when `autoJudge` is enabled and the plan is complete, clears the prompt cache on `model_select`, injects plan progress into `session_before_compact` custom instructions, and flushes volatile counters to disk on `session_before_switch` / `session_before_fork` / `session_compact` / `session_shutdown`.
+- **`integration/lifecycle.ts`** — Registers Pi lifecycle handlers: counts successful `write`/`edit` tool results, sends workflow-review steers at `turn_end` (escalating to a stop directive after `steerEscalationThreshold` consecutive turns with review pending, tracked via the `unreviewedTurns` session counter), triggers `wai.review` on `agent_settled` when `autoReviewOnSettle` is enabled and edits are pending (`triggerAutoReview`, before any auto-judge, guarded by a per-cwd in-flight set and `setWaiToolExecuting`), triggers `wai.judge` on `agent_settled` when `autoJudge` is enabled and the plan is complete, clears the prompt cache on `model_select`, injects plan progress into `session_before_compact` custom instructions, and flushes volatile counters to disk on `session_before_switch` / `session_before_fork` / `session_compact` / `session_shutdown` (`flushSessionStateWithAudit`, which also appends a session audit entry when edits are still unreviewed at flush time).
 - **`integration/status.ts`** — Updates the Pi footer/status bar with the active plan progress, current step, session cost, and pending-review edit count via `ctx.ui.setStatus`.
-- **`integration/audit.ts`** — Appends custom session entries (`pi.appendEntry("wai", ...)`) for plan creation/updates, step completion, review/judge verdicts, and scan completion so the session timeline records wai decisions.
+- **`integration/audit.ts`** — Appends custom session entries (`pi.appendEntry("wai", ...)`) for plan creation/updates, step completion, review/judge verdicts, scan completion, and unreviewed edits outstanding at state flush (`session-unreviewed`) so the session timeline records wai decisions.
 - **`integration/publish.ts`** — Central `publishWaiResult` helper called from the tool executor and slash commands to update status, audit entries, and the plan-progress widget after every wai result.
 - **`integration/entry-renderer.ts`** — Async registration of `pi.registerEntryRenderer("wai", ...)` that returns a real `pi-tui` `Text` component so wai audit entries render with an icon, label, summary, and progress in the session timeline. Gracefully skips registration when `pi-tui` is unavailable.
 - **`integration/shortcuts.ts`** — Registers keyboard shortcuts (`Ctrl+Shift+R` review, `Ctrl+Shift+D` done, `Ctrl+Shift+S` status) via `pi.registerShortcut`; gated by the `shortcuts` config flag.
@@ -187,7 +190,7 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 - **`integration/provider.ts`** — Async, config-gated (`registerProvider: true`) `pi.registerProvider("wai", ...)` that looks up the configured secondary model in Pi's own model registry and exposes it in Pi's provider catalog. Skips registration (with a warning) when the model is not known to Pi, avoiding guessed API types.
 - **`types.ts`** — Domain types and interfaces (`WaiAction`, `WaiModelTask`, `YoowaiConfig`, ...); re-exports backend types from `types/secondary-model.ts`.
 - **`schemas.ts`** — TypeBox schemas for structured results (plan steps, review/security results, etc.).
-- **`config.ts`** — Loads merged global + project config; validates and resolves `secondary` settings, task-model overrides, and `DocsConfig`.
+- **`config.ts`** — Loads merged global + project config; validates and resolves `secondary` settings, task-model overrides, judge-council members (`resolveJudgeCouncilMembers`), and `DocsConfig`.
 - **`secondary-model.ts`** — Entry point for secondary model calls; resolves the API key, enforces the cost budget, dispatches to the chosen backend, and runs the tool-loop when the model requests `read_file`/`run_command`.
 - **`backends/`** — Pluggable model-call backends:
   - `sdk-backend.ts` — Pi's `pi-ai` SDK (default); provider attribution headers, retries, caching, thinking-level mapping.
@@ -204,9 +207,10 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 - **`conventions.ts`** — Static heuristics over the tracked file list plus an LLM pass; stores conventions in `.pi/yoowai/conventions.json`. Also provides `filterSourceFiles` / `listTrackedFiles` reused by indexing.
 - **`project-index.ts`** — Builds a TypeScript AST symbol index of the project (`SymbolInfo`); persisted to `.pi/yoowai/index.json` (incremental reuse of unchanged files) and used by explain/suggest/recommend.
 - **`project-snapshot.ts`** — Assembles a token-bounded project snapshot (tracked files, package.json, doc samples, index symbols) for plan/context prompts.
-- **`plan-store.ts` / `session-state.ts`** — Persist plan/session state to disk and keep an in-memory per-`cwd` state map (completed steps, review rounds, last reviewed commit).
+- **`plan-store.ts` / `session-state.ts`** — Persist plan/session state to disk and keep an in-memory per-`cwd` state map (completed steps, review rounds, last reviewed commit, unreviewed-edit metrics: `unreviewedTurns`, `unreviewedEditsTotal`, `unreviewedEditsFlushed`). `flushSessionState` folds edits still pending review into the cumulative `unreviewedEditsTotal` without double counting across repeated flushes.
 - **`review-memory.ts`** — Tracks recent issues per file for regression prompts (deduplicated, capped at 20 issues per file / 100 files, 7-day TTL).
 - **`cost-tracker.ts`** — Estimates, records, reserves/releases, and budgets secondary-model spend.
+- **`council-members.ts`** — Pure helpers for `/wai-council`: council-member identity keys, dedup on add, and `provider:id` display formatting (the interactive picker loop itself lives in `commands/register.ts`, reusing the `/wai-model` provider/model pickers).
 - **`loop-detector.ts`** — Watches recent tool calls and emits a steer message when `wai.review`/`wai.judge` repeats without real edits.
 - **`tool-loop.ts`** — Lets the secondary model request `read_file`/`run_command` tools to answer questions, with path-security and pre-review guards.
 - **`pre-review.ts`** — Runs configured pre-review shell commands (interpreter commands restricted to relative scripts; inline-eval flags rejected) and formats output. On Windows, allowlisted commands that only exist as `.cmd` shims (npm, npx, tsc, eslint, ...) fall back to a sanitized `cmd.exe` invocation (`%`, `^`, and `"` are rejected so the shell cannot reinterpret anything).
@@ -222,7 +226,8 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 - **`commands/arg-parsers.ts`** — Pure string parsers that turn `/wai review|test|security` command-line args into structured options objects.
 - **`commands/register.ts`** — Registers every `/wai-*` slash command (handlers plus `showWaiStatus`); each handler validates args, calls the relevant `actions/` executor or `wai-*` module, and renders the result with `formatResultText`. This is what keeps `index.ts` as pure wiring/export.
 - **`actions/`** — One executor per `wai` action plus shared helpers:
-  - `plan.ts`, `review.ts`, `suggest.ts`, `recommend.ts`, `judge.ts`, `scan.ts`, `test.ts`, `security.ts`, `done.ts`, `plan-update.ts` — action executors wiring config, prompts, diff/file loading, cost, and progress.
+  - `plan.ts`, `review.ts`, `suggest.ts`, `recommend.ts`, `judge.ts`, `scan.ts`, `test.ts`, `security.ts`, `done.ts`, `plan-update.ts` — action executors wiring config, prompts, diff/file loading, cost, and progress. `done.ts` also enforces the `requireReviewBeforeDone` gate: with unreviewed edits pending it returns a blocked result instead of advancing, unless the caller passes `force`.
+  - `judge-council.ts` — Judge council: when `judgeCouncil` has ≥ 2 valid members, `judge.ts` fans the built judge prompt out to all members in parallel (each resolved over `secondary` like a `taskModels` override, called via `callSecondaryModel` with `secondaryOverride`), then synthesizes their verdicts with the configured judge model. Failed members are recorded and skipped; all-fail returns null so `judge.ts` falls back to the single-model path; synthesis failure falls back to a deterministic worst-verdict/union-of-issues merge. Per-member outcomes ride on `JudgeResult.council` and render as a "Council:" line in `format.ts`.
   - `review-helpers.ts` — Shared review prompt assembly, budget, and result handling.
   - `verify.ts` — Secondary-model self-verification loop for structured results.
   - `shared.ts` — Cross-action helpers: `STAGES`, cost recording, JSON parsing, usage merging.
@@ -358,9 +363,13 @@ Core keys:
 - If the SDK backend hits a retryable provider error (5xx, rate limit, network timeout, missing API key, or a model missing from the SDK catalog), pi-yoowai falls back to the `pi` backend once.
 - `modelInfo` — optional per-model token budget overrides, keyed by model id, so unknown models don't require code changes.
 - `taskModels` — optional per-tool model overrides (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `planUpdate`, `explain`), each a partial secondary config (`provider`, `id`, `thinking`, ...).
+- `judgeCouncil` — optional council of judge models: an array of `"provider/model-id"` strings (split on the first `/`; a bare string is treated as an id inheriting `secondary.provider`) or partial secondary config objects, each resolved over `secondary` like a `taskModels` override. With ≥ 2 valid members `wai.judge` fans out to all members in parallel and synthesizes their verdicts with the configured judge model; fewer than 2 valid members (or malformed entries, which are dropped during validation) keeps the single-model judge. Members should be different model families. Default: empty.
 - `reviewStrategy` — `auto` (default), `diff-only`, or `full-files`; controls how much source is sent with reviews.
 - `reviewFullFileThresholdLines` / `reviewMaxInputTokens` / `reviewMaxConventionsTokens` / `reviewMaxMemoryTokens` — tuning for full-file inclusion, the hard cap on review input tokens, and the conventions/memory token budgets in review prompts.
 - `autoJudge` — run `judge` automatically when the last plan step passes review, when `/wai-done` marks the final step complete, or when `agent_settled` fires after all steps are complete.
+- `autoReviewOnSettle` — run `review` automatically when the agent settles with unreviewed edits pending, before any auto-judge (default: `true`). Cost-budget errors are logged and skipped quietly.
+- `requireReviewBeforeDone` — block `wai.done` / `/wai-done` from advancing while unreviewed edits are pending (default: `true`); overridden by `force: true` in the tool params or `/wai-done --force`, which records the step as manually marked (not reviewed).
+- `steerEscalationThreshold` — consecutive `turn_end`s with unreviewed edits pending before the workflow steer escalates to an explicit stop directive (default: `3`).
 - `autoInjectContext` — prepend the active plan summary, current step, and scanned conventions to the main agent's context before every LLM call (default: `true`).
 - `contextInjectMaxTokens` — token budget for the injected context (default: `800`).
 - `entryRenderer` — render wai audit entries with a custom TUI entry renderer (default: `true`).
@@ -410,11 +419,11 @@ The extension stores per-project runtime data under `.pi/yoowai/`:
 - `pi.on("session_shutdown")` flushes volatile counters to disk, then drops the in-memory entry, clears the session-scoped directories, and hides the plan-progress widget.
 - `pi.on("context")` is handled by `registerContextInjector` to prepend plan/conventions context to the main agent's LLM context (when `autoInjectContext` is enabled).
 - `pi.on("tool_result")` is handled by `registerLifecycleHandlers`: successful `write`/`edit` results increment the edit counter and update the footer status; failed results do not.
-- `pi.on("turn_end")` sends a workflow steer reminding the agent to run `wai.review` when unreviewed edits exist, respecting a cooldown, and refreshes the footer status.
-- `pi.on("agent_settled")` triggers `wai.judge` automatically when `autoJudge` is enabled and the active plan is complete, then updates the footer status.
+- `pi.on("turn_end")` sends a workflow steer reminding the agent to run `wai.review` when unreviewed edits exist, respecting a cooldown; the steer escalates to an explicit stop directive after `steerEscalationThreshold` consecutive turns with review pending, and refreshes the footer status.
+- `pi.on("agent_settled")` triggers `wai.review` automatically when `autoReviewOnSettle` is enabled and unreviewed edits are pending (before any auto-judge), then triggers `wai.judge` automatically when `autoJudge` is enabled and the active plan is complete, then updates the footer status.
 - `pi.on("model_select")` clears the prompt cache so prompts rebuild for the new model.
 - `pi.on("session_before_compact")` appends the active plan summary/progress/current step to the compaction custom instructions.
-- `pi.on("session_before_switch")`, `pi.on("session_before_fork")`, and `pi.on("session_compact")` flush the in-memory session state to disk so edit counters and plan progress survive session navigation/compaction.
+- `pi.on("session_before_switch")`, `pi.on("session_before_fork")`, and `pi.on("session_compact")` flush the in-memory session state to disk so edit counters and plan progress survive session navigation/compaction; a flush with unreviewed edits outstanding also appends a `session-unreviewed` audit entry.
 - `pi.on("tool_execution_start")` records calls for loop detection.
 - `registerWaiEntryRenderer` is awaited at extension load; it renders `wai` custom entries in the session timeline using a real `pi-tui` component.
 - `registerWaiShortcuts` is called at extension load to bind `Ctrl+Shift+R/D/S` shortcuts.

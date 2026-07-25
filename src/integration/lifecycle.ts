@@ -15,8 +15,15 @@ import { isFileWriteTool } from "../file-write-tools.js";
 import { loadYoowaiConfig } from "../config.js";
 import { clearPromptCache } from "../prompts.js";
 import { getDiff } from "../diff-grabber.js";
-import { getEditTracker, getState, recordFileEdit, markJudgeCompleted } from "../session-state.js";
+import {
+  getEditTracker,
+  getState,
+  recordFileEdit,
+  markJudgeCompleted,
+  recordUnreviewedTurn,
+} from "../session-state.js";
 import { executeWaiJudge } from "../actions/judge.js";
+import { executeWaiReview } from "../actions/review.js";
 import { formatResultText } from "../format.js";
 import { clearWaiStatus } from "../progress.js";
 import { type LoopDetectionState } from "../loop-detector.js";
@@ -24,7 +31,9 @@ import { logEvent } from "../logger.js";
 import type { WaiToolResult } from "../types.js";
 import { updateWaiStatus } from "./status.js";
 import { publishWaiResult } from "./publish.js";
-import { flushSessionState } from "../session-state.js";
+import { auditUnreviewedEdits } from "./audit.js";
+import { setWaiToolExecuting } from "./context-injector.js";
+import { flushSessionState, resetEditsSinceReview } from "../session-state.js";
 import { unregisterWaiProvider } from "./provider.js";
 
 const STEER_COOLDOWN_MS = 30_000;
@@ -32,6 +41,10 @@ const STEER_COOLDOWN_MS = 30_000;
 /** Tracks cwd's with an in-flight auto-judge so overlapping triggers
  *  (e.g. /wai-done + agent_settled) do not run judge twice. */
 const judgingCwds = new Set<string>();
+
+/** Tracks cwd's with an in-flight auto-review so a settle-triggered review
+ *  cannot retrigger itself or run twice for the same settle. */
+const reviewingCwds = new Set<string>();
 
 export type JudgeRunner = (
   cwd: string,
@@ -41,8 +54,20 @@ export type JudgeRunner = (
   sessionManager?: ExtensionContext["sessionManager"],
 ) => Promise<WaiToolResult>;
 
+export type ReviewRunner = (
+  cwd: string,
+  description: string,
+  ctx: ExtensionContext,
+  signal: AbortSignal | undefined,
+  progress: (stage: number, total: number, message: string) => void,
+) => Promise<WaiToolResult>;
+
+const defaultReviewRunner: ReviewRunner = (cwd, description, ctx, signal, progress) =>
+  executeWaiReview(cwd, description, ctx, {}, signal, progress);
+
 export interface LifecycleDeps {
   executeWaiJudge?: JudgeRunner;
+  executeWaiReview?: ReviewRunner;
   clearPromptCache?: () => void;
 }
 
@@ -97,6 +122,82 @@ export async function triggerAutoJudge(
   }
 }
 
+/** Trigger auto-review when the agent settles with unreviewed edits pending
+ *  and autoReviewOnSettle is enabled. Runs before any auto-judge; a budget
+ *  error is logged and skipped quietly. Guarded against re-entrancy: one
+ *  review per settle, and context injection is suppressed while it runs. */
+export async function triggerAutoReview(
+  ctx: ExtensionContext | ExtensionCommandContext,
+  runReview: ReviewRunner = defaultReviewRunner,
+): Promise<void> {
+  if (reviewingCwds.has(ctx.cwd)) return;
+
+  const config = loadYoowaiConfig(ctx.cwd);
+  if (!config.autoReviewOnSettle) return;
+
+  const pendingEdits = getEditTracker(ctx.cwd).editsSinceLastReview;
+  if (pendingEdits <= 0) return;
+
+  reviewingCwds.add(ctx.cwd);
+  // Suppress context injection while the review runs so the injector does not
+  // feed the workflow reminder back into the review prompt.
+  setWaiToolExecuting(ctx.cwd, true);
+
+  const notify = (stage: number, total: number, message: string) => {
+    try {
+      ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
+    } catch {
+      // ignore if UI is unavailable
+    }
+  };
+
+  try {
+    const result = await runReview(
+      ctx.cwd,
+      `Auto-review of ${pendingEdits} unreviewed edit(s) after the agent settled.`,
+      ctx,
+      undefined,
+      notify,
+    );
+    if (result.error) {
+      // A budget error means the review was intentionally skipped to respect
+      // the configured cost cap — log it and stay quiet.
+      if (result.error.includes("budget")) {
+        logEvent(ctx.cwd, "info", "Auto-review skipped: cost budget reached", { error: result.error });
+        return;
+      }
+      logEvent(ctx.cwd, "warn", "Auto-review failed", { error: result.error });
+      ctx.ui.notify(`Auto-review failed: ${result.error}`, "error");
+      return;
+    }
+    resetEditsSinceReview(ctx.cwd);
+    // Publish so the auto-review verdict is audited and the footer/widget
+    // reflect the cleared edit counter immediately.
+    publishWaiResult(ctx, result);
+    const text = formatResultText(result);
+    ctx.ui.notify(text.slice(0, 500), "info");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logEvent(ctx.cwd, "error", "Auto-review failed", { error: message });
+    ctx.ui.notify(`Auto-review failed: ${message}`, "error");
+  } finally {
+    reviewingCwds.delete(ctx.cwd);
+    setWaiToolExecuting(ctx.cwd, false);
+  }
+}
+
+/** Flush session state to disk and append a session audit entry when edits
+ *  are still unreviewed, so abandoned review work stays visible. */
+export function flushSessionStateWithAudit(ctx: ExtensionContext | ExtensionCommandContext): void {
+  const state = getState(ctx.cwd);
+  const pendingEdits = state.editsSinceLastReview;
+  const unreviewedTurns = state.unreviewedTurns ?? 0;
+  flushSessionState(ctx.cwd);
+  if (pendingEdits > 0) {
+    auditUnreviewedEdits(ctx, pendingEdits, unreviewedTurns);
+  }
+}
+
 /** Best-effort extraction of the target file path from a write/edit tool
  *  result's input. Tool schemas vary (`path`, `file_path`, ...), so probe the
  *  common keys. Returned relative to cwd for display. */
@@ -144,6 +245,8 @@ export function registerLifecycleHandlers(
       if (editState.editsSinceLastReview <= 0) return;
 
       const state = getState(ctx.cwd);
+      // The turn ended with review pending and no review call in between.
+      recordUnreviewedTurn(ctx.cwd);
       const now = Date.now();
       if (state.lastSteerAt && now - state.lastSteerAt < STEER_COOLDOWN_MS) return;
 
@@ -170,11 +273,16 @@ export function registerLifecycleHandlers(
         !state.plan || state.totalSteps === 0
           ? ` No active wai plan — if this is non-trivial work, create one first with \`wai({ plan: '...' })\`.`
           : "";
-      pi.sendUserMessage(
-        `WORKFLOW REMINDER: you have made ${editState.editsSinceLastReview} file edit(s) since the last review. ` +
-          `Call \`wai({ review: '...' })\` to review the changes${fileList} before continuing.${planNudge}${noPlanNudge}`,
-        { deliverAs: "steer" },
-      );
+      // After K consecutive turns with review pending, escalate from a gentle
+      // reminder to an explicit stop directive. The counter resets on review.
+      const escalated = (state.unreviewedTurns ?? 0) >= (config.steerEscalationThreshold ?? 3);
+      const reminder = escalated
+        ? `STOP. Do not continue new work until \`wai review\` has been run on the pending edits. ` +
+          `You have ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList} spanning ${state.unreviewedTurns} turn(s). ` +
+          `Call \`wai({ review: '...' })\` now.`
+        : `WORKFLOW REMINDER: you have made ${editState.editsSinceLastReview} file edit(s) since the last review. ` +
+          `Call \`wai({ review: '...' })\` to review the changes${fileList} before continuing.`;
+      pi.sendUserMessage(`${reminder}${planNudge}${noPlanNudge}`, { deliverAs: "steer" });
       updateWaiStatus(ctx);
     } catch {
       // best-effort steer
@@ -183,10 +291,13 @@ export function registerLifecycleHandlers(
 
   pi.on("agent_settled", async (_event: AgentSettledEvent, ctx) => {
     try {
+      // Auto-review runs first: pending edits get reviewed before the judge
+      // looks at the whole plan, and a passing review may complete the plan.
+      await triggerAutoReview(ctx, deps.executeWaiReview);
       await triggerAutoJudge(ctx, undefined, deps.executeWaiJudge);
       updateWaiStatus(ctx);
     } catch {
-      // best-effort auto-judge
+      // best-effort auto-review/auto-judge
     }
   });
 
@@ -217,7 +328,7 @@ export function registerLifecycleHandlers(
 
   pi.on("session_before_switch", async (_event: SessionBeforeSwitchEvent, ctx) => {
     try {
-      flushSessionState(ctx.cwd);
+      flushSessionStateWithAudit(ctx);
       unregisterWaiProvider(pi, ctx.cwd);
     } catch {
       // best-effort flush
@@ -226,7 +337,7 @@ export function registerLifecycleHandlers(
 
   pi.on("session_before_fork", async (_event: SessionBeforeForkEvent, ctx) => {
     try {
-      flushSessionState(ctx.cwd);
+      flushSessionStateWithAudit(ctx);
       unregisterWaiProvider(pi, ctx.cwd);
     } catch {
       // best-effort flush
@@ -235,7 +346,7 @@ export function registerLifecycleHandlers(
 
   pi.on("session_compact", async (_event: SessionCompactEvent, ctx) => {
     try {
-      flushSessionState(ctx.cwd);
+      flushSessionStateWithAudit(ctx);
     } catch {
       // best-effort flush
     }

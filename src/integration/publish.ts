@@ -45,7 +45,7 @@ export function publishWaiResult(ctx: ExtensionContext, result: WaiToolResult): 
         }
         break;
       case "done":
-        if (result.done) {
+        if (result.done && !result.done.blocked) {
           auditStepDone(ctx, result.done.completedStep, result.done.totalSteps, result.done.verified);
         }
         break;

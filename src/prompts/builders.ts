@@ -1,4 +1,4 @@
-import type { PlanTodoItem } from "../types.js";
+import type { JudgeResult, PlanTodoItem } from "../types.js";
 import { planStepDescription } from "../types.js";
 
 const PAIR_PROGRAMMER_PERSONA = `You are a senior pair programmer sitting next to the developer. You are collaborative, direct, and focused on shipping correct, maintainable code. You explain your reasoning briefly but stay actionable.`;
@@ -680,6 +680,61 @@ ${EVIDENCE_RULES}`,
   };
 }
 
+export interface JudgeCouncilMemberVerdict {
+  /** "provider:id" label of the council member. */
+  model: string;
+  result: JudgeResult;
+}
+
+function buildJudgeCouncilSynthesisPromptImpl(
+  description: string,
+  members: JudgeCouncilMemberVerdict[],
+  nativeJson = false,
+): { system: string; user: string } {
+  const memberBlocks = members
+    .map(
+      (m, i) =>
+        `=== Judge ${i + 1}: ${m.model} (verdict: ${m.result.verdict}) ===\n${JSON.stringify(m.result, null, 2)}`,
+    )
+    .join("\n\n");
+
+  return {
+    system: `${COMMON_SYSTEM_PREFIX}
+
+You are the synthesizer for a council of judge models that independently reviewed the same completed work. Merge their judgments into one final, decisive judgment.
+
+${finalJsonBlock(
+  `{
+  "verdict": "needs-work",
+  "issues": [
+    { "severity": "medium", "file": "path/to/file.ts", "line": 42, "issue": "what's wrong", "suggestion": "how to fix it" }
+  ],
+  "suggestions": ["improvement 1"],
+  "consensus": false,
+  "summary": "one-paragraph holistic assessment of the completed work",
+  "planStale": false,
+  "completedStepIds": [1, 2],
+  "planUpdateSuggested": false,
+  "planUpdateReason": ""
+}`,
+  nativeJson,
+)}
+
+Rules:
+- "verdict" must be one of: "pass", "needs-work", "blocked"
+- issue "severity" must be one of: "high", "medium", "low"
+- On disagreement, failure wins: if any member voted "blocked", the final verdict is "blocked"; otherwise if any member voted "needs-work", the final verdict is "needs-work". You may override a dissenting verdict only when the dissenter is clearly wrong given the other members' evidence — say so in the summary when you do.
+- "consensus" is true only when verdict is "pass" AND issues is empty
+- Deduplicate issues raised by multiple members into a single entry. When only one member raised an issue, prefix its "issue" text with that member's [provider:id] label so the dissent is visible.
+- "summary" must state the agreement level across the council (e.g. "all 3 judges agree", "2 of 3 judges passed") before the holistic assessment.
+- "completedStepIds": include only plan step IDs that every member listed; omit when members disagree.
+- Do not invent new issues that no member raised.
+${EVIDENCE_RULES}`,
+
+    user: `The developer's task:\n\n${description}\n\nThe council's individual judgments:\n\n${memberBlocks}\n\nSynthesize these into one final judgment JSON.`,
+  };
+}
+
 function buildVerifyPromptImpl(
   originalContext: string,
   originalResult: string,
@@ -778,4 +833,5 @@ export const buildRecommendPrompt = memoizePromptBuilder(buildRecommendPromptImp
 export const buildTestPrompt = buildTestPromptImpl;
 export const buildSecurityPrompt = buildSecurityPromptImpl;
 export const buildJudgePrompt = memoizePromptBuilder(buildJudgePromptImpl);
+export const buildJudgeCouncilSynthesisPrompt = buildJudgeCouncilSynthesisPromptImpl;
 export const buildVerifyPrompt = buildVerifyPromptImpl;

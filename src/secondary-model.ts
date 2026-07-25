@@ -77,7 +77,8 @@ export async function callSecondaryModel(
 ): Promise<{ content: string; usage: UsageCost; rounds?: number; truncated?: boolean }> {
   const { thinking: optionsThinking, cwd, task } = options;
   const config = cwd ? loadYoowaiConfig(cwd) : undefined;
-  const effectiveSecondary = config && task ? resolveTaskModel(config, task) : config?.secondary;
+  const effectiveSecondary =
+    options.secondaryOverride ?? (config && task ? resolveTaskModel(config, task) : config?.secondary);
 
   const attempts: ModelAttempt[] = [
     {

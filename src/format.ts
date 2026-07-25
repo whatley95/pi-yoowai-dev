@@ -303,6 +303,28 @@ export function formatResultText(result: WaiToolResult): string {
       lines.push("");
     }
 
+    if (result.judge.council) {
+      const council = result.judge.council;
+      const counts = new Map<string, number>();
+      let failed = 0;
+      for (const member of council.members) {
+        if (member.error || !member.verdict) failed++;
+        else counts.set(member.verdict, (counts.get(member.verdict) ?? 0) + 1);
+      }
+      const parts = [...counts.entries()].map(([v, n]) => `${n} ${v}`);
+      if (failed > 0) parts.push(`${failed} failed`);
+      lines.push(
+        `**Council:** ${council.members.length} judges — ${parts.join(" / ")}${council.synthesized ? "" : " (deterministic merge; synthesis failed)"}`,
+      );
+      // Surface dissent: list each member's verdict when the council disagreed or a member failed.
+      if (counts.size > 1 || failed > 0) {
+        for (const member of council.members) {
+          lines.push(`- \`${member.model}\`: ${member.error ? `failed (${member.error})` : member.verdict}`);
+        }
+      }
+      lines.push("");
+    }
+
     if (result.judge.planStale || result.judge.planUpdateSuggested) {
       lines.push(
         "⚠️ **Plan stale:** The original plan contradicts the final code. The code is trusted; consider updating the plan with `/wai plan ...` or `/wai-clear` and re-planning.",
@@ -348,7 +370,9 @@ export function formatResultText(result: WaiToolResult): string {
     lines.push(`## ${header}${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(result.done.message);
-    if (result.done.verified === false) {
+    if (result.done.blocked) {
+      lines.push("🚫 **Blocked:** completion is gated on review — run `wai.review` first, or override with force.");
+    } else if (result.done.verified === false) {
       lines.push("⚠️ **Verification failed:** the diff does not clearly satisfy this step.");
       if (result.done.verificationReason) {
         lines.push(`Reason: ${result.done.verificationReason}`);

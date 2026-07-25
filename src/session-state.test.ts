@@ -17,6 +17,8 @@ import {
   recordFileEdit,
   resetEditsSinceReview,
   getEditTracker,
+  recordUnreviewedTurn,
+  flushSessionState,
 } from "./session-state.js";
 import type { PlanResult } from "./types.js";
 
@@ -175,4 +177,53 @@ test("setPlan resets the edited-files tracker so a new plan starts clean", () =>
   assert.deepEqual(tracker.editedFiles, []);
   assert.equal(tracker.editsSinceLastReview, 0);
   assert.equal(tracker.editsSinceLastDone, 0);
+});
+
+test("flushSessionState folds pending edits into unreviewedEditsTotal without double counting", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  recordFileEdit(cwd);
+  recordFileEdit(cwd);
+
+  flushSessionState(cwd);
+  flushSessionState(cwd);
+  assert.equal(getState(cwd).unreviewedEditsTotal, 2);
+
+  // Only the delta since the last flush is accumulated.
+  recordFileEdit(cwd);
+  flushSessionState(cwd);
+  assert.equal(getState(cwd).unreviewedEditsTotal, 3);
+  // The pending-edits counter itself is untouched by flushing.
+  assert.equal(getState(cwd).editsSinceLastReview, 3);
+});
+
+test("resetEditsSinceReview clears the unreviewed-turn streak and flush marker", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  recordFileEdit(cwd);
+  recordUnreviewedTurn(cwd);
+  recordUnreviewedTurn(cwd);
+  flushSessionState(cwd);
+
+  resetEditsSinceReview(cwd);
+  const state = getState(cwd);
+  assert.equal(state.editsSinceLastReview, 0);
+  assert.equal(state.unreviewedTurns, 0);
+  assert.equal(state.unreviewedEditsFlushed, 0);
+  // The cumulative total is a session metric and survives the review.
+  assert.equal(state.unreviewedEditsTotal, 1);
+});
+
+test("setPlan resets the unreviewed-edit metrics for a new plan", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  recordFileEdit(cwd);
+  recordUnreviewedTurn(cwd);
+  flushSessionState(cwd);
+
+  setPlan(cwd, { summary: "next task", todo: ["new step"], acceptanceCriteria: [] });
+  const state = getState(cwd);
+  assert.equal(state.unreviewedTurns, 0);
+  assert.equal(state.unreviewedEditsTotal, 0);
+  assert.equal(state.unreviewedEditsFlushed, 0);
 });

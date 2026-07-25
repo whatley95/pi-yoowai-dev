@@ -18,6 +18,9 @@ export function getState(cwd: string): YoowaiSessionState {
     };
     state.editsSinceLastReview ??= 0;
     state.editsSinceLastDone ??= 0;
+    state.unreviewedTurns ??= 0;
+    state.unreviewedEditsTotal ??= 0;
+    state.unreviewedEditsFlushed ??= 0;
     state.lastReviewedCommit ??= undefined;
     sessionStates.set(cwd, state);
   }
@@ -35,6 +38,9 @@ export function setPlan(cwd: string, plan: PlanResult): void {
   state.editsSinceLastReview = 0;
   state.editsSinceLastDone = 0;
   state.editedFiles = [];
+  state.unreviewedTurns = 0;
+  state.unreviewedEditsTotal = 0;
+  state.unreviewedEditsFlushed = 0;
   state.lastSteerAt = undefined;
   state.lastReviewedCommit = undefined;
   saveState(cwd, state);
@@ -183,6 +189,15 @@ export function resetEditsSinceReview(cwd: string): void {
   const state = getState(cwd);
   state.editsSinceLastReview = 0;
   state.editedFiles = [];
+  state.unreviewedTurns = 0;
+  state.unreviewedEditsFlushed = 0;
+}
+
+/** Record that a turn ended with unreviewed edits pending and no review call
+ *  in between. Drives the escalating steer and the /wai-status metric. */
+export function recordUnreviewedTurn(cwd: string): void {
+  const state = getState(cwd);
+  state.unreviewedTurns = (state.unreviewedTurns ?? 0) + 1;
 }
 
 export function resetEditsSinceDone(cwd: string): void {
@@ -218,10 +233,17 @@ export function dropSessionState(cwd: string): void {
 }
 
 /** Flush the in-memory session state to disk. Useful before session
- *  navigation events (switch/fork) so counters survive. */
+ *  navigation events (switch/fork) so counters survive. Edits still pending
+ *  review at flush time are folded into the unreviewed-edits total (only the
+ *  delta since the last flush, so repeated flushes do not double count). */
 export function flushSessionState(cwd: string): void {
   const state = sessionStates.get(cwd);
   if (state) {
+    const delta = state.editsSinceLastReview - (state.unreviewedEditsFlushed ?? 0);
+    if (delta > 0) {
+      state.unreviewedEditsTotal = (state.unreviewedEditsTotal ?? 0) + delta;
+      state.unreviewedEditsFlushed = state.editsSinceLastReview;
+    }
     saveState(cwd, state);
   }
 }

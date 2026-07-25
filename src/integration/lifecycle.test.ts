@@ -15,7 +15,15 @@ import type {
   SessionCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import { registerLifecycleHandlers, triggerAutoJudge, type LifecycleDeps } from "./lifecycle.js";
-import { setPlan, dropSessionState, getEditTracker, getState, markStepComplete } from "../session-state.js";
+import { setAuditExtensionAPI } from "./audit.js";
+import {
+  setPlan,
+  dropSessionState,
+  getEditTracker,
+  getState,
+  markStepComplete,
+  resetEditsSinceReview,
+} from "../session-state.js";
 import { createLoopDetectionState, type LoopDetectionState } from "../loop-detector.js";
 import type { WaiToolResult } from "../types.js";
 
@@ -31,6 +39,7 @@ type EmitSessionCompact = (event: SessionCompactEvent, ctx: ExtensionContext) =>
 type FakePi = {
   pi: ExtensionAPI;
   steers: { message: string; options?: Record<string, unknown> }[];
+  entries: { type: string; data: unknown }[];
   emitToolResult: EmitToolResult;
   emitTurnEnd: EmitTurnEnd;
   emitAgentSettled: EmitAgentSettled;
@@ -44,6 +53,7 @@ type FakePi = {
 function createFakePi(): FakePi {
   const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => unknown)[]>();
   const steers: { message: string; options?: Record<string, unknown> }[] = [];
+  const entries: { type: string; data: unknown }[] = [];
 
   const pi = {
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => {
@@ -52,6 +62,9 @@ function createFakePi(): FakePi {
     },
     sendUserMessage: (message: string, options?: Record<string, unknown>) => {
       steers.push({ message, options });
+    },
+    appendEntry: (type: string, data: unknown) => {
+      entries.push({ type, data });
     },
   } as unknown as ExtensionAPI;
 
@@ -64,6 +77,7 @@ function createFakePi(): FakePi {
   return {
     pi,
     steers,
+    entries,
     emitToolResult: (event, ctx) => emit("tool_result", event, ctx),
     emitTurnEnd: (event, ctx) => emit("turn_end", event, ctx),
     emitAgentSettled: (event, ctx) => emit("agent_settled", event, ctx),
@@ -308,6 +322,8 @@ describe("lifecycle", () => {
     registerLifecycleHandlers(pi, makeLoopStates(cwd), deps);
 
     await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, makeContext(cwd));
+    // Flush the async handler chain (auto-review check runs before auto-judge).
+    await new Promise((resolve) => setImmediate(resolve));
 
     assert.ok(judgeCalled);
     assert.ok(getState(cwd).judgeCompleted);
@@ -332,6 +348,7 @@ describe("lifecycle", () => {
     registerLifecycleHandlers(pi, makeLoopStates(cwd), deps);
 
     await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, makeContext(cwd));
+    await new Promise((resolve) => setImmediate(resolve));
 
     assert.strictEqual(judgeCalled, false);
   });
@@ -455,5 +472,233 @@ describe("lifecycle", () => {
 
     const saved = JSON.parse(readFileSync(join(cwd, ".pi", "yoowai", "plan.json"), "utf-8"));
     assert.strictEqual(saved.editsSinceLastReview, 4);
+  });
+
+  it("escalates the steer after K consecutive turn_ends with review pending", () => {
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { steerEscalationThreshold: 2 } }));
+    const state = getState(cwd);
+    state.editsSinceLastReview = 3;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    const turnEnd = {
+      type: "turn_end",
+      turnIndex: 1,
+      message: { role: "assistant", content: [] },
+      toolResults: [{ toolName: "write", isError: false, content: [] }],
+    } as unknown as TurnEndEvent;
+
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.strictEqual(steers.length, 1);
+    assert.ok(steers[0].message.includes("WORKFLOW REMINDER"));
+    assert.ok(!steers[0].message.includes("STOP"));
+
+    // Bypass the cooldown so the second turn_end steers again.
+    state.lastSteerAt = 0;
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.strictEqual(steers.length, 2);
+    assert.ok(steers[1].message.includes("STOP. Do not continue new work until `wai review` has been run"));
+    assert.strictEqual(steers[1].options?.deliverAs, "steer");
+  });
+
+  it("counts turns with review pending even while the steer cooldown suppresses the message", () => {
+    const state = getState(cwd);
+    state.editsSinceLastReview = 3;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    const turnEnd = {
+      type: "turn_end",
+      turnIndex: 1,
+      message: { role: "assistant", content: [] },
+      toolResults: [{ toolName: "write", isError: false, content: [] }],
+    } as unknown as TurnEndEvent;
+
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    // Cooldown suppresses the second steer, but the turn still counted.
+    assert.strictEqual(steers.length, 1);
+    assert.strictEqual(getState(cwd).unreviewedTurns, 2);
+  });
+
+  it("resets the escalation streak when a review runs", () => {
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { steerEscalationThreshold: 2 } }));
+    const state = getState(cwd);
+    state.editsSinceLastReview = 3;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    const turnEnd = {
+      type: "turn_end",
+      turnIndex: 1,
+      message: { role: "assistant", content: [] },
+      toolResults: [{ toolName: "write", isError: false, content: [] }],
+    } as unknown as TurnEndEvent;
+
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    state.lastSteerAt = 0;
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.ok(steers[1].message.includes("STOP"));
+
+    // A review clears the pending edits and the consecutive-turn streak.
+    resetEditsSinceReview(cwd);
+    assert.strictEqual(getState(cwd).unreviewedTurns, 0);
+
+    state.editsSinceLastReview = 2;
+    state.lastSteerAt = 0;
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.strictEqual(steers.length, 3);
+    assert.ok(steers[2].message.includes("WORKFLOW REMINDER"));
+    assert.ok(!steers[2].message.includes("STOP"));
+  });
+
+  it("triggers auto-review before auto-judge on agent_settled when autoReviewOnSettle is enabled", async () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: true, autoJudge: true } }),
+    );
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
+    markStepComplete(cwd);
+    getState(cwd).editsSinceLastReview = 2;
+
+    const calls: string[] = [];
+    const deps: LifecycleDeps = {
+      executeWaiReview: async () => {
+        calls.push("review");
+        return {
+          action: "review",
+          review: { verdict: "pass", issues: [], suggestions: [], consensus: true },
+        } as WaiToolResult;
+      },
+      executeWaiJudge: async () => {
+        calls.push("judge");
+        return {
+          action: "judge",
+          judge: { verdict: "pass", issues: [], suggestions: [], consensus: true, summary: "ok" },
+        } as WaiToolResult;
+      },
+    };
+
+    const { pi, emitAgentSettled } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd), deps);
+
+    await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, makeContext(cwd));
+    // Flush the async handler chain (review then judge run in microtasks).
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(calls, ["review", "judge"]);
+    // The auto-review cleared the pending-edit counter.
+    assert.strictEqual(getEditTracker(cwd).editsSinceLastReview, 0);
+  });
+
+  it("skips auto-review quietly on a cost-budget error and still runs auto-judge", async () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: true, autoJudge: true } }),
+    );
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
+    markStepComplete(cwd);
+    getState(cwd).editsSinceLastReview = 2;
+
+    const calls: string[] = [];
+    const notifications: { message: string; level?: string }[] = [];
+    const deps: LifecycleDeps = {
+      executeWaiReview: async () => {
+        calls.push("review");
+        return { action: "review", error: "Review would exceed the configured cost budget ($0.50)." } as WaiToolResult;
+      },
+      executeWaiJudge: async () => {
+        calls.push("judge");
+        return {
+          action: "judge",
+          judge: { verdict: "pass", issues: [], suggestions: [], consensus: true, summary: "ok" },
+        } as WaiToolResult;
+      },
+    };
+
+    const { pi, emitAgentSettled } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd), deps);
+
+    const ctx = makeContext(cwd);
+    ctx.ui = {
+      ...ctx.ui,
+      notify: (message: string, level?: string) => {
+        notifications.push({ message, level });
+      },
+    } as unknown as ExtensionContext["ui"];
+
+    await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(calls, ["review", "judge"]);
+    // Nothing was reviewed, so the pending edits stay and no error surfaces.
+    assert.strictEqual(getEditTracker(cwd).editsSinceLastReview, 2);
+    assert.ok(!notifications.some((n) => n.level === "error"));
+  });
+
+  it("does not auto-review on agent_settled when autoReviewOnSettle is disabled", async () => {
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: false } }));
+    getState(cwd).editsSinceLastReview = 2;
+
+    let reviewCalled = false;
+    const deps: LifecycleDeps = {
+      executeWaiReview: async () => {
+        reviewCalled = true;
+        return {
+          action: "review",
+          review: { verdict: "pass", issues: [], suggestions: [], consensus: true },
+        } as WaiToolResult;
+      },
+    };
+
+    const { pi, emitAgentSettled } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd), deps);
+
+    await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, makeContext(cwd));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(reviewCalled, false);
+    assert.strictEqual(getEditTracker(cwd).editsSinceLastReview, 2);
+  });
+
+  it("appends a session audit entry when flushing with unreviewed edits outstanding", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
+    const state = getState(cwd);
+    state.editsSinceLastReview = 3;
+    state.unreviewedTurns = 2;
+
+    const { pi, entries, emitSessionBeforeSwitch } = createFakePi();
+    setAuditExtensionAPI(pi);
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    emitSessionBeforeSwitch(
+      { type: "session_before_switch", reason: "resume" } as SessionBeforeSwitchEvent,
+      makeContext(cwd),
+    );
+
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].type, "wai");
+    const data = entries[0].data as { type: string; issueCount?: number; message?: string };
+    assert.strictEqual(data.type, "session-unreviewed");
+    assert.strictEqual(data.issueCount, 3);
+    assert.ok(data.message?.includes("session ended with 3 unreviewed edit(s)"));
+    // The flush also folded the pending edits into the cumulative total.
+    assert.strictEqual(getState(cwd).unreviewedEditsTotal, 3);
+  });
+
+  it("does not append an audit entry when flushing with no unreviewed edits", () => {
+    const { pi, entries, emitSessionBeforeFork } = createFakePi();
+    setAuditExtensionAPI(pi);
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    emitSessionBeforeFork(
+      { type: "session_before_fork", entryId: "abc", position: "at" } as SessionBeforeForkEvent,
+      makeContext(cwd),
+    );
+
+    assert.strictEqual(entries.length, 0);
   });
 });

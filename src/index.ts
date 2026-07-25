@@ -24,7 +24,7 @@ import {
   verifyLearnedFactsDeep,
   formatVerificationReport,
 } from "./wai-learn.js";
-import { dropSessionState, flushSessionState, resetEditsSinceDone, resetEditsSinceReview } from "./session-state.js";
+import { dropSessionState, resetEditsSinceDone, resetEditsSinceReview } from "./session-state.js";
 import { secondaryModelLabel } from "./actions/shared.js";
 import { executeWaiPlan } from "./actions/plan.js";
 import { executeWaiReview } from "./actions/review.js";
@@ -41,7 +41,7 @@ import { executeWaiExplain, validateWaiExplainParams } from "./wai-explain.js";
 import { registerWaiCommands } from "./commands/register.js";
 import { formatResultText } from "./format.js";
 import { registerContextInjector, setWaiToolExecuting } from "./integration/context-injector.js";
-import { registerLifecycleHandlers } from "./integration/lifecycle.js";
+import { registerLifecycleHandlers, flushSessionStateWithAudit } from "./integration/lifecycle.js";
 import { updateWaiStatus, clearWaiStatusLines } from "./integration/status.js";
 import { setAuditExtensionAPI } from "./integration/audit.js";
 import { publishWaiResult } from "./integration/publish.js";
@@ -100,7 +100,7 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    flushSessionState(ctx.cwd);
+    flushSessionStateWithAudit(ctx);
     dropSessionState(ctx.cwd);
     loopStates.delete(ctx.cwd);
     clearPiSessionId(ctx.cwd);
@@ -210,7 +210,7 @@ export default async function (pi: ExtensionAPI) {
           progress,
         );
       } else if (p.done !== undefined) {
-        result = { action: "done", done: await executeWaiDone(ctx.cwd, p.done as string | number, signal) };
+        result = { action: "done", done: await executeWaiDone(ctx.cwd, p.done as string | number, signal, p.force) };
       } else if (p.planUpdate !== undefined) {
         result = {
           action: "planUpdate",
@@ -225,9 +225,9 @@ export default async function (pi: ExtensionAPI) {
       // would suppress the unreviewed-edits steer for work no one looked at.
       if (p.review && !result.error) resetEditsSinceReview(ctx.cwd);
       // Only clear the done-edit counter when the step actually advanced. A
-      // failed verification returns early without advancing, so clearing here
-      // would let the next retry bypass the verification gate entirely.
-      if (p.done !== undefined && !(result.done && result.done.verified === false)) {
+      // failed verification or a review-gate block returns early without
+      // advancing, so clearing here would let the next retry bypass the gate.
+      if (p.done !== undefined && !(result.done && (result.done.verified === false || result.done.blocked === true))) {
         resetEditsSinceDone(ctx.cwd);
       }
     } catch (err) {
@@ -349,6 +349,12 @@ export default async function (pi: ExtensionAPI) {
         Type.Union([Type.Boolean(), Type.String()], {
           description:
             "Regenerate the active wai plan from a new task description when the original plan no longer matches the implementation. Already-completed progress is preserved.",
+        }),
+      ),
+      force: Type.Optional(
+        Type.Boolean({
+          description:
+            "For done: override the requireReviewBeforeDone gate and mark the step complete without a passing review. The step is recorded as manually marked (not reviewed).",
         }),
       ),
       files: Type.Optional(

@@ -90,6 +90,7 @@ export function validateWaiToolParams(params: unknown): ValidationResult {
     security: action === "security" ? (p.security as string) : undefined,
     done: action === "done" ? (p.done === true ? "" : (p.done as string | number)) : undefined,
     planUpdate: action === "planUpdate" ? (p.planUpdate === true ? "" : (p.planUpdate as string)) : undefined,
+    force: action === "done" && p.force === true ? true : undefined,
     files: stringArray(p.files),
     exclude: stringArray(p.exclude),
     revision: typeof p.revision === "string" ? p.revision : undefined,

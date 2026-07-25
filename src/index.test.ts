@@ -65,6 +65,27 @@ describe("validateWaiToolParams", () => {
       assert.equal(other.params.scanDeep, undefined);
     }
   });
+
+  it("passes force through only for the done action", () => {
+    const done = validateWaiToolParams({ done: true, force: true });
+    assert.equal(done.ok, true);
+    if (done.ok) {
+      assert.equal(done.action, "done");
+      assert.equal(done.params.force, true);
+    }
+
+    const other = validateWaiToolParams({ review: "changes", force: true });
+    assert.equal(other.ok, true);
+    if (other.ok) {
+      assert.equal(other.params.force, undefined);
+    }
+
+    const notForced = validateWaiToolParams({ done: true });
+    assert.equal(notForced.ok, true);
+    if (notForced.ok) {
+      assert.equal(notForced.params.force, undefined);
+    }
+  });
 });
 
 describe("handleWaiSearchCommand", () => {

@@ -51,6 +51,7 @@ import { getVcsInfo } from "../diff-grabber.js";
 import { getPreset, describePreset, formatPresetList, formatPresetDetails, applyPreset } from "../presets.js";
 import { executeWaiAudit, formatAuditReport } from "../wai-audit.js";
 import { reflectOnMemory, formatReflectionReport, learnReflectionSuggestions } from "../reflect.js";
+import { formatCouncilMember, addCouncilMember } from "../council-members.js";
 import { WAI_MODEL_TASKS } from "../wai-tool-params.js";
 import { planStepDescription } from "../types.js";
 import type { SecondaryModelConfig, WaiToolResult, WaiModelTask, WaiAction } from "../types.js";
@@ -191,6 +192,39 @@ export function isScopeConfigured(scope: string, config: YoowaiConfig): boolean 
 export interface ModelRef {
   id: string;
   provider: string;
+}
+
+interface WaiModelRegistry {
+  getAvailable(): ModelRef[];
+  getAll?(): ModelRef[];
+  getProviderAuthStatus(provider: string): { configured: boolean };
+  hasConfiguredAuth(model: { provider: string }): boolean;
+  getModel?(
+    provider: string,
+    id: string,
+  ):
+    | {
+        reasoning?: boolean;
+        thinkingLevelMap?: Partial<Record<string, string | null>>;
+      }
+    | undefined;
+}
+
+function getModelRegistry(ctx: ExtensionContext): WaiModelRegistry | undefined {
+  const registry = ctx.modelRegistry as unknown as WaiModelRegistry | undefined;
+  return registry && typeof registry.getAvailable === "function" ? registry : undefined;
+}
+
+function listConfiguredModels(registry: WaiModelRegistry): ModelRef[] {
+  const allModels = typeof registry.getAll === "function" ? registry.getAll() : registry.getAvailable();
+  if (!Array.isArray(allModels)) return [];
+  return allModels.filter((m) => {
+    try {
+      return registry.getProviderAuthStatus(m.provider).configured;
+    } catch {
+      return registry.hasConfiguredAuth(m);
+    }
+  });
 }
 
 export async function promptSearchModels(
@@ -369,6 +403,7 @@ async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
     "",
     "Session:",
     `  Cost: ${formatCost(cost.costUsd)} (${cost.calls} call${cost.calls === 1 ? "" : "s"})`,
+    `  Unreviewed edits: ${state.editsSinceLastReview} (${state.unreviewedTurns ?? 0} turns ended with review pending)`,
     state.completedSteps < state.totalSteps
       ? `  Review rounds this step: ${state.reviewRounds[state.completedSteps] ?? 0}`
       : "  Review rounds: all steps complete",
@@ -736,23 +771,8 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   const modelHandler = async (_args: string, ctx: ExtensionContext) => {
     try {
-      const registry = ctx.modelRegistry as unknown as {
-        getAvailable(): Array<{ id: string; provider: string }>;
-        getAll?(): Array<{ id: string; provider: string }>;
-        getProviderAuthStatus(provider: string): { configured: boolean };
-        hasConfiguredAuth(model: { provider: string }): boolean;
-        getModel?(
-          provider: string,
-          id: string,
-        ):
-          | {
-              reasoning?: boolean;
-              thinkingLevelMap?: Partial<Record<string, string | null>>;
-            }
-          | undefined;
-      };
-
-      if (!registry || typeof registry.getAvailable !== "function") {
+      const registry = getModelRegistry(ctx);
+      if (!registry) {
         ctx.ui.notify("Model registry is not available in this environment.", "error");
         return;
       }
@@ -763,13 +783,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         return;
       }
 
-      const configuredModels = allModels.filter((m) => {
-        try {
-          return registry.getProviderAuthStatus(m.provider).configured;
-        } catch {
-          return registry.hasConfiguredAuth(m);
-        }
-      });
+      const configuredModels = listConfiguredModels(registry);
 
       if (configuredModels.length === 0) {
         ctx.ui.notify("No configured models found. Run /login first.", "error");
@@ -927,6 +941,108 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     description:
       "Interactively pick the secondary model for wai, optionally per tool. Usage: /wai-model [provider] [filter]",
     handler: modelHandler,
+  });
+
+  const councilHandler = async (_args: string, ctx: ExtensionCommandContext) => {
+    try {
+      const registry = getModelRegistry(ctx);
+      if (!registry) {
+        ctx.ui.notify("Model registry is not available in this environment.", "error");
+        return;
+      }
+      const configuredModels = listConfiguredModels(registry);
+      if (configuredModels.length === 0) {
+        ctx.ui.notify("No configured models found. Run /login first.", "error");
+        return;
+      }
+
+      const agentDir = getAgentDir();
+      const settingsPath = join(agentDir, "settings.json");
+      let settings: Record<string, unknown> = {};
+      if (existsSync(settingsPath)) {
+        settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+      }
+      const existing = settings["pi-yoowai"];
+      if (!existing || typeof existing !== "object" || Array.isArray(existing)) settings["pi-yoowai"] = {};
+      const waiSettings = settings["pi-yoowai"] as Record<string, unknown>;
+
+      const persist = async (): Promise<void> => {
+        if (!existsSync(agentDir)) mkdirSync(agentDir, { recursive: true });
+        writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+        await refreshWaiProvider(pi, ctx.cwd);
+      };
+
+      for (;;) {
+        const current: unknown[] = Array.isArray(waiSettings.judgeCouncil)
+          ? [...(waiSettings.judgeCouncil as unknown[])]
+          : [];
+        const status =
+          current.length === 0 ? "empty — judge uses a single model" : current.map(formatCouncilMember).join(", ");
+        const menu = ["Add member…"];
+        if (current.length > 0) menu.push("Remove member…", "Clear council");
+        menu.push("Done");
+        const picked = await ctx.ui.select(`Judge council (${current.length} members): ${status}`, menu);
+        if (!picked || picked === "Done") return;
+
+        if (picked === "Clear council") {
+          waiSettings.judgeCouncil = [];
+          await persist();
+          ctx.ui.notify("Judge council cleared — judge uses a single model.", "info");
+          continue;
+        }
+
+        if (picked === "Remove member…") {
+          const items = current.map(formatCouncilMember);
+          const removed = await ctx.ui.select("Remove which council member?", items);
+          if (!removed) continue;
+          current.splice(items.indexOf(removed), 1);
+          waiSettings.judgeCouncil = current;
+          await persist();
+          ctx.ui.notify(`Removed ${removed} from the judge council (${current.length} remaining).`, "info");
+          continue;
+        }
+
+        // Add member… — same provider/model pickers as /wai-model.
+        const providers = [...new Set(configuredModels.map((m) => m.provider))].sort();
+        let provider: string;
+        if (providers.length === 1) {
+          provider = providers[0];
+        } else {
+          const providerItems = providers.map(
+            (p) => `${p} (${configuredModels.filter((m) => m.provider === p).length} models)`,
+          );
+          const pickedProvider = await ctx.ui.select("Pick provider:", providerItems);
+          if (!pickedProvider) continue;
+          provider = pickedProvider.split(" ")[0];
+        }
+        const providerModels = configuredModels
+          .filter((m) => m.provider === provider)
+          .sort((a, b) => a.id.localeCompare(b.id));
+        const modelId = await pickModelFromProvider(ctx, provider, providerModels, "");
+        if (!modelId) continue;
+
+        const { list, added } = addCouncilMember(current, { provider, id: modelId });
+        if (!added) {
+          ctx.ui.notify(`${provider}:${modelId} is already a council member.`, "warning");
+          continue;
+        }
+        waiSettings.judgeCouncil = list;
+        await persist();
+        const hint = list.length < 2 ? " Add at least 2 members to enable the council." : "";
+        ctx.ui.notify(
+          `Added ${provider}:${modelId} to the judge council (${list.length} member${list.length === 1 ? "" : "s"}).${hint}`,
+          "info",
+        );
+      }
+    } catch (err) {
+      ctx.ui.notify(`wai-council failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+    }
+  };
+
+  pi.registerCommand("wai-council", {
+    description:
+      "Interactively manage the judge council (multi-model final verdict): add/remove members with the /wai-model pickers. Fewer than 2 members means single-model judge.",
+    handler: councilHandler,
   });
 
   const statusHandler = async (_args: string, ctx: ExtensionContext) => {
@@ -1128,7 +1244,8 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   const doneHandler = async (args: string, ctx: ExtensionContext) => {
     const signal = undefined;
-    const target = args.trim() || undefined;
+    const force = /(^|\s)--force(?=\s|$)/.test(args);
+    const target = args.replace(/--force/g, "").trim() || undefined;
     const planProgress = getProgress(ctx.cwd);
     if (planProgress.total === 0) {
       ctx.ui.notify("No active wai plan. Start one with /wai plan <task>.", "warning");
@@ -1141,11 +1258,11 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       ctx.ui.notify("All plan steps are already complete. Run /wai judge for a final review.", "info");
       return;
     }
-    const doneResult = await executeWaiDone(ctx.cwd, target, signal);
+    const doneResult = await executeWaiDone(ctx.cwd, target, signal, force);
     clearWaiStatus(ctx);
     publishWaiResult(ctx, { action: "done", done: doneResult });
     const text = formatResultText({ action: "done", done: doneResult });
-    ctx.ui.notify(text.slice(0, 500), doneResult.verified === false ? "warning" : "info");
+    ctx.ui.notify(text.slice(0, 500), doneResult.verified === false || doneResult.blocked ? "warning" : "info");
 
     if (doneResult.allDone && doneResult.totalSteps > 0) {
       await triggerAutoJudge(ctx, `All ${doneResult.totalSteps} plan steps completed.`);
@@ -1154,7 +1271,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-done", {
     description:
-      "Mark the current wai plan step complete and recommend the next step. Usage: /wai-done [step number|'all'|description] — a lower number regresses the tracker, 0 resets it",
+      "Mark the current wai plan step complete and recommend the next step. Usage: /wai-done [step number|'all'|description] [--force] — a lower number regresses the tracker, 0 resets it; --force overrides the requireReviewBeforeDone gate",
     handler: doneHandler,
   });
 

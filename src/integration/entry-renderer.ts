@@ -14,6 +14,7 @@ const EMOJI: Record<WaiAuditEntryType, string> = {
   "judge-pass": "🏁",
   "judge-needs-work": "⚠️",
   "scan-complete": "🔍",
+  "session-unreviewed": "🚩",
 };
 
 const LABEL: Record<WaiAuditEntryType, string> = {
@@ -25,6 +26,7 @@ const LABEL: Record<WaiAuditEntryType, string> = {
   "judge-pass": "Judge passed",
   "judge-needs-work": "Judge needs work",
   "scan-complete": "Scan complete",
+  "session-unreviewed": "Unreviewed edits at flush",
 };
 
 function formatEntry(entry: WaiAuditEntry): string {

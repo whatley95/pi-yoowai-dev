@@ -79,6 +79,20 @@ export function resolveTaskModel(config: YoowaiConfig, action: WaiModelTask): Se
   return config.secondary;
 }
 
+/** Resolve judge council entries to full secondary configs the same way taskModels
+ *  overrides resolve: each entry merges over `secondary`. Members that end up
+ *  without a provider or id are dropped. */
+export function resolveJudgeCouncilMembers(config: YoowaiConfig): SecondaryModelConfig[] {
+  const members: SecondaryModelConfig[] = [];
+  for (const entry of config.judgeCouncil ?? []) {
+    const merged = mergeSecondary(config.secondary, entry);
+    if (merged.provider && merged.id) {
+      members.push(merged);
+    }
+  }
+  return members;
+}
+
 export function loadYoowaiConfig(cwd: string): YoowaiConfig {
   const agentDir = getAgentDir();
   const globalPath = join(agentDir, "settings.json");
@@ -100,6 +114,9 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     shortcuts: true,
     planWidget: true,
     registerProvider: false,
+    steerEscalationThreshold: 3,
+    requireReviewBeforeDone: true,
+    autoReviewOnSettle: true,
     docs: {
       sources: {},
       maxCharsPerSource: 8000,
@@ -150,6 +167,7 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
 const KNOWN_CONFIG_KEYS = new Set([
   "secondary",
   "taskModels",
+  "judgeCouncil",
   "autoJudge",
   "preReviewCommands",
   "testCommand",
@@ -177,6 +195,9 @@ const KNOWN_CONFIG_KEYS = new Set([
   "shortcuts",
   "planWidget",
   "registerProvider",
+  "steerEscalationThreshold",
+  "requireReviewBeforeDone",
+  "autoReviewOnSettle",
   "presets",
   "docs",
 ]);
@@ -278,6 +299,35 @@ function mergeTaskModels(base: YoowaiConfig["taskModels"], override: unknown): Y
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+function mergeJudgeCouncil(base: YoowaiConfig["judgeCouncil"], override: unknown): YoowaiConfig["judgeCouncil"] {
+  if (!Array.isArray(override)) {
+    return base;
+  }
+  const result: NonNullable<YoowaiConfig["judgeCouncil"]> = [];
+  for (const entry of override) {
+    if (typeof entry === "string") {
+      const trimmed = entry.trim();
+      if (!trimmed) continue;
+      // "provider/model-id" splits on the first "/"; a bare string is treated
+      // as a model id whose provider is inherited from `secondary`.
+      const slash = trimmed.indexOf("/");
+      if (slash === -1) {
+        result.push({ id: trimmed });
+      } else if (slash > 0 && slash < trimmed.length - 1) {
+        result.push({ provider: trimmed.slice(0, slash), id: trimmed.slice(slash + 1) });
+      }
+      continue;
+    }
+    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+      const merged = mergeSecondaryFields({}, entry as Partial<SecondaryModelConfig>);
+      if (merged.provider || merged.id) {
+        result.push(merged);
+      }
+    }
+  }
+  return result.length > 0 ? result : undefined;
+}
+
 function mergePresets(base: YoowaiConfig["presets"], override: unknown): YoowaiConfig["presets"] {
   if (!override || typeof override !== "object" || Array.isArray(override)) {
     return base;
@@ -366,6 +416,7 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
   return {
     secondary: mergeSecondary(base.secondary, o.secondary),
     taskModels: mergeTaskModels(base.taskModels, o.taskModels),
+    judgeCouncil: mergeJudgeCouncil(base.judgeCouncil, o.judgeCouncil),
     autoJudge: typeof o.autoJudge === "boolean" ? o.autoJudge : base.autoJudge,
     preReviewCommands: Array.isArray(o.preReviewCommands)
       ? o.preReviewCommands.filter((c): c is string => typeof c === "string" && c.trim().length > 0)
@@ -401,6 +452,13 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
     shortcuts: typeof o.shortcuts === "boolean" ? o.shortcuts : base.shortcuts,
     planWidget: typeof o.planWidget === "boolean" ? o.planWidget : base.planWidget,
     registerProvider: typeof o.registerProvider === "boolean" ? o.registerProvider : base.registerProvider,
+    steerEscalationThreshold: pickPositiveInteger(
+      o.steerEscalationThreshold ?? NaN,
+      base.steerEscalationThreshold ?? 3,
+    ),
+    requireReviewBeforeDone:
+      typeof o.requireReviewBeforeDone === "boolean" ? o.requireReviewBeforeDone : base.requireReviewBeforeDone,
+    autoReviewOnSettle: typeof o.autoReviewOnSettle === "boolean" ? o.autoReviewOnSettle : base.autoReviewOnSettle,
     presets: mergePresets(base.presets, o.presets),
     docs: mergeDocs(base.docs, o.docs),
   };

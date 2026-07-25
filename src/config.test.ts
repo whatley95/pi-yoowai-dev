@@ -1,9 +1,10 @@
-import { describe, it, after } from "node:test";
+import { describe, it, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveTaskModel, loadYoowaiConfig } from "./config.js";
+import { resolveTaskModel, loadYoowaiConfig, resolveJudgeCouncilMembers } from "./config.js";
+import { setAgentDirForTests, getAgentDir } from "./pi-paths.js";
 import type { YoowaiConfig } from "./types.js";
 
 const baseConfig: YoowaiConfig = {
@@ -225,5 +226,187 @@ describe("loadYoowaiConfig docs", () => {
 
     const config = loadYoowaiConfig(cwd);
     assert.deepEqual(config.docs?.sources, { react: "https://react.dev" });
+  });
+});
+
+describe("loadYoowaiConfig review enforcement", () => {
+  const tmpDirs: string[] = [];
+
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("defaults the review-enforcement keys when unconfigured", () => {
+    const cwd = makeTempDir("config-enforce-default-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.steerEscalationThreshold, 3);
+    assert.equal(config.requireReviewBeforeDone, true);
+    assert.equal(config.autoReviewOnSettle, true);
+  });
+
+  it("parses the review-enforcement keys", () => {
+    const cwd = makeTempDir("config-enforce-parse-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      steerEscalationThreshold: 5,
+      requireReviewBeforeDone: true,
+      autoReviewOnSettle: true,
+    });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.steerEscalationThreshold, 5);
+    assert.equal(config.requireReviewBeforeDone, true);
+    assert.equal(config.autoReviewOnSettle, true);
+  });
+
+  it("rejects invalid review-enforcement values and falls back to defaults", () => {
+    const cwd = makeTempDir("config-enforce-invalid-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      steerEscalationThreshold: -2,
+      requireReviewBeforeDone: "yes",
+      autoReviewOnSettle: 1,
+    });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.steerEscalationThreshold, 3);
+    assert.equal(config.requireReviewBeforeDone, true);
+    assert.equal(config.autoReviewOnSettle, true);
+  });
+});
+
+describe("loadYoowaiConfig judgeCouncil", () => {
+  const tmpDirs: string[] = [];
+  const originalAgentDir = getAgentDir();
+  // Isolate from any real global ~/.pi/agent/settings.json.
+  const emptyAgentDir = mkdtempSync(join(tmpdir(), "config-council-agent-"));
+
+  before(() => {
+    setAgentDirForTests(() => emptyAgentDir);
+  });
+
+  after(() => {
+    setAgentDirForTests(() => originalAgentDir);
+    try {
+      rmSync(emptyAgentDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("defaults to undefined when not configured", () => {
+    const cwd = makeTempDir("config-council-default-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.judgeCouncil, undefined);
+  });
+
+  it("parses provider/model strings, splitting on the first slash", () => {
+    const cwd = makeTempDir("config-council-strings-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      judgeCouncil: ["anthropic/claude-sonnet-4", "openai/gpt-4o", "custom/model/with/slashes"],
+    });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.deepEqual(config.judgeCouncil, [
+      { provider: "anthropic", id: "claude-sonnet-4" },
+      { provider: "openai", id: "gpt-4o" },
+      { provider: "custom", id: "model/with/slashes" },
+    ]);
+  });
+
+  it("parses partial secondary config objects", () => {
+    const cwd = makeTempDir("config-council-objects-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      judgeCouncil: [{ provider: "deepseek", id: "deepseek-chat", thinking: "high" }, { id: "gpt-4o-mini" }],
+    });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.judgeCouncil?.length, 2);
+    assert.equal(config.judgeCouncil?.[0].provider, "deepseek");
+    assert.equal(config.judgeCouncil?.[0].id, "deepseek-chat");
+    assert.equal(config.judgeCouncil?.[0].thinking, "high");
+    assert.equal(config.judgeCouncil?.[1].id, "gpt-4o-mini");
+    assert.equal(config.judgeCouncil?.[1].provider, undefined);
+  });
+
+  it("drops malformed entries", () => {
+    const cwd = makeTempDir("config-council-malformed-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      judgeCouncil: [
+        "anthropic/claude-sonnet-4",
+        "",
+        "/no-provider",
+        "no-id/",
+        42,
+        null,
+        ["nested"],
+        {},
+        { thinking: "high" },
+      ],
+    });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.deepEqual(config.judgeCouncil, [{ provider: "anthropic", id: "claude-sonnet-4" }]);
+  });
+
+  it("treats an empty or fully-invalid array as unconfigured", () => {
+    const cwd = makeTempDir("config-council-empty-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      judgeCouncil: [42, ""],
+    });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.judgeCouncil, undefined);
+  });
+
+  it("resolves members over the base secondary config", () => {
+    const cwd = makeTempDir("config-council-resolve-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o", thinking: "off" },
+      judgeCouncil: ["anthropic/claude-sonnet-4", { id: "gpt-4o-mini" }, { thinking: "high" }],
+    });
+
+    const config = loadYoowaiConfig(cwd);
+    const members = resolveJudgeCouncilMembers(config);
+    assert.equal(members.length, 2);
+    assert.deepEqual(
+      members.map((m) => ({ provider: m.provider, id: m.id })),
+      [
+        { provider: "anthropic", id: "claude-sonnet-4" },
+        { provider: "openai", id: "gpt-4o-mini" },
+      ],
+    );
+    // Inherited fields fall back to secondary.
+    assert.equal(members[1].thinking, "off");
   });
 });

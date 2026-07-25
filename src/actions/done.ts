@@ -35,7 +35,12 @@ function parseDoneTarget(value: string | number | undefined): { targetStep?: num
   };
 }
 
-export async function executeWaiDone(cwd: string, value?: string | number, signal?: AbortSignal): Promise<DoneResult> {
+export async function executeWaiDone(
+  cwd: string,
+  value?: string | number,
+  signal?: AbortSignal,
+  force = false,
+): Promise<DoneResult> {
   const before = getProgress(cwd);
   if (before.total === 0) {
     return {
@@ -70,6 +75,27 @@ export async function executeWaiDone(cwd: string, value?: string | number, signa
 
   const config = loadYoowaiConfig(cwd);
   const state = getState(cwd);
+
+  // Review gate: never silently mark work complete while edits are pending
+  // review. Only blocks advancement — explicit targets at or below the current
+  // progress are tracker corrections and stay allowed. `force` overrides, and
+  // the step is then recorded as manually marked (not reviewed).
+  const advancing = targetStep === undefined || targetStep > before.completed;
+  const pendingEdits = getEditTracker(cwd).editsSinceLastReview;
+  if (config.requireReviewBeforeDone === true && !force && advancing && pendingEdits > 0) {
+    return {
+      completedStep: before.completed,
+      totalSteps: before.total,
+      nextStep: before.nextStep ?? undefined,
+      allDone: false,
+      blocked: true,
+      message:
+        `Completion blocked: ${pendingEdits} file edit(s) have not been reviewed. ` +
+        `Run \`wai({ review: '...' })\` and pass review before marking the step done, ` +
+        `or override with \`wai({ done: true, force: true })\` / \`/wai-done --force\`.`,
+    };
+  }
+
   const currentStepIndex = state.completedSteps;
   const stepDescription =
     state.plan && currentStepIndex < state.plan.todo.length

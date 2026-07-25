@@ -10,7 +10,8 @@ export type WaiAuditEntryType =
   | "review-needs-work"
   | "judge-pass"
   | "judge-needs-work"
-  | "scan-complete";
+  | "scan-complete"
+  | "session-unreviewed";
 
 export interface WaiAuditEntry {
   type: WaiAuditEntryType;
@@ -99,5 +100,16 @@ export function auditScan(ctx: ExtensionContext): void {
   appendEntry({
     type: "scan-complete",
     cwd: ctx.cwd,
+  });
+}
+
+/** Append a session entry recording that session state flushed while edits
+ *  were still unreviewed, so abandoned review work is visible in the timeline. */
+export function auditUnreviewedEdits(ctx: ExtensionContext, edits: number, turns: number): void {
+  appendEntry({
+    type: "session-unreviewed",
+    cwd: ctx.cwd,
+    issueCount: edits,
+    message: `session ended with ${edits} unreviewed edit(s)${turns > 0 ? ` (${turns} turn(s) ended with review pending)` : ""}`,
   });
 }

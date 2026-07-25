@@ -33,8 +33,9 @@ import {
   continuationMeta,
 } from "./shared.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
+import { runJudgeCouncil } from "./judge-council.js";
 import type { ProgressReporter } from "../progress.js";
-import type { WaiToolResult } from "../types.js";
+import type { JudgeResult, UsageCost, WaiToolResult } from "../types.js";
 
 export async function executeWaiJudge(
   cwd: string,
@@ -161,35 +162,62 @@ export async function executeWaiJudge(
     nativeJson,
   });
 
-  progress(3, STAGES.judge, `Calling ${secondaryModelLabel(modelConfig)}…`);
-  const {
-    content: raw,
-    usage,
-    rounds,
-    truncated: finalTruncated,
-  } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
-    signal,
-    thinking: modelConfig.thinking,
+  let judge: JudgeResult | null;
+  let cost: UsageCost | undefined;
+  let rounds: number | undefined;
+  let finalTruncated: boolean | undefined;
+
+  // When a judge council is configured (>= 2 valid members), fan the same prompt
+  // out to all members and synthesize their verdicts. Returns null when the
+  // council cannot run, falling through to the standard single-model judge.
+  const councilOutcome = await runJudgeCouncil({
     cwd,
+    config,
+    description,
+    system,
+    user,
+    synthesizer: modelConfig,
+    signal,
     sessionManager,
-    task: "judge",
-    structuredOutput: true,
-    onStreamProgress: createStreamProgressCallback(progress, 3, STAGES.judge),
-    ...toolLoopOptions(config),
+    progress,
   });
 
-  progress(3, STAGES.judge, "Parsing judgment…");
-  let cost = recordCostWithBudget(cwd, usage);
-  let judge = parseStructuredResult(cwd, raw, {
-    label: "Judgment",
-    validate: validateJudgeResult,
-    validationErrors: getJudgeValidationErrors,
-    salvage: salvageJudgeFromMarkdown,
-    salvageDetails: (salvaged) => ({
-      verdict: salvaged.verdict,
-      suggestionCount: salvaged.suggestions.length,
-    }),
-  });
+  if (councilOutcome) {
+    judge = councilOutcome.judge;
+    cost = councilOutcome.cost;
+  } else {
+    progress(3, STAGES.judge, `Calling ${secondaryModelLabel(modelConfig)}…`);
+    const {
+      content: raw,
+      usage,
+      rounds: singleRounds,
+      truncated: singleTruncated,
+    } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
+      signal,
+      thinking: modelConfig.thinking,
+      cwd,
+      sessionManager,
+      task: "judge",
+      structuredOutput: true,
+      onStreamProgress: createStreamProgressCallback(progress, 3, STAGES.judge),
+      ...toolLoopOptions(config),
+    });
+    rounds = singleRounds;
+    finalTruncated = singleTruncated;
+
+    progress(3, STAGES.judge, "Parsing judgment…");
+    cost = recordCostWithBudget(cwd, usage);
+    judge = parseStructuredResult(cwd, raw, {
+      label: "Judgment",
+      validate: validateJudgeResult,
+      validationErrors: getJudgeValidationErrors,
+      salvage: salvageJudgeFromMarkdown,
+      salvageDetails: (salvaged) => ({
+        verdict: salvaged.verdict,
+        suggestionCount: salvaged.suggestions.length,
+      }),
+    });
+  }
   if (!judge) {
     return {
       action: "judge",

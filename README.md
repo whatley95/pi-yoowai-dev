@@ -1,6 +1,6 @@
 # pi-yoowai
 
-Pair-programmer extension for [Pi](https://github.com/earendil-works/pi). A secondary model reviews, plans, suggests, recommends, and judges your work — catching bugs, missing error handling, and blind spots.
+Pair-programmer extension for [Pi](https://github.com/earendil-works/pi). An independent secondary model reviews, plans, suggests, recommends, and judges your work — catching bugs, missing error handling, and blind spots. Optional enforcement layers make sure reviews actually happen, and a judge council can fan final verdicts out to several models at once.
 
 Built by [whatley.xyz](https://whatley.xyz).
 
@@ -16,7 +16,7 @@ The setup installer writes a secondary model into `~/.pi/agent/settings.json` un
 npx pi-yoowai@latest setup --preset=openai
 ```
 
-Then make sure credentials for the chosen provider are available (`~/.pi/agent/auth.json`, an environment variable such as `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, or Pi's `/login`), restart Pi, and run `/wai-test` to verify connectivity.
+Then make sure credentials for the chosen provider are available (`~/.pi/agent/auth.json`, an environment variable such as `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, or Pi's `/login`), restart Pi, and run `/wai-test` to verify connectivity. From a local clone, `npm run setup` runs the same installer (exposed as the `pi-yoowai` bin entry).
 
 ## Install
 
@@ -95,6 +95,18 @@ If no secondary model is configured, `wai` returns an error. Configure `pi-yoowa
 
 Check `/wai-index cost` (or `.pi/yoowai/cost.json`) first to see where your spend actually goes, then tune.
 
+**Judge council:** for high-stakes final judgments you can fan `wai.judge` out to several models at once. Configure `judgeCouncil` with two or more members — ideally from different model families, so their blind spots don't overlap:
+
+```json
+"judgeCouncil": [
+  "anthropic/claude-sonnet-4-6",
+  "openai/gpt-5",
+  { "provider": "deepseek", "id": "deepseek-chat", "thinking": "high" }
+]
+```
+
+Each entry is a `"provider/model-id"` string or a partial secondary config object (same shape as `secondary`; omitted fields fall back to `secondary`, exactly like `taskModels` overrides). With fewer than 2 valid members the council is skipped and the judge runs single-model as before.
+
 Structured tools let the secondary model write brief Markdown analysis, but the final machine-readable result must be a fenced JSON block under `## Result`. The configured `thinking` level is passed through unchanged for each tool, including per-tool `taskModels` overrides; wai does not silently cap or turn off thinking after parse failures.
 
 ### Options
@@ -102,9 +114,16 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | Option                         | Type                                    | Description                                                                                                                         |
 | ------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `secondary`                    | object                                  | `{ provider, id, thinking? }` for the base secondary model                                                                          |
-| `taskModels`                   | object                                  | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `planUpdate`, `explain`) |
+| `taskModels`                   | object                                  | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `explain`) |
+| `judgeCouncil`                 | array                                   | Council of models that judge in parallel; entries are `"provider/model-id"` strings or partial secondary config objects. Needs ≥ 2 valid members (default: `[]`, single-model judge) |
 | `presets`                      | object                                  | Named model presets (`{ secondary?, taskModels? }`) applied to the global settings file with `/wai-preset <name>`; preview with `/wai-preset show <name>` |
 | `autoJudge`                    | boolean                                 | Run `wai.judge` automatically when the last plan step passes review, is marked done via `/wai-done`, or when the agent settles after all steps are complete |
+| `autoReviewOnSettle`           | boolean                                 | Run `wai.review` automatically when the agent settles with unreviewed edits pending, before any auto-judge (default: `true`)                           |
+| `requireReviewBeforeDone`      | boolean                                 | Block `wai.done` / `/wai-done` from marking steps complete while unreviewed edits are pending; override with `force: true` / `--force` (default: `true`) |
+| `steerEscalationThreshold`     | number                                  | Consecutive turns ending with unreviewed edits pending before the workflow reminder escalates to a stop directive (default: `3`)                        |
+| `verifyDoneClaims`             | boolean                                 | Verify `wai.done` step-completion claims against the diff with the secondary model (default: `true`)                                                   |
+| `reviewReminderEdits`          | number                                  | Unreviewed edit count that triggers the workflow reminder and the footer "review pending" notice (default: `3`)                                        |
+| `maxContinuations`             | number                                  | Follow-up calls used to complete a length-truncated secondary-model response (default: `3`)                                                            |
 | `autoInjectContext`            | boolean                                 | Inject the active wai plan and conventions into the main agent's context before each LLM call (default: `true`)                   |
 | `contextInjectMaxTokens`       | number                                  | Token budget for the injected plan/conventions context (default: `800`)                                                             |
 | `entryRenderer`                | boolean                                 | Render wai audit entries with a custom TUI entry renderer (default: `true`)                                                         |
@@ -144,6 +163,57 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 
 When `registerProvider` is enabled, `/wai-config`, `/wai-model`, and `/wai-backend` automatically refresh the `wai` provider registration in Pi so settings changes take effect without a manual `/reload`.
 
+### Model suggestions
+
+Starting points for `taskModels` and `judgeCouncil`, from a setup using three subscriptions: **Moonshot** (Kimi), **opencode-go**, and **OpenAI** (ChatGPT). These are **suggestions, not requirements** — model lineups change fast, so treat this table as a snapshot (last updated: July 2026, after the Kimi K3 release) and check what your `/wai-model` picker actually lists. After assigning, run `/wai-test <tool>` to verify the model responds with clean output.
+
+| Tool | Option 1 (recommended) | Option 2 | Option 3 |
+| --- | --- | --- | --- |
+| **plan** | deepseek-v4-pro | kimi-k3 | gpt-5.6-sol |
+| **review** | kimi-k3 | gpt-5.3-codex | deepseek-v4-pro |
+| **judge** (synthesizer) | gpt-5.6-sol | deepseek-v4-pro | kimi-k3 |
+| **security** | deepseek-v4-pro | kimi-k3 | gpt-5.6-sol |
+| **test** | kimi-k3 | qwen3.7-plus | gpt-5-mini |
+| **scan** | deepseek-v4-flash | gpt-5-mini | mimo-v2.5 |
+| **suggest** | kimi-k3 | glm-5.2 | gpt-5-mini |
+| **recommend** | glm-5.2 | kimi-k3 | qwen3.7-plus |
+| **done** | _(uses plan model — leave unset)_ | deepseek-v4-flash | gpt-5-mini |
+| **explain** | kimi-k3 | deepseek-v4-flash | gpt-5-mini |
+
+**Main agent rule:** the reviewer and judge must not share a model family with the main agent, or the "independent second opinion" becomes self-grading. Non-verdict lanes (test, suggest, explain) are diagnostics rather than judgments — sharing the writer's family there is fine and saves quota. Three combinations depending on what writes your code (only the verdict lanes change; plan and bulk lanes stay the same):
+
+| Lane | A — main: kimi-k3 | B — main: deepseek-v4-pro | C — main: qwen3.7-plus |
+| --- | --- | --- | --- |
+| **review** | gpt-5.3-codex | kimi-k3 | kimi-k3 |
+| **security** | deepseek-v4-pro | gpt-5.6-sol | deepseek-v4-pro |
+| **judge** | gpt-5.6-sol | gpt-5.6-sol | gpt-5.6-sol |
+| **council** | kimi-k3 + deepseek-v4-pro + gpt-5.6-sol | gpt-5.6-sol + kimi-k3 + glm-5.2 | gpt-5.6-sol + kimi-k3 + deepseek-v4-pro |
+
+Combo A gives the best token economics (flat Moonshot sub absorbs the heaviest load). Combo B keeps a deepseek main and moves K3 into the high-volume review seat — note glm-5.2 takes the council's third seat, since a deepseek councillor would share the writer's family. Combo C is the budget option: weakest writer of the three, but K3 review plus a three-family council compensates.
+
+Example `taskModels` for combo B (main agent writes with deepseek-v4-pro; providers shown as required by the config format — check the exact ids in your `/wai-model` picker):
+
+```json
+{
+  "pi-yoowai": {
+    "secondary": { "provider": "opencode-go", "id": "deepseek-v4-flash" },
+    "taskModels": {
+      "plan": { "provider": "opencode-go", "id": "deepseek-v4-pro", "thinking": "xhigh" },
+      "review": { "provider": "moonshot", "id": "kimi-k3" },
+      "judge": { "provider": "openai", "id": "gpt-5.6-sol", "thinking": "high" },
+      "security": { "provider": "openai", "id": "gpt-5.6-sol" },
+      "test": { "provider": "moonshot", "id": "kimi-k3" },
+      "suggest": { "provider": "moonshot", "id": "kimi-k3" },
+      "recommend": { "provider": "opencode-go", "id": "glm-5.2" },
+      "explain": { "provider": "moonshot", "id": "kimi-k3" }
+    },
+    "judgeCouncil": ["openai/gpt-5.6-sol", "moonshot/kimi-k3", "opencode-go/glm-5.2"]
+  }
+}
+```
+
+The pattern to keep when models change: cheap fast model as the base default, strong models only where judgment is the product (plan/review/judge/security), verdict lanes never sharing the writer's family, and council members from different labs.
+
 ### Context injection and lifecycle hooks
 
 When `autoInjectContext` is enabled, pi-yoowai prepends the active plan summary, current step, and recently scanned conventions to the main agent's context before every LLM call. This keeps the main agent aligned with the plan without requiring explicit `/wai-index` lookups. The injected context is truncated to `contextInjectMaxTokens` and skipped while a `wai` tool call is already executing.
@@ -151,11 +221,11 @@ When `autoInjectContext` is enabled, pi-yoowai prepends the active plan summary,
 pi-yoowai also listens to Pi lifecycle events:
 
 - **`tool_result`** — successful file-mutating tool calls increment the internal edit counter and refresh the footer status; failed calls do not.
-- **`turn_end`** — if unreviewed edits exist, a steer reminds the main agent to call `wai.review` before continuing. The reminder respects a cooldown so it does not spam.
-- **`agent_settled`** — when `autoJudge` is enabled and the active plan is complete, `wai.judge` runs automatically.
+- **`turn_end`** — if unreviewed edits exist, a steer reminds the main agent to call `wai.review` before continuing. The reminder respects a cooldown so it does not spam. After `steerEscalationThreshold` consecutive turns ending with review still pending, the reminder escalates to an explicit stop directive.
+- **`agent_settled`** — when `autoReviewOnSettle` is enabled and unreviewed edits are pending, `wai.review` runs automatically first (cost-budget errors are logged and skipped quietly); then, when `autoJudge` is enabled and the active plan is complete, `wai.judge` runs automatically.
 - **`model_select`** — the prompt cache is cleared so prompts are rebuilt for the new model.
 - **`session_before_compact`** — if a plan is active, its summary, progress, and current step are added to the compaction custom instructions so they survive context compression.
-- **`session_before_switch`** / **`session_before_fork`** — volatile counters and plan progress are flushed to disk so they survive session navigation.
+- **`session_before_switch`** / **`session_before_fork`** — volatile counters and plan progress are flushed to disk so they survive session navigation; if edits are still unreviewed at flush time, a session audit entry records the outstanding count.
 
 ### Footer status and session audit trail
 
@@ -260,7 +330,7 @@ The `wai` tool is called by the main agent during development:
 
 Plan steps can include `priority` (`high`, `medium`, `low`) and `dependsOn` (1-based list of earlier steps). Plain-string steps still work for backward compatibility.
 
-**Plan tracker.** wai tracks file edits and sends a workflow reminder after 3+ edits without a `wai.review` or `wai.done` call, so the plan tracker stays in sync. Review automatically advances the plan by the number of steps the model reports as completed (`completedSteps`). Judge re-syncs the tracker in both directions: it advances from `completedStepIds` and regresses from `incompleteStepIds` (steps the tracker marks complete that the code does not actually satisfy). You can also correct the tracker manually: `wai({ done: N })` or `/wai-done N` sets progress to step N — a number below the current progress regresses it, and `0` resets it.
+**Plan tracker.** wai tracks file edits and sends a workflow reminder after `reviewReminderEdits` (default 3) unreviewed edits without a `wai.review` or `wai.done` call, so the plan tracker stays in sync. Review automatically advances the plan by the number of steps the model reports as completed (`completedSteps`). Judge re-syncs the tracker in both directions: it advances from `completedStepIds` and regresses from `incompleteStepIds` (steps the tracker marks complete that the code does not actually satisfy). You can also correct the tracker manually: `wai({ done: N })` or `/wai-done N` sets progress to step N — a number below the current progress regresses it, and `0` resets it.
 
 ### `wai_index` tool
 
@@ -334,6 +404,7 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 | `/wai-done [description]`                     | Mark the current plan step complete and recommend the next step           |
 | `/wai-done 3`                                 | Mark steps 1–3 complete (lower number regresses the tracker, `0` resets)  |
 | `/wai-done all`                               | Mark all steps complete                                                   |
+| `/wai-done --force`                           | Override the `requireReviewBeforeDone` gate; the step is recorded as manually marked (not reviewed) |
 | `/wai-plan-update <new task description>`     | Regenerate the active plan; already-completed progress is preserved       |
 
 **`/wai-model` selection flow.** Recent model choices are shown first so you can re-select a model in one click. For providers with a huge catalog (e.g. OpenRouter), `/wai-model` opens a real-time searchable picker with fuzzy matching (the same matcher as Pi's own search — `dsr1` finds `deepseek-r1`): type to narrow the list as you type, use ↑↓ to navigate, and press Enter to select — no Enter-to-submit query needed. If you cancel the search or it matches nothing, it falls back to a family-grouped menu. In environments without interactive terminal input (e.g. RPC/print mode), it falls back to a text prompt + list. The final selection is saved to a recent-models list scoped to the project.
@@ -353,6 +424,7 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 | `/wai-learn --verify --deep [--query <keyword>]` | Check stored facts with the secondary model                                          |
 | `/wai-model`                                   | Interactively pick the base or per-tool model; shows recent picks first, then groups huge provider catalogs (e.g. OpenRouter) by vendor family |
 | `/wai-model <provider> [filter]`               | Pre-select provider and optionally filter the model list                               |
+| `/wai-council`                                 | Interactively manage the judge council: add/remove members with the `/wai-model` pickers; fewer than 2 members means single-model judge |
 | `/wai-config`                                  | Show current `pi-yoowai` settings                                                      |
 | `/wai-config get <key>`                        | Read a dotted setting (e.g. `/wai-config get secondary.thinking`)                      |
 | `/wai-config set <key> <value>`                | Write a dotted setting (e.g. `/wai-config set taskModels.review.id claude-sonnet-4-5`) |
@@ -362,9 +434,10 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 | `/wai-preset`                                  | List named model presets defined in `pi-yoowai.presets`                                |
 | `/wai-preset show <name>`                      | Preview what a preset would write                                                      |
 | `/wai-preset <name>`                           | Apply a preset: merge its `secondary`/`taskModels` into `~/.pi/agent/settings.json`    |
-| `/wai-audit [description] [review flags]`      | Run review, security, and test concurrently over the current diff; one combined report |
+| `/wai-audit [description] [review flags]`      | Run review, security, and test concurrently over the current diff; one combined report (slash command only, not a `wai` tool action) |
 | `/wai-reflect`                                 | Report recurring review-issue patterns per file with a suggested project convention    |
 | `/wai-reflect --learn`                         | Also save each suggestion as a learned fact (no model calls)                           |
+| `/wai-search-config <provider> [api-key]`      | Pick the web-search provider (DuckDuckGo or Brave) and optionally save a Brave API key |
 | `/wai-clear`                                   | Clear the current session's plan, state, cost, memory, and conventions                 |
 | `/wai-logs`                                    | Show recent error/event log entries for this project                                   |
 | `/wai-clear-logs`                              | Clear the wai error/event log for this project                                         |
@@ -523,6 +596,15 @@ If the implementation diverges from the original plan, wai flags the plan as sta
 
 If a single plan step fails review 3 times, wai marks the review as escalated. The main agent should ask the user for guidance or consider a different approach instead of looping.
 
+### Review enforcement
+
+Four layers make it hard to finish work without ever running `wai.review`. The visibility metric is always on, the escalating steer starts gentle, and the done gate and auto-review are enabled by default (set them to `false` to opt out).
+
+1. **Visibility (always on).** wai tracks turns that end with unreviewed edits pending and the total edits left unreviewed when session state flushes. `/wai-status` shows them (`Unreviewed edits: N (M turns ended with review pending)`), and a session audit entry is appended whenever state flushes with unreviewed edits outstanding.
+2. **Escalating steer.** The `turn_end` workflow reminder escalates from a gentle nudge to an explicit stop directive after `steerEscalationThreshold` (default `3`) consecutive turns end with review still pending. The streak resets when a review runs.
+3. **Done gate (default: on).** With `requireReviewBeforeDone` enabled, `wai.done` / `/wai-done` refuses to mark a step complete while unreviewed edits are pending and reports the pending count instead. Override explicitly with `wai({ done: true, force: true })` or `/wai-done --force`; the step is then recorded as manually marked (not reviewed).
+4. **Auto-review on settle (default: on).** With `autoReviewOnSettle` enabled, settling the agent with unreviewed edits pending triggers `wai.review` automatically before any auto-judge. If the review would exceed `costBudgetUsd`, it is logged and skipped quietly.
+
 ### Loop detection
 
 wai watches for repetitive patterns and sends a steering message if:
@@ -564,6 +646,12 @@ The secondary model checks:
 - Project conventions
 - Logic errors
 - Plan completeness
+
+### Judge council
+
+Run `/wai-council` to manage members interactively — it reuses the `/wai-model` provider/model pickers to add or remove members and writes `judgeCouncil` to `~/.pi/agent/settings.json` for you (you can also edit the config key directly, or set it with `/wai-config set judgeCouncil [...]`).
+
+When `judgeCouncil` has two or more valid members, `wai.judge` sends the same judge prompt to every member in parallel, then asks the configured judge model (`secondary` / `taskModels.judge`) to synthesize their verdicts into one final judgment. On disagreement the failure wins — a single "blocked" or "needs-work" vote beats the majority "pass" unless the synthesizer finds the dissenter clearly wrong — and issues raised by only one member are prefixed with that member's `provider:id` label so dissent stays visible. The result header shows the council tally (e.g. "3 judges — 2 pass / 1 needs-work"). A member that fails or returns unparseable output is recorded and skipped; if every member fails, or the synthesis call itself fails, wai falls back to the single-model judge or a deterministic merge (worst verdict, union of issues) respectively. All member and synthesis calls count against `costBudgetUsd`; a budget-blocked member is treated as failed.
 
 ## Verification
 

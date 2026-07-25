@@ -11,9 +11,10 @@ export {
   buildTestPrompt,
   buildSecurityPrompt,
   buildJudgePrompt,
+  buildJudgeCouncilSynthesisPrompt,
   buildVerifyPrompt,
 } from "./prompts/builders.js";
-export type { FileContentContext } from "./prompts/builders.js";
+export type { FileContentContext, JudgeCouncilMemberVerdict } from "./prompts/builders.js";
 
 export {
   parseJsonResponse,
