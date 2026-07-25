@@ -30,7 +30,7 @@ import { executeWaiIndex, formatIndexResult } from "../wai-index.js";
 import { executeWaiExplain } from "../wai-explain.js";
 import { handleWaiSearchCommand } from "../wai-search.js";
 import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
-import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
 import type { YoowaiConfig } from "../types.js";
 import { getState, getProgress, dropSessionState, resetEditsSinceReview } from "../session-state.js";
 import { loadRecentModels, saveRecentModel, formatRecentModel, type RecentModel } from "../model-history.js";
@@ -51,7 +51,7 @@ import { getVcsInfo } from "../diff-grabber.js";
 import { getPreset, describePreset, formatPresetList, formatPresetDetails, applyPreset } from "../presets.js";
 import { executeWaiAudit, formatAuditReport } from "../wai-audit.js";
 import { reflectOnMemory, formatReflectionReport, learnReflectionSuggestions } from "../reflect.js";
-import { formatCouncilMember, addCouncilMember } from "../council-members.js";
+import { formatCouncilMember, addCouncilMember, councilMemberKey } from "../council-members.js";
 import { WAI_MODEL_TASKS } from "../wai-tool-params.js";
 import { planStepDescription } from "../types.js";
 import type { SecondaryModelConfig, WaiToolResult, WaiModelTask, WaiAction } from "../types.js";
@@ -231,7 +231,7 @@ export async function promptSearchModels(
   ctx: ExtensionContext,
   provider: string,
   models: ModelRef[],
-  currentId: string,
+  currentId: string | string[],
 ): Promise<string | undefined> {
   const query = await ctx.ui.input(`Search ${provider} models`);
   if (!query) return undefined;
@@ -251,7 +251,7 @@ async function searchOrSelectModel(
   ctx: ExtensionContext,
   provider: string,
   models: ModelRef[],
-  currentId: string,
+  currentId: string | string[],
   groupLabel?: string,
 ): Promise<string | undefined> {
   const items = models.map((m) => formatModelItem(m, currentId));
@@ -263,8 +263,9 @@ async function searchOrSelectModel(
   return promptSearchModels(ctx, provider, models, currentId);
 }
 
-export function formatModelItem(model: ModelRef, currentId?: string): string {
-  const marker = model.id === currentId ? " ✓ current" : "";
+export function formatModelItem(model: ModelRef, currentId?: string | string[]): string {
+  const isCurrent = Array.isArray(currentId) ? currentId.includes(model.id) : model.id === currentId;
+  const marker = isCurrent ? " ✓ current" : "";
   return `${model.id}${marker}`;
 }
 
@@ -289,7 +290,7 @@ export async function pickModelFromFlatList(
   ctx: ExtensionContext,
   provider: string,
   models: ModelRef[],
-  currentId: string,
+  currentId: string | string[],
   groupLabel?: string,
 ): Promise<string | undefined> {
   if (models.length <= MODEL_PICKER_GROUP_CAP) {
@@ -306,7 +307,7 @@ export async function pickModelFromProvider(
   ctx: ExtensionContext,
   provider: string,
   models: ModelRef[],
-  currentId: string,
+  currentId: string | string[],
   filterQuery?: string,
 ): Promise<string | undefined> {
   let candidates = models;
@@ -1002,15 +1003,30 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           continue;
         }
 
-        // Add member… — same provider/model pickers as /wai-model.
+        // Add member… — same provider/model pickers as /wai-model, with models
+        // already in the council marked "✓ current".
+        const memberIdsByProvider = new Map<string, string[]>();
+        for (const entry of current) {
+          const key = councilMemberKey(entry);
+          if (!key) continue;
+          const slash = key.indexOf("/");
+          if (slash <= 0) continue;
+          const p = key.slice(0, slash);
+          const id = key.slice(slash + 1);
+          memberIdsByProvider.set(p, [...(memberIdsByProvider.get(p) ?? []), id]);
+        }
+
         const providers = [...new Set(configuredModels.map((m) => m.provider))].sort();
         let provider: string;
         if (providers.length === 1) {
           provider = providers[0];
         } else {
-          const providerItems = providers.map(
-            (p) => `${p} (${configuredModels.filter((m) => m.provider === p).length} models)`,
-          );
+          const providerItems = providers.map((p) => {
+            const count = configuredModels.filter((m) => m.provider === p).length;
+            const inCouncil = memberIdsByProvider.get(p.toLowerCase())?.length ?? 0;
+            const marker = inCouncil > 0 ? ` (${inCouncil} in council)` : "";
+            return `${p} (${count} models)${marker}`;
+          });
           const pickedProvider = await ctx.ui.select("Pick provider:", providerItems);
           if (!pickedProvider) continue;
           provider = pickedProvider.split(" ")[0];
@@ -1018,10 +1034,28 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         const providerModels = configuredModels
           .filter((m) => m.provider === provider)
           .sort((a, b) => a.id.localeCompare(b.id));
-        const modelId = await pickModelFromProvider(ctx, provider, providerModels, "");
+        const memberIds = memberIdsByProvider.get(provider.toLowerCase()) ?? [];
+        const modelId = await pickModelFromProvider(ctx, provider, providerModels, memberIds);
         if (!modelId) continue;
 
-        const { list, added } = addCouncilMember(current, { provider, id: modelId });
+        // Pick thinking level, same as /wai-model step 3.
+        const waiConfig = loadYoowaiConfig(ctx.cwd);
+        const effectiveThinking = waiConfig.secondary.thinking ?? "xhigh";
+        const canonicalThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+        const registryModel =
+          typeof registry.getModel === "function" ? registry.getModel(provider, modelId) : undefined;
+        const modelDetails = await resolveModelThinkingDetails(provider, modelId, registryModel);
+        const thinkingLevels = resolveThinkingLevelOptions(modelDetails, canonicalThinkingLevels, effectiveThinking);
+        if (thinkingLevels.length === 0) {
+          ctx.ui.notify(`Model ${provider}:${modelId} does not advertise any thinking levels.`, "warning");
+          continue;
+        }
+        const thinkingItems = thinkingLevels.map((t) => `${t}${t === effectiveThinking ? " ✓ current" : ""}`);
+        const thinkingPicked = await ctx.ui.select(`Pick thinking level for ${modelId}:`, thinkingItems);
+        if (!thinkingPicked) continue;
+        const thinking = thinkingPicked.replace(" ✓ current", "");
+
+        const { list, added } = addCouncilMember(current, { provider, id: modelId, thinking });
         if (!added) {
           ctx.ui.notify(`${provider}:${modelId} is already a council member.`, "warning");
           continue;
@@ -1030,7 +1064,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         await persist();
         const hint = list.length < 2 ? " Add at least 2 members to enable the council." : "";
         ctx.ui.notify(
-          `Added ${provider}:${modelId} to the judge council (${list.length} member${list.length === 1 ? "" : "s"}).${hint}`,
+          `Added ${provider}:${modelId} (${thinking}) to the judge council (${list.length} member${list.length === 1 ? "" : "s"}).${hint}`,
           "info",
         );
       }
@@ -1041,7 +1075,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-council", {
     description:
-      "Interactively manage the judge council (multi-model final verdict): add/remove members with the /wai-model pickers. Fewer than 2 members means single-model judge.",
+      "Interactively manage the judge council (multi-model final verdict): add/remove members with the /wai-model pickers, including a thinking level per member. Fewer than 2 members means single-model judge.",
     handler: councilHandler,
   });
 
@@ -1351,6 +1385,21 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       }
     }
 
+    // Council members are judge-time models too — include them in a full run
+    // and in a judge-scoped run, deduplicated against what's already listed.
+    if (!task || task === "judge") {
+      const seen = new Set(
+        tests.map((t) => `${t.model.provider}:${t.model.id}:${t.model.backend ?? "sdk"}:${t.model.baseUrl ?? ""}`),
+      );
+      for (const member of resolveJudgeCouncilMembers(config)) {
+        if (!member.provider || !member.id) continue;
+        const key = `${member.provider}:${member.id}:${member.backend ?? "sdk"}:${member.baseUrl ?? ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        tests.push({ model: member, label: `${secondaryModelLabel(member)} (council)` });
+      }
+    }
+
     if (tests.length === 0) {
       ctx.ui.notify("No secondary model configured. Run /wai-config or /wai-model first.", "warning");
       return;
@@ -1552,7 +1601,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-test", {
     description:
-      "Test connectivity to configured secondary models. Optional: /wai-test <plan|review|suggest|recommend|judge|scan|explain>",
+      "Test connectivity to configured secondary models (includes judge council members). Optional: /wai-test <plan|review|suggest|recommend|judge|scan|explain>",
     handler: testHandler,
   });
 

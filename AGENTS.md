@@ -28,7 +28,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 | `/wai-scan-deep`       | Alias for `/wai scan --deep` (deep scan with source-file sampling and symbol index build).            |
 | `/wai-status`          | Detailed diagnostics (config, plan, VCS, conventions, cost).                                         |
 | `/wai-model`           | Interactively pick the secondary model (optionally per tool) and write it to `~/.pi/agent/settings.json`. |
-| `/wai-council`         | Interactively manage the judge council (add/remove members with the `/wai-model` pickers); writes `judgeCouncil` to `~/.pi/agent/settings.json`. |
+| `/wai-council`         | Interactively manage the judge council (add/remove members with the `/wai-model` pickers, with ✓ markers for existing members and a thinking-level pick per member); writes `judgeCouncil` to `~/.pi/agent/settings.json`. |
 | `/wai-config`          | View/edit pi-yoowai settings: `/wai-config <get|set|list> [key] [value]` or shorthand `/wai-config <provider.model>`. |
 | `/wai-clear`           | Clear the active plan, state, cost, memory, conventions, learned facts, loop history, and inherited session. |
 | `/wai-clear-logs`      | Clear the per-project wai error/event log.                                                           |
@@ -41,7 +41,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 | `/wai-done`            | Mark the current plan step complete and recommend the next step. `/wai-done N` sets progress to step N (lower N regresses, `0` resets); `all` completes everything; `--force` overrides the `requireReviewBeforeDone` gate. |
 | `/wai-plan-update`     | Update the active plan (add/modify/remove steps) via the plan model.                                 |
 | `/wai-logs`            | Show recent wai error/event log entries for this project.                                            |
-| `/wai-test`            | Test connectivity to the configured secondary model(s); an optional task name scopes the check.      |
+| `/wai-test`            | Test connectivity to the configured secondary model(s) and judge council members; an optional task name scopes the check (`judge` includes the council). |
 | `/wai-backend`         | Switch the secondary model backend: `sdk` (default), `pi`, or `http`.                                |
 | `/wai-preset`          | List, preview (`show <name>`), or apply (`<name>`) a named model preset from `pi-yoowai.presets`; applying writes to the global `~/.pi/agent/settings.json`. |
 | `/wai-audit`           | Run review, security, and test concurrently over the same working-tree diff and render one combined report (a failing section does not fail the others). |

@@ -21,14 +21,18 @@ export function councilMemberKey(entry: unknown): string | undefined {
   return undefined;
 }
 
-/** Display form for a council member entry: "provider:id". */
+/** Display form for a council member entry: "provider:id" (plus " · thinking"
+ *  when the entry carries one). */
 export function formatCouncilMember(entry: unknown): string {
   if (typeof entry === "string") return entry.trim() || "(invalid entry)";
   if (entry && typeof entry === "object" && !Array.isArray(entry)) {
     const o = entry as Record<string, unknown>;
     const provider = typeof o.provider === "string" ? o.provider : "";
     const id = typeof o.id === "string" ? o.id : "";
-    if (provider && id) return `${provider}:${id}`;
+    if (provider && id) {
+      const thinking = typeof o.thinking === "string" && o.thinking ? ` · ${o.thinking}` : "";
+      return `${provider}:${id}${thinking}`;
+    }
   }
   return "(invalid entry)";
 }

@@ -25,7 +25,11 @@ test("councilMemberKey rejects malformed entries", () => {
 
 test("formatCouncilMember renders provider:id", () => {
   assert.equal(formatCouncilMember("openai/gpt-5-mini"), "openai/gpt-5-mini");
-  assert.equal(formatCouncilMember({ provider: "openai", id: "gpt-5-mini", thinking: "high" }), "openai:gpt-5-mini");
+  assert.equal(formatCouncilMember({ provider: "openai", id: "gpt-5-mini" }), "openai:gpt-5-mini");
+  assert.equal(
+    formatCouncilMember({ provider: "openai", id: "gpt-5-mini", thinking: "high" }),
+    "openai:gpt-5-mini · high",
+  );
   assert.equal(formatCouncilMember({ thinking: "high" }), "(invalid entry)");
   assert.equal(formatCouncilMember(42), "(invalid entry)");
 });

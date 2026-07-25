@@ -424,12 +424,12 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 | `/wai-learn --verify --deep [--query <keyword>]` | Check stored facts with the secondary model                                          |
 | `/wai-model`                                   | Interactively pick the base or per-tool model; shows recent picks first, then groups huge provider catalogs (e.g. OpenRouter) by vendor family |
 | `/wai-model <provider> [filter]`               | Pre-select provider and optionally filter the model list                               |
-| `/wai-council`                                 | Interactively manage the judge council: add/remove members with the `/wai-model` pickers; fewer than 2 members means single-model judge |
+| `/wai-council`                                 | Interactively manage the judge council: add/remove members with the `/wai-model` pickers (models already in the council are marked ✓ current, and each member gets a thinking-level pick); fewer than 2 members means single-model judge |
 | `/wai-config`                                  | Show current `pi-yoowai` settings                                                      |
 | `/wai-config get <key>`                        | Read a dotted setting (e.g. `/wai-config get secondary.thinking`)                      |
 | `/wai-config set <key> <value>`                | Write a dotted setting (e.g. `/wai-config set taskModels.review.id claude-sonnet-4-5`) |
 | `/wai-config <provider.model>`                 | Set the base secondary model directly (e.g. `/wai-config openai.gpt-4o`)               |
-| `/wai-test`                                    | Test connectivity; prints a per-model summary with latency, tokens, cost, and totals   |
+| `/wai-test`                                    | Test connectivity (includes judge council members); prints a per-model summary with latency, tokens, cost, and totals |
 | `/wai-backend <sdk\|pi\|http>`                 | Switch secondary model backend (default: `sdk`)                                        |
 | `/wai-preset`                                  | List named model presets defined in `pi-yoowai.presets`                                |
 | `/wai-preset show <name>`                      | Preview what a preset would write                                                      |

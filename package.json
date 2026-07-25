@@ -70,7 +70,7 @@
     "@earendil-works/pi-agent-core": "^0.82.0",
     "@earendil-works/pi-ai": "^0.82.0",
     "@earendil-works/pi-coding-agent": "^0.82.0",
-    "@earendil-works/pi-tui": "^0.82.0",
+    "@earendil-works/pi-tui": "^0.82.1",
     "@eslint/js": "^10.0.1",
     "@sinclair/typebox": "^0.34.49",
     "@types/node": "^26.0.0",
