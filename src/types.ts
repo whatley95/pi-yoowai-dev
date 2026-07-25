@@ -16,10 +16,18 @@ export type {
 } from "./types/secondary-model.js";
 export type { DocsConfig, WebSearchConfig, WebSearchProvider } from "./types/docs.js";
 
+/** A named model preset: a partial config applied to `secondary` and/or `taskModels` via `/wai-preset`. */
+export interface YoowaiPreset {
+  secondary?: Partial<import("./types/secondary-model.js").SecondaryModelConfig>;
+  taskModels?: Partial<Record<WaiModelTask, Partial<import("./types/secondary-model.js").SecondaryModelConfig>>>;
+}
+
 export interface YoowaiConfig {
   secondary: import("./types/secondary-model.js").SecondaryModelConfig;
   /** Per-task model overrides. Any omitted field falls back to `secondary`. */
   taskModels?: Partial<Record<WaiModelTask, Partial<import("./types/secondary-model.js").SecondaryModelConfig>>>;
+  /** Named model presets applied via `/wai-preset <name>`. */
+  presets?: Record<string, YoowaiPreset>;
   /** Fallback secondary models to try if the primary model fails. Each fallback is tried in order. */
   secondaryFallback?: import("./types/secondary-model.js").SecondaryModelConfig[];
   autoJudge?: boolean;

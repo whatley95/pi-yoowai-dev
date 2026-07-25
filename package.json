@@ -9,8 +9,12 @@
   },
   "type": "module",
   "main": "src/index.ts",
+  "bin": {
+    "pi-yoowai": "scripts/setup.js"
+  },
   "files": [
     "src",
+    "scripts",
     "README.md"
   ],
   "pi": {
@@ -33,6 +37,7 @@
     "format": "prettier --write src",
     "format:check": "prettier --check src",
     "prepublishOnly": "npm run typecheck && npm run lint && npm test",
+    "setup": "node scripts/setup.js",
     "bump": "node scripts/bump-version.js",
     "bump:patch": "node scripts/bump-version.js patch",
     "bump:minor": "node scripts/bump-version.js minor",

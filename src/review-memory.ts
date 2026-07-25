@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { getSessionConfigDir, getSessionConfigPath } from "./session-scope.js";
 import { logEvent } from "./logger.js";
-import type { ReviewIssue } from "./types.js";
+import type { MemoryEntry, ReviewIssue } from "./types.js";
 
 const MAX_ISSUES_PER_FILE = 20;
 const ISSUE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -198,6 +198,11 @@ export function getMemorySummary(cwd: string): string {
 
 function normalizeFile(file: string): string {
   return file.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+}
+
+/** Return all recorded per-file memory entries (used by /wai-reflect for pattern analysis). */
+export function getMemoryEntries(cwd: string): MemoryEntry[] {
+  return Object.values(loadMemory(cwd).files);
 }
 
 export function clearMemory(cwd: string): void {

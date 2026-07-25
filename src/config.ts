@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, getProjectConfigPath } from "./pi-paths.js";
 import { logEvent } from "./logger.js";
-import type { YoowaiConfig, SecondaryModelConfig, WaiModelTask, DocsConfig } from "./types.js";
+import type { YoowaiConfig, YoowaiPreset, SecondaryModelConfig, WaiModelTask, DocsConfig } from "./types.js";
 
 export { getAgentDir, getProjectConfigPath } from "./pi-paths.js";
 
@@ -177,6 +177,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   "shortcuts",
   "planWidget",
   "registerProvider",
+  "presets",
   "docs",
 ]);
 
@@ -273,6 +274,27 @@ function mergeTaskModels(base: YoowaiConfig["taskModels"], override: unknown): Y
     if (!VALID_WAI_MODEL_TASKS.has(action)) continue;
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     result[action as WaiModelTask] = mergePartialSecondary(result[action as WaiModelTask] ?? {}, value);
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function mergePresets(base: YoowaiConfig["presets"], override: unknown): YoowaiConfig["presets"] {
+  if (!override || typeof override !== "object" || Array.isArray(override)) {
+    return base;
+  }
+  const result: NonNullable<YoowaiConfig["presets"]> = base ? { ...base } : {};
+  for (const [name, value] of Object.entries(override)) {
+    if (!name.trim() || !value || typeof value !== "object" || Array.isArray(value)) continue;
+    const v = value as Partial<YoowaiPreset>;
+    const preset: YoowaiPreset = {};
+    if (v.secondary && typeof v.secondary === "object" && !Array.isArray(v.secondary)) {
+      preset.secondary = mergeSecondaryFields({}, v.secondary as Partial<SecondaryModelConfig>);
+    }
+    const taskModels = mergeTaskModels(undefined, v.taskModels);
+    if (taskModels) preset.taskModels = taskModels;
+    if (preset.secondary || preset.taskModels) {
+      result[name] = preset;
+    }
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
@@ -379,6 +401,7 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
     shortcuts: typeof o.shortcuts === "boolean" ? o.shortcuts : base.shortcuts,
     planWidget: typeof o.planWidget === "boolean" ? o.planWidget : base.planWidget,
     registerProvider: typeof o.registerProvider === "boolean" ? o.registerProvider : base.registerProvider,
+    presets: mergePresets(base.presets, o.presets),
     docs: mergeDocs(base.docs, o.docs),
   };
 }

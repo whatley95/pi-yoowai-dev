@@ -4,6 +4,20 @@ Pair-programmer extension for [Pi](https://github.com/earendil-works/pi). A seco
 
 Built by [whatley.xyz](https://whatley.xyz).
 
+## Quick Start
+
+```bash
+npx pi-yoowai@latest setup
+```
+
+The setup installer writes a secondary model into `~/.pi/agent/settings.json` under `pi-yoowai.secondary`, preserving everything else in the file. It offers four choices: `opencode-go-free` (DeepSeek via opencode-go), `openai` (`gpt-5-mini`), `anthropic` (`claude-sonnet-4-6`), or `custom` (any provider/model id). Non-interactive use:
+
+```bash
+npx pi-yoowai@latest setup --preset=openai
+```
+
+Then make sure credentials for the chosen provider are available (`~/.pi/agent/auth.json`, an environment variable such as `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, or Pi's `/login`), restart Pi, and run `/wai-test` to verify connectivity.
+
 ## Install
 
 ```bash
@@ -54,6 +68,13 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
     "taskModels": {
       "review": { "provider": "anthropic", "id": "claude-sonnet-4-5", "thinking": "high" },
       "scan": { "provider": "deepseek", "id": "deepseek-chat", "thinking": "off" }
+    },
+    "presets": {
+      "cheap": { "secondary": { "provider": "deepseek", "id": "deepseek-chat", "thinking": "off" } },
+      "careful": {
+        "secondary": { "provider": "anthropic", "id": "claude-sonnet-4-6", "thinking": "high" },
+        "taskModels": { "review": { "provider": "anthropic", "id": "claude-sonnet-4-6" } }
+      }
     }
   }
 }
@@ -82,6 +103,7 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | ------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `secondary`                    | object                                  | `{ provider, id, thinking? }` for the base secondary model                                                                          |
 | `taskModels`                   | object                                  | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `planUpdate`, `explain`) |
+| `presets`                      | object                                  | Named model presets (`{ secondary?, taskModels? }`) applied to the global settings file with `/wai-preset <name>`; preview with `/wai-preset show <name>` |
 | `autoJudge`                    | boolean                                 | Run `wai.judge` automatically when the last plan step passes review, is marked done via `/wai-done`, or when the agent settles after all steps are complete |
 | `autoInjectContext`            | boolean                                 | Inject the active wai plan and conventions into the main agent's context before each LLM call (default: `true`)                   |
 | `contextInjectMaxTokens`       | number                                  | Token budget for the injected plan/conventions context (default: `800`)                                                             |
@@ -337,6 +359,12 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 | `/wai-config <provider.model>`                 | Set the base secondary model directly (e.g. `/wai-config openai.gpt-4o`)               |
 | `/wai-test`                                    | Test connectivity; prints a per-model summary with latency, tokens, cost, and totals   |
 | `/wai-backend <sdk\|pi\|http>`                 | Switch secondary model backend (default: `sdk`)                                        |
+| `/wai-preset`                                  | List named model presets defined in `pi-yoowai.presets`                                |
+| `/wai-preset show <name>`                      | Preview what a preset would write                                                      |
+| `/wai-preset <name>`                           | Apply a preset: merge its `secondary`/`taskModels` into `~/.pi/agent/settings.json`    |
+| `/wai-audit [description] [review flags]`      | Run review, security, and test concurrently over the current diff; one combined report |
+| `/wai-reflect`                                 | Report recurring review-issue patterns per file with a suggested project convention    |
+| `/wai-reflect --learn`                         | Also save each suggestion as a learned fact (no model calls)                           |
 | `/wai-clear`                                   | Clear the current session's plan, state, cost, memory, and conventions                 |
 | `/wai-logs`                                    | Show recent error/event log entries for this project                                   |
 | `/wai-clear-logs`                              | Clear the wai error/event log for this project                                         |
@@ -362,7 +390,7 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 | `--vcs git\|svn`    | Force Git or SVN diff mode                                      |
 | `--untracked`       | Include untracked (new) files                                   |
 
-`/wai test` and `/wai security` accept the same diff-scoping flags as `/wai review` (`--files`, `--exclude`, `--revision`, `--since`, `--vcs`, `--untracked`). `/wai-test` (with a hyphen) is a separate command that tests model connectivity.
+`/wai test` and `/wai security` accept the same diff-scoping flags as `/wai review` (`--files`, `--exclude`, `--revision`, `--since`, `--vcs`, `--untracked`); `/wai security` also accepts `--full-project`. `/wai-audit` runs all three concurrently over the same diff and renders one combined report — it accepts the same flags plus `--command` (passed to the test analysis); if one section fails, the other results are still shown alongside the error. `/wai-test` (with a hyphen) is a separate command that tests model connectivity.
 
 ## Caching and optimization
 

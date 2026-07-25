@@ -48,6 +48,9 @@ import {
   formatVerificationReport,
 } from "../wai-learn.js";
 import { getVcsInfo } from "../diff-grabber.js";
+import { getPreset, describePreset, formatPresetList, formatPresetDetails, applyPreset } from "../presets.js";
+import { executeWaiAudit, formatAuditReport } from "../wai-audit.js";
+import { reflectOnMemory, formatReflectionReport, learnReflectionSuggestions } from "../reflect.js";
 import { WAI_MODEL_TASKS } from "../wai-tool-params.js";
 import { planStepDescription } from "../types.js";
 import type { SecondaryModelConfig, WaiToolResult, WaiModelTask, WaiAction } from "../types.js";
@@ -1482,5 +1485,90 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   pi.registerCommand("wai-backend", {
     description: "Switch secondary model backend: sdk (default), pi, or http",
     handler: backendHandler,
+  });
+
+  const presetHandler = async (args: string, ctx: ExtensionCommandContext) => {
+    const config = loadYoowaiConfig(ctx.cwd);
+    const trimmed = args.trim();
+
+    if (!trimmed) {
+      const lines = formatPresetList(config);
+      if (lines.length === 0) {
+        ctx.ui.notify("No presets defined. Add a pi-yoowai.presets object to settings.json.", "info");
+        return;
+      }
+      await ctx.ui.select("wai presets", lines);
+      return;
+    }
+
+    const showMatch = trimmed.match(/^show\s+(.+)$/i);
+    const name = (showMatch ? showMatch[1] : trimmed).trim();
+    const preset = getPreset(config, name);
+    if (!preset) {
+      ctx.ui.notify(`Unknown preset "${name}". Run /wai-preset to list defined presets.`, "warning");
+      return;
+    }
+
+    if (showMatch) {
+      await ctx.ui.select(`wai preset: ${name}`, formatPresetDetails(name, preset));
+      return;
+    }
+
+    try {
+      const settingsPath = applyPreset(preset);
+      await refreshWaiProvider(pi, ctx.cwd);
+      ctx.ui.notify(`Applied preset "${name}" (${describePreset(preset)}) to ${settingsPath}.`, "info");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`Failed to apply preset: ${message}`, "error");
+    }
+  };
+
+  pi.registerCommand("wai-preset", {
+    description: "List, preview, or apply named model presets from pi-yoowai.presets. Usage: /wai-preset [show] <name>",
+    handler: presetHandler,
+  });
+
+  const auditHandler = async (args: string, ctx: ExtensionCommandContext) => {
+    const signal = undefined;
+    const start = Date.now();
+    const progress = createProgressReporter("review", ctx);
+    try {
+      const sections = await executeWaiAudit(ctx.cwd, args, ctx, signal, progress);
+      const reviewSection = sections.find((s) => s.name === "review");
+      // A manual audit includes a review: keep the unreviewed-edits steer in
+      // sync, but only when the review actually ran.
+      if (reviewSection?.result && !reviewSection.result.error) resetEditsSinceReview(ctx.cwd);
+      const text = formatAuditReport(sections, Date.now() - start);
+      await ctx.ui.select("wai audit", text.split("\n").filter(Boolean));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logEvent(ctx.cwd, "error", "wai audit command failed", { error: message });
+      ctx.ui.notify(`wai audit error: ${message}`, "error");
+    } finally {
+      clearWaiStatus(ctx);
+    }
+  };
+
+  pi.registerCommand("wai-audit", {
+    description:
+      "Run review, security, and test concurrently over the current diff and show one combined report. Usage: /wai-audit [description] [review flags]",
+    handler: auditHandler,
+  });
+
+  const reflectHandler = async (args: string, ctx: ExtensionCommandContext) => {
+    const findings = reflectOnMemory(ctx.cwd);
+    if (args.trim().includes("--learn") && findings.length > 0) {
+      const count = learnReflectionSuggestions(ctx.cwd, findings);
+      ctx.ui.notify(`Recorded ${count} learned fact(s) from recurring issue patterns.`, "info");
+    }
+    const text = formatReflectionReport(findings);
+    await ctx.ui.select("wai reflect", text.split("\n").filter(Boolean));
+  };
+
+  pi.registerCommand("wai-reflect", {
+    description:
+      "Analyze review memory for recurring issue patterns and suggest project conventions. Usage: /wai-reflect [--learn]",
+    handler: reflectHandler,
   });
 }
