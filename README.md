@@ -80,7 +80,7 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
 
 **Recommended:** Use a DIFFERENT model family than your main agent. If main is DeepSeek, set secondary to Claude or GPT. This catches blind spots your main model shares.
 
-If no secondary model is configured, `wai` returns an error. Configure `pi-yoowai.secondary` in settings.json or use `/wai-model` to pick one interactively. You can also set a different model per wai tool with `taskModels` or `/wai-model`.
+If no secondary model is configured, `wai` returns an error. Configure `pi-yoowai.secondary` in settings.json or use `/wai-model` to pick one interactively. You can also set a different model per wai tool with `taskModels` or `/wai-model` — see [Model suggestions](#model-suggestions) for a recommended lineup.
 
 **Cost tip:** high-frequency, low-stakes calls do not need a flagship model. Reserve the strong model for `wai.plan`, `wai.review`, and `wai.judge`, and route routine work like `wai.done` (step verification) and `wai.scan` (convention extraction) to a cheap model with thinking off:
 
@@ -211,7 +211,7 @@ Example `taskModels` for combo B (main agent writes with deepseek-v4-pro; provid
 }
 ```
 
-The pattern to keep when models change: cheap fast model as the base default, strong models only where judgment is the product (plan/review/judge/security), verdict lanes never sharing the writer's family, and council members from different labs.
+The pattern to keep when models change: cheap fast model as the base default, strong models only where judgment is the product (plan/review/judge/security), and council members from different labs — plus the main-agent rule above.
 
 ### Context injection and lifecycle hooks
 
