@@ -10,6 +10,9 @@ export interface ToolRequest {
   tool: "read_file" | "run_command";
   path?: string;
   command?: string;
+  /** Optional 1-based inclusive line range for read_file. */
+  startLine?: number;
+  endLine?: number;
 }
 
 export interface ToolResult {
@@ -17,7 +20,7 @@ export interface ToolResult {
   error?: string;
 }
 
-const DEFAULT_MAX_ITERATIONS = 3;
+const DEFAULT_MAX_ITERATIONS = 5;
 const MAX_TOOL_FILE_BYTES = 100 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 4000;
 
@@ -25,7 +28,10 @@ function buildToolInstruction(maxIterations: number): string {
   return `You may request additional context before producing your final structured JSON result. To request context, output a single JSON block exactly like one of these examples and nothing else:
 
 {"tool": "read_file", "path": "relative/path/to/file.ts"}
+{"tool": "read_file", "path": "relative/path/to/file.ts", "startLine": 100, "endLine": 200}
 {"tool": "run_command", "command": "npm run typecheck"}
+
+read_file accepts optional startLine/endLine (1-based, inclusive) to page through large files; when a file is truncated, the result tells you the total line count so you can request a specific range.
 
 You may make up to ${maxIterations} such request(s). After each request, the tool result will be appended to this conversation. Once you have enough context, produce the final structured JSON result requested below. Do not output explanatory text with a tool request. If no additional context is needed, produce the final JSON result immediately.`;
 }
@@ -41,27 +47,55 @@ function parseToolRequest(text: string): ToolRequest | null {
     tool,
     path: typeof obj.path === "string" ? obj.path : undefined,
     command: typeof obj.command === "string" ? obj.command : undefined,
+    startLine: typeof obj.startLine === "number" && Number.isFinite(obj.startLine) ? obj.startLine : undefined,
+    endLine: typeof obj.endLine === "number" && Number.isFinite(obj.endLine) ? obj.endLine : undefined,
   };
 }
 
-function truncateOutput(text: string): string {
+/** Truncate file content with a paging hint so the model can request a
+ *  specific line range next. */
+function truncateFileOutput(text: string, path: string): string {
   if (text.length <= MAX_TOOL_OUTPUT_CHARS) return text;
-  return text.slice(0, MAX_TOOL_OUTPUT_CHARS) + "\n… (truncated)";
+  const totalLines = text.split(/\r?\n/).length;
+  const endLine = Math.min(totalLines, 300);
+  return (
+    text.slice(0, MAX_TOOL_OUTPUT_CHARS) +
+    `\n… (truncated — file has ${totalLines} lines; request {"tool":"read_file","path":"${path}","startLine":1,"endLine":${endLine}} for a specific range)`
+  );
 }
 
-function readFileTool(cwd: string, path: string): ToolResult {
+/** Truncate command output keeping head (~70%) and tail (~30%) — command
+ *  failures usually matter at the end. */
+function truncateCommandOutput(text: string): string {
+  if (text.length <= MAX_TOOL_OUTPUT_CHARS) return text;
+  const headChars = Math.floor(MAX_TOOL_OUTPUT_CHARS * 0.7);
+  const tailChars = MAX_TOOL_OUTPUT_CHARS - headChars;
+  const elided = text.length - headChars - tailChars;
+  return `${text.slice(0, headChars)}\n… (${elided} chars elided) …\n${text.slice(-tailChars)}`;
+}
+
+function readFileTool(cwd: string, path: string, startLine?: number, endLine?: number): ToolResult {
   const safePath = resolveProjectPath(cwd, path);
   if (!safePath) {
     return { output: "", error: `Path is not allowed: ${path}` };
   }
   try {
+    const content = readFileSync(safePath, "utf-8");
+    if (startLine !== undefined || endLine !== undefined) {
+      const lines = content.split(/\r?\n/);
+      // Clamp to file bounds; swap when inverted. Non-finite values were
+      // already filtered during request parsing.
+      let start = Math.max(1, Math.floor(startLine ?? 1));
+      let end = Math.min(lines.length, Math.floor(endLine ?? lines.length));
+      if (start > end) [start, end] = [Math.max(1, Math.min(end, lines.length)), Math.min(lines.length, start)];
+      const ranged = lines.slice(start - 1, end).join("\n");
+      return { output: truncateFileOutput(ranged, path) };
+    }
     const stats = statSync(safePath);
     if (stats.size > MAX_TOOL_FILE_BYTES) {
-      const content = readFileSync(safePath, "utf-8");
-      return { output: truncateOutput(content) };
+      return { output: truncateFileOutput(content, path) };
     }
-    const content = readFileSync(safePath, "utf-8");
-    return { output: truncateOutput(content) };
+    return { output: truncateFileOutput(content, path) };
   } catch (err) {
     return { output: "", error: err instanceof Error ? err.message : String(err) };
   }
@@ -71,7 +105,7 @@ async function runCommandTool(cwd: string, command: string): Promise<ToolResult>
   try {
     const [result] = await runPreReviewCommands(cwd, [command]);
     return {
-      output: truncateOutput(result.output),
+      output: truncateCommandOutput(result.output),
       error: result.exitCode !== 0 ? `Command exited with code ${result.exitCode}` : undefined,
     };
   } catch (err) {
@@ -82,7 +116,7 @@ async function runCommandTool(cwd: string, command: string): Promise<ToolResult>
 async function executeTool(cwd: string, request: ToolRequest): Promise<ToolResult> {
   if (request.tool === "read_file") {
     if (!request.path) return { output: "", error: "read_file requires a path" };
-    return readFileTool(cwd, request.path);
+    return readFileTool(cwd, request.path, request.startLine, request.endLine);
   }
   if (request.tool === "run_command") {
     if (!request.command) return { output: "", error: "run_command requires a command" };

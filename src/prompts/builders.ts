@@ -164,6 +164,7 @@ export function buildReviewUserContext(args: {
   preReviewOutput?: string;
   memoryContext?: string;
   relatedContext?: string;
+  codemap?: string;
   truncated?: boolean;
   droppedFiles?: string[];
   budgetNote?: string;
@@ -180,6 +181,7 @@ export function buildReviewUserContext(args: {
     preReviewOutput,
     memoryContext,
     relatedContext,
+    codemap,
     truncated,
     droppedFiles,
     budgetNote,
@@ -194,6 +196,7 @@ export function buildReviewUserContext(args: {
   const preReviewBlock = preReviewOutput ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>` : "";
   const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
   const relatedBlock = relatedContext ? `\n\n<related_files>\n${relatedContext}\n</related_files>` : "";
+  const codemapBlock = codemap ? `\n\n<project_symbol_map>\n${codemap}\n</project_symbol_map>` : "";
 
   const fileContentsBlock =
     fileContents.length > 0
@@ -214,7 +217,7 @@ export function buildReviewUserContext(args: {
   const budgetBlock = budgetNote ? `\n\n${budgetNote}` : "";
   const vcsLine = vcs ? `\n\nVersion control: ${vcs}` : "";
 
-  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${relatedBlock}${truncationNotice}${droppedBlock}${budgetBlock}`;
+  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${relatedBlock}${codemapBlock}${truncationNotice}${droppedBlock}${budgetBlock}`;
 }
 
 function buildAdaptiveReviewPromptImpl(
@@ -230,6 +233,7 @@ function buildAdaptiveReviewPromptImpl(
     preReviewOutput?: string;
     memoryContext?: string;
     relatedContext?: string;
+    codemap?: string;
     truncated?: boolean;
     droppedFiles?: string[];
     budgetNote?: string;
@@ -245,6 +249,7 @@ function buildAdaptiveReviewPromptImpl(
     preReviewOutput,
     memoryContext,
     relatedContext,
+    codemap,
     truncated,
     droppedFiles,
     budgetNote,
@@ -312,6 +317,7 @@ ${EVIDENCE_RULES}`,
       preReviewOutput,
       memoryContext,
       relatedContext,
+      codemap,
       truncated,
       droppedFiles,
       budgetNote,
@@ -574,6 +580,7 @@ function buildJudgePromptImpl(
     conventions?: string;
     preReviewOutput?: string;
     memoryContext?: string;
+    codemap?: string;
     diff?: string;
     fileContents?: FileContentContext[];
     truncated?: boolean;
@@ -589,6 +596,7 @@ function buildJudgePromptImpl(
     conventions,
     preReviewOutput,
     memoryContext,
+    codemap,
     diff,
     fileContents,
     truncated,
@@ -612,6 +620,7 @@ function buildJudgePromptImpl(
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
   const preReviewBlock = preReviewOutput ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>` : "";
   const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
+  const codemapBlock = codemap ? `\n\n<project_symbol_map>\n${codemap}\n</project_symbol_map>` : "";
 
   const diffBlock = diff ? `\n\n<diff>\n${diff}\n</diff>` : "";
   const fileContentsBlock =
@@ -676,7 +685,7 @@ Rules:
 - When the diff/file contents are truncated, do not treat missing context as a defect; judge only what is shown
 ${EVIDENCE_RULES}`,
 
-    user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}${historyBlock}${diffBlock}${fileContentsBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
+    user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}${historyBlock}${diffBlock}${fileContentsBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${codemapBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
   };
 }
 

@@ -169,4 +169,115 @@ describe("executeToolLoop", () => {
     assert.equal(result.truncated, true);
     assert.equal(callCount, 1);
   });
+
+  it("reads a specific line range from a file", async () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `line-${i + 1}-content`).join("\n");
+    writeFileSync(join(cwd, "src", "ranged.ts"), lines, "utf-8");
+    const responses = [
+      '{"tool": "read_file", "path": "src/ranged.ts", "startLine": 3, "endLine": 5}',
+      '{"done": true}',
+    ];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    const toolResult = calls[1];
+    assert.equal(toolResult.includes("line-3-content"), true);
+    assert.equal(toolResult.includes("line-5-content"), true);
+    assert.equal(toolResult.includes("line-1-content"), false);
+    assert.equal(toolResult.includes("line-6-content"), false);
+  });
+
+  it("clamps and swaps inverted line ranges", async () => {
+    const lines = Array.from({ length: 10 }, (_, i) => `row-${i + 1}`).join("\n");
+    writeFileSync(join(cwd, "src", "inverted.ts"), lines, "utf-8");
+    const responses = [
+      '{"tool": "read_file", "path": "src/inverted.ts", "startLine": 8, "endLine": 2}',
+      '{"done": true}',
+    ];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    const toolResult = calls[1];
+    assert.equal(toolResult.includes("row-2"), true);
+    assert.equal(toolResult.includes("row-8"), true);
+    assert.equal(toolResult.includes("row-1\n"), false);
+    assert.equal(toolResult.includes("row-9"), false);
+  });
+
+  it("ignores non-numeric range fields", async () => {
+    const responses = ['{"tool": "read_file", "path": "src/foo.ts", "startLine": "abc"}', '{"done": true}'];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    assert.equal(calls[1].includes("export function foo"), true);
+  });
+
+  it("appends a paging hint when file content is truncated", async () => {
+    const big = Array.from({ length: 500 }, (_, i) => `const value${i} = "xxxxxxxxxxxxxxxxxxxx";`).join("\n");
+    writeFileSync(join(cwd, "src", "big.ts"), big, "utf-8");
+    const responses = ['{"tool": "read_file", "path": "src/big.ts"}', '{"done": true}'];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    const toolResult = calls[1];
+    assert.equal(toolResult.includes("truncated — file has 500 lines"), true);
+    assert.equal(toolResult.includes('"startLine":1'), true);
+  });
+
+  it("truncates run_command output keeping head and tail", async () => {
+    mkdirSync(join(cwd, "scripts"), { recursive: true });
+    writeFileSync(
+      join(cwd, "scripts", "long-output.js"),
+      'for (let i = 0; i < 400; i++) console.log("line-" + i + "-" + "x".repeat(20));',
+      "utf-8",
+    );
+    const responses = ['{"tool": "run_command", "command": "node scripts/long-output.js"}', '{"done": true}'];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    const toolResult = calls[1];
+    assert.equal(toolResult.includes("chars elided"), true);
+    assert.equal(toolResult.includes("line-0-"), true, "head should be kept");
+    assert.equal(toolResult.includes("line-399-"), true, "tail should be kept");
+    assert.equal(toolResult.includes("line-200-"), false, "middle should be elided");
+  });
+
+  it("defaults to 5 tool iterations when maxToolIterations is omitted", async () => {
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: '{"tool": "read_file", "path": "src/foo.ts"}', usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel);
+
+    // 5 tool requests within the cap + 1 at the cap + 1 forced final call.
+    assert.equal(calls.length, 7);
+    assert.equal(calls[6].includes("maximum number of tool requests"), true);
+  });
 });

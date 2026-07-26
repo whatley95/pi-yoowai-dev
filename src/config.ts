@@ -110,6 +110,7 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     reviewReminderEdits: 3,
     autoInjectContext: true,
     contextInjectMaxTokens: 800,
+    codemapMaxTokens: 1500,
     entryRenderer: true,
     shortcuts: true,
     planWidget: true,
@@ -190,6 +191,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   "reviewReminderEdits",
   "autoInjectContext",
   "contextInjectMaxTokens",
+  "codemapMaxTokens",
   "maxContinuations",
   "entryRenderer",
   "shortcuts",
@@ -448,6 +450,13 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
     reviewReminderEdits: pickPositiveInteger(o.reviewReminderEdits ?? NaN, base.reviewReminderEdits ?? 3),
     autoInjectContext: typeof o.autoInjectContext === "boolean" ? o.autoInjectContext : base.autoInjectContext,
     contextInjectMaxTokens: pickPositiveInteger(o.contextInjectMaxTokens ?? NaN, base.contextInjectMaxTokens ?? 800),
+    codemapMaxTokens:
+      typeof o.codemapMaxTokens === "number" &&
+      Number.isInteger(o.codemapMaxTokens) &&
+      Number.isFinite(o.codemapMaxTokens) &&
+      o.codemapMaxTokens >= 0
+        ? o.codemapMaxTokens
+        : (base.codemapMaxTokens ?? 1500),
     entryRenderer: typeof o.entryRenderer === "boolean" ? o.entryRenderer : base.entryRenderer,
     shortcuts: typeof o.shortcuts === "boolean" ? o.shortcuts : base.shortcuts,
     planWidget: typeof o.planWidget === "boolean" ? o.planWidget : base.planWidget,

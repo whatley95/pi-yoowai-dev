@@ -73,6 +73,8 @@ export interface YoowaiConfig {
   autoInjectContext?: boolean;
   /** Maximum tokens of injected context per message. Default 800. */
   contextInjectMaxTokens?: number;
+  /** Token budget for the project symbol map injected into review/judge prompts. Default 1500; 0 disables. */
+  codemapMaxTokens?: number;
   /** Render wai audit entries (plan, review, judge, etc.) with a custom TUI entry renderer. Default true. */
   entryRenderer?: boolean;
   /** Register keyboard shortcuts for common wai actions (review, done, status). Default true. */

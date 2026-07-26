@@ -176,7 +176,11 @@ function tokenize(command: string): string[] {
 
 function truncateOutput(output: string): string {
   if (output.length <= MAX_OUTPUT_CHARS) return output;
-  return output.slice(0, MAX_OUTPUT_CHARS) + "\n… (truncated)";
+  // Keep head (~70%) and tail (~30%): command failures usually matter at the end.
+  const headChars = Math.floor(MAX_OUTPUT_CHARS * 0.7);
+  const tailChars = MAX_OUTPUT_CHARS - headChars;
+  const elided = output.length - headChars - tailChars;
+  return `${output.slice(0, headChars)}\n… (${elided} chars elided) …\n${output.slice(-tailChars)}`;
 }
 
 const FORBIDDEN_INTERPRETER_FLAGS = new Set(["-c", "-e", "--eval", "-exec", "--exec", "-Command", "-EncodedCommand"]);

@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { getDiff } from "../diff-grabber.js";
+import { buildCodemap } from "../codemap.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
@@ -77,6 +78,7 @@ export async function executeWaiJudge(
   const conventions = loadConventions(cwd);
   const conventionsText = conventions ? formatConventions(conventions) : "";
   const memoryContext = getPastIssuesForFiles(cwd, changedFiles);
+  const codemap = buildCodemap(cwd, changedFiles, config.codemapMaxTokens ?? 1500);
 
   progress(2, STAGES.judge, "Calculating token budget…");
   let preReviewOutput = "";
@@ -138,9 +140,11 @@ export async function executeWaiJudge(
         });
 
   const systemPromptEstimate = 1000;
+  // The codemap is counted within the input budget but yields to file
+  // contents: it is deducted from what remains for the diff, after files.
   const remainingForDiff = Math.max(
     0,
-    budgetWithPreReview.availableInputTokens - fileResult.totalTokens - systemPromptEstimate,
+    budgetWithPreReview.availableInputTokens - fileResult.totalTokens - systemPromptEstimate - estimateTokens(codemap),
   );
   const diffTokens = estimateTokens(diff);
   const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
@@ -154,6 +158,7 @@ export async function executeWaiJudge(
     conventions: conventionsText,
     preReviewOutput,
     memoryContext,
+    codemap,
     diff: finalDiff,
     fileContents: fileResult.entries.map((f) => ({ file: f.file, content: f.content, mode: f.mode })),
     truncated: finalDiffTruncated,

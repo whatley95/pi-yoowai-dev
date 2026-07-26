@@ -123,6 +123,7 @@ pi-yoowai/
     ├── wai-search-config.ts # /wai-search-config terminal command handler
     ├── ast-context.ts    # TypeScript compiler-API context for changed files (lazy-loaded, token-bounded)
     ├── context-retrieval.ts # Compact outlines of files related to changed files via relative imports
+    ├── codemap.ts        # Compact project symbol map (changed files + import neighbors) for review/judge prompts
     ├── review-cache.ts   # On-disk TTL cache for review/test/security/judge results
     ├── oauth-cache.ts    # Short-lived cache of exchanged OAuth credentials
     ├── model-history.ts  # Recently used secondary models (drives /wai-model recents)
@@ -212,7 +213,8 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 - **`cost-tracker.ts`** — Estimates, records, reserves/releases, and budgets secondary-model spend.
 - **`council-members.ts`** — Pure helpers for `/wai-council`: council-member identity keys, dedup on add, and `provider:id` display formatting (the interactive picker loop itself lives in `commands/register.ts`, reusing the `/wai-model` provider/model pickers).
 - **`loop-detector.ts`** — Watches recent tool calls and emits a steer message when `wai.review`/`wai.judge` repeats without real edits.
-- **`tool-loop.ts`** — Lets the secondary model request `read_file`/`run_command` tools to answer questions, with path-security and pre-review guards.
+- **`tool-loop.ts`** — Lets the secondary model request `read_file`/`run_command` tools to answer questions, with path-security and pre-review guards. `read_file` accepts optional 1-based inclusive `startLine`/`endLine` ranges (clamped, inverted ranges swapped); truncated file output appends a paging hint with the total line count. Command output truncation keeps head (~70%) and tail (~30%) with an elided-chars marker (shared with `pre-review.ts`). Default max iterations: 5.
+- **`codemap.ts`** — Builds a compact project symbol map for review/judge prompts: one line per symbol (`file.ts:12 — function foo(a, b): void`) for each changed file and its direct import neighbors, from the persisted AST index (built incrementally when missing), falling back to `context-retrieval.ts` outlines. Never throws; logs and returns `""` on failure. Budgeted by `codemapMaxTokens` and truncated on whole-line boundaries; counted within the review input-token budget but yields to changed file contents.
 - **`pre-review.ts`** — Runs configured pre-review shell commands (interpreter commands restricted to relative scripts; inline-eval flags rejected) and formats output. On Windows, allowlisted commands that only exist as `.cmd` shims (npm, npx, tsc, eslint, ...) fall back to a sanitized `cmd.exe` invocation (`%`, `^`, and `"` are rejected so the shell cannot reinterpret anything).
 - **`render.ts`** — TUI call/result rendering for Pi.
 - **`progress.ts`** — Status/progress reporting helpers for the Pi TUI.
@@ -372,6 +374,7 @@ Core keys:
 - `steerEscalationThreshold` — consecutive `turn_end`s with unreviewed edits pending before the workflow steer escalates to an explicit stop directive (default: `3`).
 - `autoInjectContext` — prepend the active plan summary, current step, and scanned conventions to the main agent's context before every LLM call (default: `true`).
 - `contextInjectMaxTokens` — token budget for the injected context (default: `800`).
+- `codemapMaxTokens` — token budget for the project symbol map injected into review/judge prompts (default: `1500`; `0` disables codemap injection).
 - `entryRenderer` — render wai audit entries with a custom TUI entry renderer (default: `true`).
 - `shortcuts` — register keyboard shortcuts for common wai actions (default: `true`).
 - `planWidget` — show a compact plan-progress widget above the editor (default: `true`).

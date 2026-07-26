@@ -46,7 +46,7 @@ export function buildRelatedContext(cwd: string, changedFiles: string[]): Relate
   };
 }
 
-function findRelatedFiles(cwd: string, changedFiles: string[]): string[] {
+export function findRelatedFiles(cwd: string, changedFiles: string[]): string[] {
   const related = new Set<string>();
   for (const file of changedFiles) {
     const safePath = resolveProjectPath(cwd, file);
