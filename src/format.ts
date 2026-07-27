@@ -160,10 +160,16 @@ export function formatResultText(result: WaiToolResult): string {
         "**Workflow:** 1) If this single change finished multiple plan steps, call `wai.done` with those step numbers now. 2) Otherwise, implement the next step above. 3) Run `wai.review` when the step is ready. 4) Run `wai.judge` after the final step.",
       );
     } else if (result.review.verdict === "needs-work" || result.review.verdict === "blocked") {
-      lines.push("**Action:** Fix the issues above and call `wai.review` again.");
-      lines.push(
-        "**Disagree?** If a finding is wrong, do not change correct code to satisfy it — refute it with concrete evidence (file/line, test output, docs) in the next `wai.review` call, or ask the user when unsure.",
-      );
+      if (result.review.inconclusive) {
+        lines.push(
+          "**Inconclusive:** The review produced a verdict but no actionable issues — likely a truncated or off-scope model response. Do not treat this as a pass or as a real failure; re-run `wai.review` (lower the thinking level or scope the diff with `files:[...]` if it repeats).",
+        );
+      } else {
+        lines.push("**Action:** Fix the issues above and call `wai.review` again.");
+        lines.push(
+          "**Disagree?** If a finding is wrong, do not change correct code to satisfy it — refute it with concrete evidence (file/line, test output, docs) in the next `wai.review` call, or ask the user when unsure.",
+        );
+      }
       if (result.review.fixPlan && result.review.fixPlan.length > 0) {
         lines.push("");
         lines.push("### Suggested fix plan");

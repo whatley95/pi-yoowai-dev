@@ -128,6 +128,8 @@ export interface ReviewResult {
   issues: ReviewIssue[];
   suggestions: string[];
   consensus: boolean;
+  /** Non-pass verdict with zero issues — truncated or off-scope response; not actionable, not a pass, not a failed round. */
+  inconclusive?: boolean;
   planProgress?: string;
   nextStep?: string;
   escalated?: boolean;

@@ -125,6 +125,22 @@ test("formatResultText renders review fix plan", () => {
   assert.ok(text.includes("fix spelling"));
 });
 
+test("formatResultText renders inconclusive review guidance instead of a fix action", () => {
+  const text = formatResultText({
+    action: "review",
+    review: {
+      verdict: "needs-work",
+      issues: [],
+      suggestions: [],
+      consensus: false,
+      inconclusive: true,
+    },
+  });
+  assert.ok(text.includes("Inconclusive"));
+  assert.ok(text.includes("re-run `wai.review`"));
+  assert.ok(!text.includes("Fix the issues above"));
+});
+
 test("formatResultText renders stitched continuation", () => {
   const text = formatResultText(recommendResult({ cost: sampleCost, continuation: { rounds: 2, status: "stitched" } }));
   assert.ok(text.includes("✓ stitched (2 rounds)"));
