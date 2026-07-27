@@ -633,14 +633,17 @@ export async function executeWaiReview(
   recordIssues(cwd, review.issues);
 
   // A non-pass verdict with ZERO issues is not actionable: either the model
-  // response was truncated and salvage recovered only a bare verdict, or every
-  // issue was out-of-scope and filtered above. It is not a pass (no evidence
-  // of clean), but it must not count as a failed review round or tell the
-  // user to fix nonexistent issues — mark it inconclusive.
+  // response was truncated and salvage recovered only a bare verdict, or the
+  // verdict contradicts its own findings (issues empty, suggestions positive).
+  // It is not a pass (no evidence of clean), but it must not count as a failed
+  // review round or tell the user to fix nonexistent issues — mark it
+  // inconclusive.
   if ((review.verdict === "needs-work" || review.verdict === "blocked") && review.issues.length === 0) {
     review.inconclusive = true;
     review.suggestions.push(
-      "The review returned a verdict with no issues, so it is inconclusive — the model response was likely truncated or off-scope. Re-run wai.review; if it repeats, lower the thinking level or scope the diff with files:[...].",
+      review.suggestions.length > 0
+        ? "The review returned a non-pass verdict but reported no issues — the verdict contradicts its own findings, so it is inconclusive (likely a verdict slip by the model, not a real failure). Re-run wai.review; if the change is genuinely fine the re-run should pass."
+        : "The review returned a verdict with no issues, so it is inconclusive — the model response was likely truncated or off-scope. Re-run wai.review; if it repeats, lower the thinking level or scope the diff with files:[...].",
     );
     logEvent(cwd, "warn", "Review verdict had no issues; marked inconclusive", {
       verdict: review.verdict,

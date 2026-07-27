@@ -162,7 +162,7 @@ export function formatResultText(result: WaiToolResult): string {
     } else if (result.review.verdict === "needs-work" || result.review.verdict === "blocked") {
       if (result.review.inconclusive) {
         lines.push(
-          "**Inconclusive:** The review produced a verdict but no actionable issues — likely a truncated or off-scope model response. Do not treat this as a pass or as a real failure; re-run `wai.review` (lower the thinking level or scope the diff with `files:[...]` if it repeats).",
+          "**Inconclusive:** The review produced a non-pass verdict but no actionable issues — a truncated response or a verdict inconsistent with its own findings. Do not treat this as a pass or as a real failure; re-run `wai.review` (lower the thinking level or scope the diff with `files:[...]` if it repeats).",
         );
       } else {
         lines.push("**Action:** Fix the issues above and call `wai.review` again.");

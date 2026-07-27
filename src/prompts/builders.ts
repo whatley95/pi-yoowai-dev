@@ -256,6 +256,14 @@ function buildAdaptiveReviewPromptImpl(
     nativeJson,
   } = options;
 
+  // Plan-related rules only make sense when a plan step is actually shown;
+  // without one they dangle and can push the model toward a conservative
+  // non-pass verdict it cannot justify with issues.
+  const planRules = currentStep
+    ? `- Set "planStale": true if the current plan step contradicts the actual code and the code is internally consistent. Do not flag the code as wrong solely because it differs from the plan.
+- Set "completedSteps" to the number of plan steps (including the current step) that the diff fully completes. If only the current step is done, use 1.`
+    : `- There is no active plan for this review. Set "planStale" to false and "completedSteps" to 0; judge the change on its own merits against the developer's description.`;
+
   return {
     system: `${COMMON_SYSTEM_PREFIX}
 
@@ -286,8 +294,7 @@ Rules:
 - "verdict" is "blocked" if the code is fundamentally broken or cannot work as described
 - "verdict" is "needs-work" for anything in between
 - "consensus" is true when verdict is "pass" AND issues is empty
-- Set "planStale": true if the current plan step contradicts the actual code and the code is internally consistent. Do not flag the code as wrong solely because it differs from the plan.
-- Set "completedSteps" to the number of plan steps (including the current step) that the diff fully completes. If only the current step is done, use 1.
+${planRules}
 - Each issue must include a specific, actionable suggestion
 - "file" and "line" are optional but strongly preferred when you can identify the exact location
 - Respect the project conventions shown above; do NOT flag a pattern as wrong if it matches the conventions
