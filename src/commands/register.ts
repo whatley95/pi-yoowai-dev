@@ -1477,6 +1477,11 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
             cwd: ctx.cwd,
             sessionManager: ctx.sessionManager,
             task: testTask,
+            // Without the override, callSecondaryModel resolves the config from
+            // settings (secondary / taskModels) and it WINS over the provider/id
+            // args — council members have no task, so they were silently tested
+            // against the secondary model instead of themselves.
+            secondaryOverride: model,
           },
         );
         clearTimeout(timeout);
