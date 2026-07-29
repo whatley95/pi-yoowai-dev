@@ -58,7 +58,188 @@ export interface PreReviewOutput {
 
 const INTERPRETER_COMMANDS = new Set(["node", "python", "python3", "ruby"]);
 
-export async function runPreReviewCommands(cwd: string, commands: string[]): Promise<PreReviewOutput[]> {
+/** Subcommands that mutate state, destroy work, or reach outward (push/publish).
+ *  Enforced only for model-generated commands (toolUseLoop); user-configured
+ *  pre-review commands are trusted and keep full access. */
+const DENIED_SUBCOMMANDS: Record<string, Set<string>> = {
+  git: new Set([
+    "push",
+    "reset",
+    "clean",
+    "revert",
+    "checkout",
+    "switch",
+    "restore",
+    "rm",
+    "mv",
+    "commit",
+    "merge",
+    "rebase",
+    "pull",
+    "fetch",
+    "am",
+    "apply",
+    "stash",
+    "tag",
+    "branch",
+    "cherry-pick",
+    "update-ref",
+    "update-index",
+    "config",
+    "remote",
+    "worktree",
+    "submodule",
+    "clone",
+    "init",
+    "gc",
+    "prune",
+  ]),
+  svn: new Set([
+    "commit",
+    "ci",
+    "revert",
+    "update",
+    "up",
+    "merge",
+    "switch",
+    "delete",
+    "remove",
+    "del",
+    "mkdir",
+    "add",
+    "copy",
+    "cp",
+    "move",
+    "mv",
+    "ren",
+    "rename",
+    "propset",
+    "pset",
+    "propdel",
+    "pdel",
+    "import",
+    "checkout",
+    "co",
+    "lock",
+    "unlock",
+    "resolve",
+    "resolved",
+    "patch",
+    "relocate",
+    "cleanup",
+  ]),
+  npm: new Set([
+    "publish",
+    "install",
+    "i",
+    "add",
+    "uninstall",
+    "remove",
+    "rm",
+    "r",
+    "update",
+    "up",
+    "upgrade",
+    "link",
+    "ln",
+    "unlink",
+    "exec",
+    "init",
+    "login",
+    "logout",
+    "token",
+    "owner",
+    "team",
+    "deprecate",
+    "dist-tag",
+    "pack",
+    "version",
+    "ci",
+  ]),
+  pnpm: new Set([
+    "publish",
+    "install",
+    "i",
+    "add",
+    "uninstall",
+    "remove",
+    "rm",
+    "update",
+    "up",
+    "upgrade",
+    "link",
+    "ln",
+    "unlink",
+    "init",
+    "login",
+    "logout",
+    "pack",
+  ]),
+  yarn: new Set([
+    "publish",
+    "add",
+    "remove",
+    "rm",
+    "upgrade",
+    "up",
+    "link",
+    "unlink",
+    "init",
+    "login",
+    "logout",
+    "version",
+    "pack",
+    "install",
+  ]),
+  bun: new Set(["publish", "add", "remove", "rm", "update", "link", "ln", "init", "x", "bunx", "install", "i"]),
+  cargo: new Set(["publish", "install", "uninstall", "yank", "login", "logout", "owner"]),
+  go: new Set(["install", "get", "generate", "mod"]),
+};
+
+/** Flags that consume the following argument as a value (so the value is not
+ *  mistaken for the subcommand). Keyed per program; "*" applies to all. */
+const VALUE_FLAGS: Record<string, Set<string>> = {
+  git: new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]),
+  "*": new Set(["--registry", "--prefix", "--cwd"]),
+};
+
+function firstSubcommand(program: string, args: string[]): string | undefined {
+  const valueFlags = new Set([...(VALUE_FLAGS["*"] ?? []), ...(VALUE_FLAGS[program] ?? [])]);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith("-")) {
+      // `--flag value` form consumes the next arg; `--flag=value` does not.
+      if (valueFlags.has(arg) && !arg.includes("=")) i++;
+      continue;
+    }
+    return arg;
+  }
+  return undefined;
+}
+
+function validateSubcommand(program: string, args: string[]): void {
+  const denied = DENIED_SUBCOMMANDS[program];
+  if (!denied) return;
+  const subcommand = firstSubcommand(program, args)?.toLowerCase();
+  if (subcommand && denied.has(subcommand)) {
+    throw new Error(
+      `Command "${program} ${subcommand}" is not allowed for model-generated tool calls: it may mutate state or affect remote systems`,
+    );
+  }
+}
+
+export interface PreReviewOptions {
+  /** Restrict subcommands (git/svn/npm/...) to read-only ones. Used for
+   *  model-generated commands in the tool loop; user-configured pre-review
+   *  commands run unrestricted. */
+  restrictSubcommands?: boolean;
+}
+
+export async function runPreReviewCommands(
+  cwd: string,
+  commands: string[],
+  options: PreReviewOptions = {},
+): Promise<PreReviewOutput[]> {
   const results = await Promise.all(
     commands.map(async (command) => {
       try {
@@ -71,6 +252,9 @@ export async function runPreReviewCommands(cwd: string, commands: string[]): Pro
         }
         if (program === "npx") {
           validateNpxArgs(args);
+        }
+        if (options.restrictSubcommands) {
+          validateSubcommand(program, args);
         }
         const output = execProgram(program, args, cwd);
         return { command, output: truncateOutput(output), exitCode: 0 };

@@ -103,7 +103,9 @@ function readFileTool(cwd: string, path: string, startLine?: number, endLine?: n
 
 async function runCommandTool(cwd: string, command: string): Promise<ToolResult> {
   try {
-    const [result] = await runPreReviewCommands(cwd, [command]);
+    // Model-generated commands are restricted to read-only subcommands;
+    // user-configured preReviewCommands run without this restriction.
+    const [result] = await runPreReviewCommands(cwd, [command], { restrictSubcommands: true });
     return {
       output: truncateCommandOutput(result.output),
       error: result.exitCode !== 0 ? `Command exited with code ${result.exitCode}` : undefined,
