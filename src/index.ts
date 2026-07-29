@@ -296,7 +296,7 @@ export default async function (pi: ExtensionAPI) {
       review: Type.Optional(
         Type.String({
           description:
-            "Provide a description of what you just implemented. The secondary model examines the diff and returns a verdict with issues.",
+            "Provide a description of what you just implemented. Be specific and technical: name the files/functions changed, how the change works (null handling, fallbacks, edge cases), and why — not just the intent. Vague descriptions get vaguer reviews. The secondary model examines the diff and returns a verdict with issues.",
         }),
       ),
       suggest: Type.Optional(
@@ -313,7 +313,7 @@ export default async function (pi: ExtensionAPI) {
       judge: Type.Optional(
         Type.String({
           description:
-            "Provide a description of all completed work for a final holistic review against the original plan.",
+            "Provide a description of all completed work for a final holistic review against the original plan. Summarize what was actually built per step — files, behavior, edge cases handled — not just the goal.",
         }),
       ),
       scan: Type.Optional(
