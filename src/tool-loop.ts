@@ -3,16 +3,21 @@ import { logEvent } from "./logger.js";
 import { parseJsonResponse } from "./prompts.js";
 import { runPreReviewCommands } from "./pre-review.js";
 import { resolveProjectPath } from "./path-security.js";
+import { listTrackedFiles } from "./conventions.js";
 import { mergeUsageCost } from "./actions/shared.js";
 import type { CallSecondaryModelOptions, UsageCost } from "./types.js";
 
 export interface ToolRequest {
-  tool: "read_file" | "run_command";
+  tool: "read_file" | "run_command" | "search_code";
   path?: string;
   command?: string;
   /** Optional 1-based inclusive line range for read_file. */
   startLine?: number;
   endLine?: number;
+  /** Regex pattern for search_code. */
+  pattern?: string;
+  /** Surrounding lines per match for search_code (0-5, default 1). */
+  contextLines?: number;
 }
 
 export interface ToolResult {
@@ -23,15 +28,17 @@ export interface ToolResult {
 const DEFAULT_MAX_ITERATIONS = 5;
 const MAX_TOOL_FILE_BYTES = 100 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 4000;
+const MAX_SEARCH_MATCHES = 50;
 
 function buildToolInstruction(maxIterations: number): string {
   return `You may request additional context before producing your final structured JSON result. To request context, output a single JSON block exactly like one of these examples and nothing else:
 
 {"tool": "read_file", "path": "relative/path/to/file.ts"}
 {"tool": "read_file", "path": "relative/path/to/file.ts", "startLine": 100, "endLine": 200}
+{"tool": "search_code", "pattern": "functionName\\\\(", "path": "src", "contextLines": 2}
 {"tool": "run_command", "command": "npm run typecheck"}
 
-read_file accepts optional startLine/endLine (1-based, inclusive) to page through large files; when a file is truncated, the result tells you the total line count so you can request a specific range.
+read_file accepts optional startLine/endLine (1-based, inclusive) to page through large files; when a file is truncated, the result tells you the total line count so you can request a specific range. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match) — use it to locate callers, definitions, or patterns, then read_file the hits.
 
 You may make up to ${maxIterations} such request(s). After each request, the tool result will be appended to this conversation. Once you have enough context, produce the final structured JSON result requested below. Do not output explanatory text with a tool request. If no additional context is needed, produce the final JSON result immediately.`;
 }
@@ -42,13 +49,19 @@ function parseToolRequest(text: string): ToolRequest | null {
   const obj = parsed as Record<string, unknown>;
   if (!("tool" in obj)) return null;
   const tool = obj.tool;
-  if (tool !== "read_file" && tool !== "run_command") return null;
+  if (tool !== "read_file" && tool !== "run_command" && tool !== "search_code") return null;
+  const contextLines =
+    typeof obj.contextLines === "number" && Number.isFinite(obj.contextLines)
+      ? Math.min(Math.max(Math.floor(obj.contextLines), 0), 5)
+      : undefined;
   return {
     tool,
     path: typeof obj.path === "string" ? obj.path : undefined,
     command: typeof obj.command === "string" ? obj.command : undefined,
     startLine: typeof obj.startLine === "number" && Number.isFinite(obj.startLine) ? obj.startLine : undefined,
     endLine: typeof obj.endLine === "number" && Number.isFinite(obj.endLine) ? obj.endLine : undefined,
+    pattern: typeof obj.pattern === "string" ? obj.pattern : undefined,
+    contextLines,
   };
 }
 
@@ -115,10 +128,85 @@ async function runCommandTool(cwd: string, command: string): Promise<ToolResult>
   }
 }
 
+/** Regex search across project files (git-tracked or the portable fallback scan).
+ *  Returns file:line hits with ±contextLines of surrounding content, capped at
+ *  MAX_SEARCH_MATCHES matches and MAX_TOOL_OUTPUT_CHARS total output. */
+function searchCodeTool(cwd: string, request: ToolRequest): ToolResult {
+  const pattern = request.pattern;
+  if (!pattern) return { output: "", error: "search_code requires a pattern" };
+  let regex: RegExp;
+  try {
+    regex = new RegExp(pattern);
+  } catch (err) {
+    return { output: "", error: `Invalid regex: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const context = request.contextLines ?? 1;
+
+  // Scope: an explicit path (single file or directory prefix) or all tracked files.
+  let files: string[];
+  if (request.path) {
+    const safePath = resolveProjectPath(cwd, request.path);
+    if (!safePath) return { output: "", error: `Path is not allowed: ${request.path}` };
+    try {
+      const normalized = request.path.replace(/^\.\//, "").replace(/\\/g, "/").replace(/\/+$/, "");
+      if (statSync(safePath).isDirectory()) {
+        files = listTrackedFiles(cwd).filter((f) => f === normalized || f.startsWith(`${normalized}/`));
+      } else {
+        files = [normalized];
+      }
+    } catch (err) {
+      return { output: "", error: err instanceof Error ? err.message : String(err) };
+    }
+  } else {
+    files = listTrackedFiles(cwd);
+  }
+
+  const out: string[] = [];
+  let matches = 0;
+  let stoppedEarly = false;
+  for (const file of files) {
+    if (matches >= MAX_SEARCH_MATCHES) {
+      stoppedEarly = true;
+      break;
+    }
+    const safePath = resolveProjectPath(cwd, file);
+    if (!safePath) continue;
+    try {
+      if (statSync(safePath).size > MAX_TOOL_FILE_BYTES) continue;
+      const content = readFileSync(safePath, "utf-8");
+      if (content.includes("\0")) continue; // skip binary files
+      const fileLines = content.split(/\r?\n/);
+      for (let i = 0; i < fileLines.length; i++) {
+        if (!regex.test(fileLines[i])) continue;
+        const from = Math.max(0, i - context);
+        const to = Math.min(fileLines.length - 1, i + context);
+        for (let j = from; j <= to; j++) {
+          out.push(`${file}:${j + 1}: ${fileLines[j]}`);
+        }
+        out.push("--");
+        matches++;
+        if (matches >= MAX_SEARCH_MATCHES) {
+          stoppedEarly = true;
+          break;
+        }
+      }
+    } catch {
+      // Unreadable file — skip it.
+    }
+  }
+
+  if (matches === 0) return { output: `No matches for /${pattern}/ in ${files.length} file(s).` };
+  const header = stoppedEarly ? `… (stopped after ${MAX_SEARCH_MATCHES} matches)\n` : "";
+  return { output: truncateFileOutput(header + out.join("\n"), request.path ?? "(search)") };
+}
+
 async function executeTool(cwd: string, request: ToolRequest): Promise<ToolResult> {
   if (request.tool === "read_file") {
     if (!request.path) return { output: "", error: "read_file requires a path" };
     return readFileTool(cwd, request.path, request.startLine, request.endLine);
+  }
+  if (request.tool === "search_code") {
+    return searchCodeTool(cwd, request);
   }
   if (request.tool === "run_command") {
     if (!request.command) return { output: "", error: "run_command requires a command" };
@@ -128,7 +216,12 @@ async function executeTool(cwd: string, request: ToolRequest): Promise<ToolResul
 }
 
 function formatToolResult(request: ToolRequest, result: ToolResult): string {
-  const description = request.tool === "read_file" ? `read_file ${request.path}` : `run_command ${request.command}`;
+  const description =
+    request.tool === "read_file"
+      ? `read_file ${request.path}`
+      : request.tool === "search_code"
+        ? `search_code /${request.pattern}/${request.path ? ` in ${request.path}` : ""}`
+        : `run_command ${request.command}`;
   const body = result.error ? `Error: ${result.error}\n${result.output}` : result.output;
   return `\n\n## Tool result: ${description}\n${body}\n\nYou may request another tool or produce the final structured JSON result.`;
 }
