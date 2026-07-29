@@ -3,7 +3,7 @@ import { parseJsonResponse } from "./validation.js";
 
 function markdownBullets(text: string): string[] {
   const bullets: string[] = [];
-  const bulletRegex = /^[-*•]\s+(.+)$/gim;
+  const bulletRegex = /^(?:[-*•]|\d+[.)])\s+(.+)$/gim;
   let match: RegExpExecArray | null;
   while ((match = bulletRegex.exec(text)) !== null) {
     const line = match[1].trim();
@@ -117,26 +117,31 @@ function parseFileLocation(value: string | undefined): { file?: string; line?: n
 function detectVerdictExplicit(text: string): "pass" | "needs-work" | "blocked" | "needs-review" | null {
   const lower = text.toLowerCase();
   const verdictLine = lower.match(
-    /\bverdict\b\s*[:-]?\s*[*_`]?\s*(pass|needs-work|needs review|needsreview|blocked|fail|fails|failing|request changes|requests changes|changes requested)/,
+    /\bverdict\b\s*[:-]?\s*[*_`]?\s*(pass|needs-work|needs review|needsreview|blocked|fail|fails|failing|request changes|requests changes|changes requested|approve|approved|approval)/,
   );
   if (verdictLine) {
     const v = verdictLine[1];
-    if (v === "pass") return "pass";
+    if (v === "pass" || v === "approve" || v === "approved" || v === "approval") return "pass";
     if (v === "blocked" || v === "fail" || v === "fails" || v === "failing") return "blocked";
     if (v === "needs review" || v === "needsreview") return "needs-review";
     return "needs-work";
   }
   // Heading form: `## Verdict: ✅ pass` / `## Judgment: pass`.
   const heading = lower.match(
-    /^#{1,4}\s+(?:verdict|judgment|review|result)\b[^\n]*?(pass|needs-work|needs review|needsreview|blocked)/m,
+    /^#{1,4}\s+(?:verdict|judgment|review|result)\b[^\n]*?(pass|needs-work|needs review|needsreview|blocked|approve|approved|approval)/m,
   );
   if (heading) {
     const v = heading[1];
-    if (v === "pass") return "pass";
+    if (v === "pass" || v === "approve" || v === "approved" || v === "approval") return "pass";
     if (v === "blocked") return "blocked";
     if (v === "needs review" || v === "needsreview") return "needs-review";
     return "needs-work";
   }
+  // A verdict/judgment heading that matched NO known keyword is a verdict we
+  // failed to parse (e.g. "## Review verdict: Claim does not match the working
+  // tree"). Never let body keywords ("pass" appearing in prose) override that —
+  // a false pass auto-advances work; default to the safe non-pass verdict.
+  if (/^#{1,4}\s+[^\n]*\b(?:verdict|judgment)\b/im.test(lower)) return "needs-work";
   return null;
 }
 

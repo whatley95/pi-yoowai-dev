@@ -412,6 +412,45 @@ Good safety change.`;
     assert.match(result?.issues[0]?.issue ?? "", /forces the dev profile/);
   });
 
+  it("maps 'Verdict: Approve' to pass and keeps numbered nits as suggestions", () => {
+    const text = `**Verdict: Approve.** All claims verified against the actual codebase.
+
+## Claim verification
+
+| Claim | Result |
+|---|---|
+| No \`SearchDocument\` dependency | ✅ Confirmed |
+| Matches \`SearchDocument.forwardRequest\` pattern | ✅ Identical body |
+
+## Minor nits (non-blocking)
+
+1. **Indentation** — new files use 4 spaces; project convention is tabs.
+2. **\`throws TNException\`** on the controller method is now dead — could be dropped.`;
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.verdict, "pass");
+    assert.equal(result?.issues.length, 0);
+    assert.equal(result?.suggestions.length, 2);
+    assert.match(result?.suggestions[0] ?? "", /Indentation/);
+    assert.match(result?.suggestions[1] ?? "", /throws TNException/);
+  });
+
+  it("treats an unparseable verdict heading as needs-work, not body-keyword pass", () => {
+    const text = `## Review verdict: Claim does not match the working tree
+
+The described change **does not exist** in this checkout. The diff was empty.
+
+### 1. The claimed forwarding code is absent
+
+- grep finds no match in \`CheckpointService\` or \`CheckpointController\`.
+- The snippet was reverted, never saved, or written to a different working copy.
+
+The good news is the existing implementation compiles and looks good otherwise.`;
+    const result = salvageReviewFromMarkdown(text);
+    // "looks good" in the body must NOT produce a pass — the verdict heading
+    // itself could not be parsed, so the safe verdict wins.
+    assert.equal(result?.verdict, "needs-work");
+  });
+
   it("judge salvage reuses structured issues", () => {
     const text = `## Judgment: needs-work
 
