@@ -13,6 +13,7 @@ import { join } from "node:path";
 
 type PiAiCompatModule = typeof import("@earendil-works/pi-ai/compat");
 type PiAiOAuthModule = typeof import("@earendil-works/pi-ai/oauth");
+type PiAiProvidersAllModule = typeof import("@earendil-works/pi-ai/providers/all");
 
 const sdkOverrides: {
   streamSimple?: PiAiCompatModule["streamSimple"];
@@ -53,7 +54,16 @@ export function setSdkOAuthResolverOverride(
   oauthResolverOverride = fn ?? undefined;
 }
 
-const oauthApiKeyCache = new Map<string, { credential: Record<string, unknown>; apiKey: string }>();
+/** Result of OAuth resolution: either a plain API key or provider-computed
+ *  request headers (e.g. Kimi Coding's `Authorization: Bearer ...`, which must
+ *  NOT be sent as an `x-api-key`). */
+interface OAuthResolution {
+  apiKey?: string;
+  headers?: Record<string, string | null>;
+  newCredentials?: Record<string, unknown>;
+}
+
+const oauthApiKeyCache = new Map<string, { credential: Record<string, unknown>; resolution: OAuthResolution }>();
 
 export async function getPiAiCompat(): Promise<PiAiCompatModule> {
   if (sdkOverrides.streamSimple || sdkOverrides.getModel) {
@@ -78,33 +88,46 @@ async function fetchOAuthApiKey(
   provider: string,
   credential: Record<string, unknown>,
   cwd: string | undefined,
-): Promise<{ apiKey: string; newCredentials?: Record<string, unknown> } | undefined> {
+): Promise<OAuthResolution | undefined> {
   if (oauthResolverOverride) {
     return oauthResolverOverride(provider, credential);
   }
   // pi-ai ≥ 0.82 removed getOAuthApiKey; Models.getAuth() is the replacement.
-  // It resolves OAuth credentials through our auth.json-backed store and runs
-  // the token refresh under the store lock (persisted by modify() below).
+  // NOTE: bare createModels() starts with ZERO providers — builtinModels()
+  // registers the built-in catalog, which is what makes the provider known.
+  // getAuth resolves OAuth credentials through our auth.json-backed store and
+  // runs the token refresh under the store lock (persisted by modify() below).
   try {
-    const compat = await getPiAiCompat();
-    if (typeof compat.createModels === "function") {
-      const models = compat.createModels({ credentials: authJsonCredentialStore() });
+    const providersAll = (await import("@earendil-works/pi-ai/providers/all")) as PiAiProvidersAllModule;
+    if (typeof providersAll.builtinModels === "function") {
+      const models = providersAll.builtinModels({ credentials: authJsonCredentialStore() });
       const result = await models.getAuth(provider);
       const apiKey = result?.auth?.apiKey;
-      if (typeof apiKey === "string" && apiKey.length > 0) {
+      const headers = result?.auth?.headers;
+      const hasApiKey = typeof apiKey === "string" && apiKey.length > 0;
+      const hasHeaders =
+        headers !== undefined && Object.values(headers).some((v) => typeof v === "string" && v.length > 0);
+      if (hasApiKey || hasHeaders) {
         // Refreshed credentials were already persisted by the store's modify();
         // there are no out-of-band newCredentials to write back.
-        return { apiKey };
+        return { apiKey: hasApiKey ? apiKey : undefined, headers: hasHeaders ? headers : undefined };
       }
       if (cwd) {
-        logEvent(cwd, "warn", "Models.getAuth returned no API key for OAuth provider", {
+        logEvent(cwd, "warn", "Models.getAuth returned no auth for OAuth provider", {
           provider,
           hasResult: result !== undefined,
           source: result?.source,
+          // Field names and expiry only — never token values. Tells apart an
+          // unconfigured provider from a legacy-shaped credential (e.g.
+          // accessToken/refreshToken instead of access/refresh).
+          credentialKeys: Object.keys(credential).filter((k) => k !== "access" && k !== "refresh" && k !== "key"),
+          hasAccess: typeof credential.access === "string",
+          hasRefresh: typeof credential.refresh === "string",
+          expires: typeof credential.expires === "number" ? new Date(credential.expires).toISOString() : undefined,
         });
       }
     } else if (cwd) {
-      logEvent(cwd, "debug", "pi-ai compat has no createModels; using legacy OAuth path", { provider });
+      logEvent(cwd, "debug", "pi-ai has no builtinModels; using legacy OAuth path", { provider });
     }
   } catch (err) {
     if (cwd) {
@@ -181,22 +204,27 @@ async function resolveOAuthApiKey(
   provider: string,
   credential: Record<string, unknown>,
   cwd: string | undefined,
-): Promise<{ apiKey: string; newCredentials?: Record<string, unknown> } | undefined> {
+): Promise<OAuthResolution | undefined> {
   const cached = oauthApiKeyCache.get(provider);
   if (cached && JSON.stringify(cached.credential) === JSON.stringify(credential)) {
-    return { apiKey: cached.apiKey };
+    return cached.resolution;
   }
   if (cwd) {
     const diskKey = getCachedOAuthApiKey(cwd, provider, credential);
     if (diskKey) {
-      oauthApiKeyCache.set(provider, { credential, apiKey: diskKey });
-      return { apiKey: diskKey };
+      const resolution: OAuthResolution = { apiKey: diskKey };
+      oauthApiKeyCache.set(provider, { credential, resolution });
+      return resolution;
     }
   }
   const result = await fetchOAuthApiKey(provider, credential, cwd);
-  if (result) {
-    oauthApiKeyCache.set(provider, { credential, apiKey: result.apiKey });
-    if (cwd) {
+  if (result && (result.apiKey || result.headers)) {
+    const resolution: OAuthResolution = { apiKey: result.apiKey, headers: result.headers };
+    oauthApiKeyCache.set(provider, { credential, resolution });
+    // The disk cache is only meaningful for apiKey-shaped results; header-shaped
+    // auth (e.g. Kimi Bearer) is cheap to re-derive via getAuth when the stored
+    // credential is still valid — no network call happens in that case.
+    if (cwd && result.apiKey) {
       const expiresAt =
         result.newCredentials && typeof result.newCredentials.expiresAt === "number"
           ? result.newCredentials.expiresAt
@@ -228,13 +256,14 @@ function persistRefreshedCredential(provider: string, credential: Record<string,
   }
 }
 
-async function resolveSdkApiKey(
+async function resolveSdkAuth(
   provider: string,
   configKey: string | undefined,
   cwd: string | undefined,
-): Promise<string | undefined> {
+): Promise<{ apiKey?: string; headers?: Record<string, string | null> } | undefined> {
   if (configKey) {
-    return resolveApiKey(provider, configKey);
+    const apiKey = resolveApiKey(provider, configKey);
+    return apiKey ? { apiKey } : undefined;
   }
 
   const entry = readRawAuthEntry(provider);
@@ -244,7 +273,7 @@ async function resolveSdkApiKey(
       if (result.newCredentials) {
         persistRefreshedCredential(provider, { type: "oauth", ...result.newCredentials });
       }
-      return result.apiKey;
+      return { apiKey: result.apiKey, headers: result.headers };
     }
     if (cwd) {
       logEvent(cwd, "warn", "No OAuth credential found for SDK backend", { provider, backend: "sdk" });
@@ -252,7 +281,8 @@ async function resolveSdkApiKey(
     return undefined;
   }
 
-  return resolveApiKey(provider);
+  const apiKey = resolveApiKey(provider);
+  return apiKey ? { apiKey } : undefined;
 }
 
 function createStreamProgressHandler(
@@ -331,8 +361,9 @@ export async function callSdkBackend(
   // credential/env lookup when no explicit key is configured. The pi-ai SDK can
   // read Pi's CredentialStore (e.g. ~/.pi/agent/auth.json) and provider env vars
   // on its own.
-  const apiKey = (await resolveSdkApiKey(provider, secondary?.apiKey, cwd)) ?? undefined;
-  if (!apiKey && cwd) {
+  const sdkAuth = await resolveSdkAuth(provider, secondary?.apiKey, cwd);
+  const apiKey = sdkAuth?.apiKey;
+  if (!apiKey && !sdkAuth?.headers && cwd) {
     logEvent(cwd, "debug", "No explicit API key for SDK backend; relying on SDK credential resolution", {
       provider,
       model,
@@ -379,6 +410,13 @@ export async function callSdkBackend(
 
   if (secondary?.transport) sdkOptions.transport = secondary.transport;
   if (typeof secondary?.maxRetryDelayMs === "number") sdkOptions.maxRetryDelayMs = secondary.maxRetryDelayMs;
+
+  // OAuth providers that compute request headers (e.g. Kimi Coding's Bearer
+  // Authorization) must not have them squeezed into x-api-key — apply them
+  // first so nothing else clobbers them.
+  if (sdkAuth?.headers) {
+    sdkOptions.headers = { ...sdkAuth.headers, ...sdkOptions.headers };
+  }
 
   const opencodeHeaders = buildSdkHeaders(builtinModel, sessionId);
   if (opencodeHeaders) {

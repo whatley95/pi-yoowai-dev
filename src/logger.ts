@@ -30,12 +30,26 @@ function rotateIfNeeded(path: string): void {
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
+/** Local time with explicit numeric offset (e.g. 2026-07-29T14:24:07.928+08:00) —
+ *  readable in the user's timezone while staying unambiguous. */
+function localTimestamp(d: Date): string {
+  const pad = (n: number, width = 2): string => String(n).padStart(width, "0");
+  const offsetMinutes = -d.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const offset = `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}${offset}`
+  );
+}
+
 export function logEvent(cwd: string, level: LogLevel, message: string, details?: Record<string, unknown>): void {
   try {
     ensureLogDir(cwd);
     const path = getLogPath(cwd);
     rotateIfNeeded(path);
-    const timestamp = new Date().toISOString();
+    const timestamp = localTimestamp(new Date());
     const detailsText = details && Object.keys(details).length > 0 ? ` | ${JSON.stringify(details)}` : "";
     const entry = `[${timestamp}] [${level.toUpperCase()}] ${message}${detailsText}\n`;
     appendFileSync(path, entry, { encoding: "utf-8", mode: 0o600 });
