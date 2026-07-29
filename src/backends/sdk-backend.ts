@@ -3,7 +3,7 @@ import { readRawAuthEntry, resolveApiKey } from "../auth-reader.js";
 import { getAgentDir } from "../config.js";
 import { logEvent } from "../logger.js";
 import { resolveModelInfo } from "../model-registry.js";
-import { getCachedOAuthApiKey, setCachedOAuthApiKey } from "../oauth-cache.js";
+import { clearCachedOAuthApiKey, getCachedOAuthApiKey, setCachedOAuthApiKey } from "../oauth-cache.js";
 import type { CallSecondaryModelOptions } from "../types.js";
 import type { SecondaryModelConfig } from "../types/secondary-model.js";
 import { getPiSessionId } from "./pi-backend.js";
@@ -406,6 +406,14 @@ function buildSdkHeaders(
   };
 }
 
+/** True when the provider rejected the presented credentials (expired or
+ *  revoked token/key), as opposed to a network, rate-limit, or server error. */
+function isAuthRejectedError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes("401") || msg.includes("authentication_error") || msg.includes("invalid or may have expired");
+}
+
 export async function callSdkBackend(
   provider: string,
   model: string,
@@ -425,8 +433,7 @@ export async function callSdkBackend(
   // read Pi's CredentialStore (e.g. ~/.pi/agent/auth.json) and provider env vars
   // on its own.
   const sdkAuth = await resolveSdkAuth(provider, secondary?.apiKey, cwd);
-  const apiKey = sdkAuth?.apiKey;
-  if (!apiKey && !sdkAuth?.headers && cwd) {
+  if (!sdkAuth?.apiKey && !sdkAuth?.headers && cwd) {
     logEvent(cwd, "debug", "No explicit API key for SDK backend; relying on SDK credential resolution", {
       provider,
       model,
@@ -455,45 +462,6 @@ export async function callSdkBackend(
   };
 
   const sessionId = cwd ? getPiSessionId(cwd) : undefined;
-  const sdkOptions: SimpleStreamOptions = {
-    apiKey,
-    signal,
-    sessionId,
-    // Mirror the main Pi agent's defaults for cache retention, retries, and
-    // HTTP idle timeout. These keep the SDK backend consistent with how Pi
-    // itself calls the same providers.
-    cacheRetention: secondary?.cacheRetention === "auto" ? "short" : (secondary?.cacheRetention ?? "short"),
-    maxRetries: secondary?.maxRetries ?? 3,
-    timeoutMs: secondary?.timeoutMs ?? 300_000,
-  };
-
-  if (thinking && thinking.toLowerCase() !== "off") {
-    sdkOptions.reasoning = thinking as import("@earendil-works/pi-ai").ThinkingLevel;
-  }
-
-  if (secondary?.transport) sdkOptions.transport = secondary.transport;
-  if (typeof secondary?.maxRetryDelayMs === "number") sdkOptions.maxRetryDelayMs = secondary.maxRetryDelayMs;
-
-  // OAuth providers that compute request headers (e.g. Kimi Coding's Bearer
-  // Authorization) must not have them squeezed into x-api-key — apply them
-  // first so nothing else clobbers them.
-  if (sdkAuth?.headers) {
-    sdkOptions.headers = { ...sdkAuth.headers, ...sdkOptions.headers };
-  }
-
-  const opencodeHeaders = buildSdkHeaders(builtinModel, sessionId);
-  if (opencodeHeaders) {
-    sdkOptions.headers = { ...sdkOptions.headers, ...opencodeHeaders };
-  }
-
-  if (cwd) {
-    sdkOptions.onResponse = (response) => {
-      logEvent(cwd, "debug", "SDK provider response", { status: response.status, backend: "sdk" });
-    };
-    sdkOptions.onPayload = (payload) => {
-      logEvent(cwd, "debug", "SDK provider payload", { type: sdkPayloadType(payload), backend: "sdk" });
-    };
-  }
 
   // Prefer Pi's catalog metadata, allow user overrides, and fall back to the
   // local registry/default for token budgets.
@@ -506,50 +474,131 @@ export async function callSdkBackend(
   // Structured output tasks (review, judge, test, security, etc.) can also exceed
   // a cheap 2048 token cap, so allow the full model limit for those too.
   const structuredOutput = Boolean(options.structuredOutput);
-  sdkOptions.maxTokens =
-    thinkingEnabledForBudget || structuredOutput ? maxOutputTokens : Math.min(maxOutputTokens, 2048);
 
-  const stream = piAi.streamSimple(builtinModel, context, sdkOptions);
-
-  // Stream progress to the TUI when a callback is provided. We throttle updates
-  // to avoid saturating the UI with every token.
-  if (options.onStreamProgress) {
-    const progress = createStreamProgressHandler(options.onStreamProgress);
-    try {
-      for await (const event of stream) {
-        progress.handle(event);
-        if (event.type === "done" || event.type === "error") break;
-      }
-    } catch {
-      // The final result() call will surface the real error; ignore iterator errors.
-    }
-    progress.flush();
-  }
-
-  const message = await stream.result();
-
-  if (message.stopReason === "error" || message.stopReason === "aborted") {
-    const detail = message.errorMessage ? `: ${message.errorMessage}` : "";
-    throw new Error(`Secondary model request failed (${message.stopReason})${detail}`);
-  }
-
-  const content = extractTextFromContent(message.content);
-  if (!content) {
-    throw new Error(`Secondary model returned no extractable text (stopReason: ${message.stopReason ?? "unknown"})`);
-  }
-
-  // stopReason "length" means the model hit its output-token cap before finishing.
-  // Surface that so the caller can issue a continuation call instead of returning
-  // an incomplete response silently.
-  const truncated = isLengthStop(message.stopReason);
-
-  const usage = buildUsage(provider, model, systemPrompt, userPrompt, content);
-  if (message.usage) {
-    return {
-      content,
-      usage: applyReportedUsage(provider, model, usage, message.usage.input, message.usage.output),
-      truncated,
+  const attempt = async (
+    auth: Awaited<ReturnType<typeof resolveSdkAuth>>,
+  ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> => {
+    const sdkOptions: SimpleStreamOptions = {
+      apiKey: auth?.apiKey,
+      signal,
+      sessionId,
+      // Mirror the main Pi agent's defaults for cache retention, retries, and
+      // HTTP idle timeout. These keep the SDK backend consistent with how Pi
+      // itself calls the same providers.
+      cacheRetention: secondary?.cacheRetention === "auto" ? "short" : (secondary?.cacheRetention ?? "short"),
+      maxRetries: secondary?.maxRetries ?? 3,
+      timeoutMs: secondary?.timeoutMs ?? 300_000,
     };
+
+    if (thinking && thinking.toLowerCase() !== "off") {
+      sdkOptions.reasoning = thinking as import("@earendil-works/pi-ai").ThinkingLevel;
+    }
+
+    if (secondary?.transport) sdkOptions.transport = secondary.transport;
+    if (typeof secondary?.maxRetryDelayMs === "number") sdkOptions.maxRetryDelayMs = secondary.maxRetryDelayMs;
+
+    // OAuth providers that compute request headers (e.g. Kimi Coding's Bearer
+    // Authorization) must not have them squeezed into x-api-key — apply them
+    // first so nothing else clobbers them.
+    if (auth?.headers) {
+      sdkOptions.headers = { ...auth.headers, ...sdkOptions.headers };
+    }
+
+    const opencodeHeaders = buildSdkHeaders(builtinModel, sessionId);
+    if (opencodeHeaders) {
+      sdkOptions.headers = { ...sdkOptions.headers, ...opencodeHeaders };
+    }
+
+    if (cwd) {
+      sdkOptions.onResponse = (response) => {
+        logEvent(cwd, "debug", "SDK provider response", { status: response.status, backend: "sdk" });
+      };
+      sdkOptions.onPayload = (payload) => {
+        logEvent(cwd, "debug", "SDK provider payload", { type: sdkPayloadType(payload), backend: "sdk" });
+      };
+    }
+
+    sdkOptions.maxTokens =
+      thinkingEnabledForBudget || structuredOutput ? maxOutputTokens : Math.min(maxOutputTokens, 2048);
+
+    const stream = piAi.streamSimple(builtinModel, context, sdkOptions);
+
+    // Stream progress to the TUI when a callback is provided. We throttle updates
+    // to avoid saturating the UI with every token.
+    if (options.onStreamProgress) {
+      const progress = createStreamProgressHandler(options.onStreamProgress);
+      try {
+        for await (const event of stream) {
+          progress.handle(event);
+          if (event.type === "done" || event.type === "error") break;
+        }
+      } catch {
+        // The final result() call will surface the real error; ignore iterator errors.
+      }
+      progress.flush();
+    }
+
+    const message = await stream.result();
+
+    if (message.stopReason === "error" || message.stopReason === "aborted") {
+      const detail = message.errorMessage ? `: ${message.errorMessage}` : "";
+      throw new Error(`Secondary model request failed (${message.stopReason})${detail}`);
+    }
+
+    const content = extractTextFromContent(message.content);
+    if (!content) {
+      throw new Error(`Secondary model returned no extractable text (stopReason: ${message.stopReason ?? "unknown"})`);
+    }
+
+    // stopReason "length" means the model hit its output-token cap before finishing.
+    // Surface that so the caller can issue a continuation call instead of returning
+    // an incomplete response silently.
+    const truncated = isLengthStop(message.stopReason);
+
+    const usage = buildUsage(provider, model, systemPrompt, userPrompt, content);
+    if (message.usage) {
+      return {
+        content,
+        usage: applyReportedUsage(provider, model, usage, message.usage.input, message.usage.output),
+        truncated,
+      };
+    }
+    return { content, usage, truncated };
+  };
+
+  try {
+    return await attempt(sdkAuth);
+  } catch (err) {
+    // Short-lived OAuth access tokens (Kimi Coding's live ~15 minutes) can
+    // expire between resolution and the provider call: re-resolve — which
+    // refreshes under the auth.json lock or picks up a credential another
+    // process just refreshed — and retry exactly once.
+    if (secondary?.apiKey || !isAuthRejectedError(err) || readRawAuthEntry(provider)?.type !== "oauth") {
+      throw err;
+    }
+    if (cwd) {
+      logEvent(cwd, "warn", "Provider rejected the OAuth credential; re-resolving and retrying once", {
+        provider,
+        model,
+        backend: "sdk",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    oauthApiKeyCache.delete(provider);
+    if (cwd) clearCachedOAuthApiKey(cwd, provider);
+    const freshAuth = await resolveSdkAuth(provider, undefined, cwd);
+    try {
+      return await attempt(freshAuth);
+    } catch (retryErr) {
+      if (isAuthRejectedError(retryErr)) {
+        const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        throw new Error(
+          `${msg} — the OAuth credential for "${provider}" was rejected again after re-resolution. ` +
+            `Run /login in Pi to re-authenticate, then retry.`,
+          { cause: retryErr },
+        );
+      }
+      throw retryErr;
+    }
   }
-  return { content, usage, truncated };
 }

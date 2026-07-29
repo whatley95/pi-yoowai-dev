@@ -125,6 +125,33 @@ test("formatResultText renders review fix plan", () => {
   assert.ok(text.includes("fix spelling"));
 });
 
+test("formatResultText renders suggestion disposition directive", () => {
+  const text = formatResultText({
+    action: "review",
+    review: {
+      verdict: "pass",
+      issues: [],
+      suggestions: ["Extract the retry loop into a helper"],
+      consensus: true,
+    },
+  });
+  assert.ok(text.includes("### Suggestions"));
+  assert.ok(text.includes("either implement it or reply with a one-line reason for skipping it"));
+});
+
+test("formatResultText omits suggestion directive when there are no suggestions", () => {
+  const text = formatResultText({
+    action: "review",
+    review: {
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+    },
+  });
+  assert.ok(!text.includes("reason for skipping it"));
+});
+
 test("formatResultText renders inconclusive review guidance instead of a fix action", () => {
   const text = formatResultText({
     action: "review",
@@ -140,7 +167,6 @@ test("formatResultText renders inconclusive review guidance instead of a fix act
   assert.ok(text.includes("re-run `wai.review`"));
   assert.ok(!text.includes("Fix the issues above"));
 });
-
 test("formatResultText renders stitched continuation", () => {
   const text = formatResultText(recommendResult({ cost: sampleCost, continuation: { rounds: 2, status: "stitched" } }));
   assert.ok(text.includes("✓ stitched (2 rounds)"));

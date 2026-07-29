@@ -141,6 +141,9 @@ export function formatResultText(result: WaiToolResult): string {
       for (const s of result.review.suggestions) {
         lines.push(`- 💡 ${s}`);
       }
+      lines.push(
+        "**Action:** For each suggestion above that proposes a change, either implement it or reply with a one-line reason for skipping it — do not ignore suggestions silently. Informational notes (review/judge failures, context limits) need no action.",
+      );
       lines.push("");
     }
 

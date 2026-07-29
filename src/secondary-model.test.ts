@@ -792,6 +792,16 @@ function fakeSdkStream(message: AssistantMessage): import("@earendil-works/pi-ai
   } as unknown as import("@earendil-works/pi-ai").AssistantMessageEventStream;
 }
 
+/** AssistantMessage shaped like a provider-side credential rejection (expired
+ *  or revoked token), as surfaced by pi-ai's stopReason "error". */
+function authRejectedMessage(): AssistantMessage {
+  return {
+    ...fakeSdkAssistantMessage("", undefined, "error"),
+    errorMessage:
+      '401 {"error":{"type":"authentication_error","message":"The API Key appears to be invalid or may have expired."}}',
+  } as AssistantMessage;
+}
+
 function fakeSdkStreamingStream(
   deltas: string[],
   finalMessage: AssistantMessage,
@@ -964,6 +974,81 @@ describe("sdk backend", () => {
     const { content } = await callSecondaryModel("openai-codex", "gpt-5.6-terra", "system", "user", { cwd });
     assert.equal(content, "codex ok");
     assert.equal(receivedApiKey, "refreshed-oauth-key");
+  });
+
+  it("sdk backend retries once with a re-resolved OAuth credential on 401", async () => {
+    const cwd = makeTempDir("wai-sdk-oauth-401-");
+    const agentDir = makeTempDir("wai-sdk-oauth-401-agent-");
+    tmpDirs.push(cwd);
+    tempAgentDirs.push(agentDir);
+    mkdirSync(agentDir, { recursive: true });
+    writeAuthJson(agentDir, { "kimi-coding": { type: "oauth", access: "t1", refresh: "r1", expires: 1 } });
+    setAgentDirForTests(() => agentDir);
+    writeSettings(cwd, { provider: "kimi-coding", id: "k3-256k", backend: "sdk" });
+
+    let resolverCalls = 0;
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    setSdkOAuthResolverOverride(async () => {
+      resolverCalls++;
+      return { apiKey: resolverCalls === 1 ? "stale-key" : "fresh-key" };
+    });
+    const seenApiKeys: (string | undefined)[] = [];
+    setSdkStreamSimpleOverride((_model, _context, options) => {
+      seenApiKeys.push(options?.apiKey);
+      if (seenApiKeys.length === 1) return fakeSdkStream(authRejectedMessage());
+      return fakeSdkStream(fakeSdkAssistantMessage("retry ok"));
+    });
+
+    const { content } = await callSecondaryModel("kimi-coding", "k3-256k", "system", "user", { cwd });
+    assert.equal(content, "retry ok");
+    assert.equal(resolverCalls, 2);
+    assert.deepEqual(seenApiKeys, ["stale-key", "fresh-key"]);
+  });
+
+  it("sdk backend surfaces a re-login hint when the OAuth retry is rejected again", async () => {
+    const cwd = makeTempDir("wai-sdk-oauth-401-twice-");
+    const agentDir = makeTempDir("wai-sdk-oauth-401-twice-agent-");
+    tmpDirs.push(cwd);
+    tempAgentDirs.push(agentDir);
+    mkdirSync(agentDir, { recursive: true });
+    writeAuthJson(agentDir, { "kimi-coding": { type: "oauth", access: "t1", refresh: "r1", expires: 1 } });
+    setAgentDirForTests(() => agentDir);
+    writeSettings(cwd, { provider: "kimi-coding", id: "k3-256k", backend: "sdk" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    setSdkOAuthResolverOverride(async () => ({ apiKey: "still-bad" }));
+    let streamCalls = 0;
+    setSdkStreamSimpleOverride(() => {
+      streamCalls++;
+      return fakeSdkStream(authRejectedMessage());
+    });
+
+    await assert.rejects(
+      () => callSecondaryModel("kimi-coding", "k3-256k", "system", "user", { cwd }),
+      /rejected again after re-resolution[\s\S]*\/login in Pi/,
+    );
+    assert.equal(streamCalls, 2);
+  });
+
+  it("sdk backend does not retry 401 for non-OAuth credentials", async () => {
+    const cwd = makeTempDir("wai-sdk-key-401-");
+    const agentDir = makeTempDir("wai-sdk-key-401-agent-");
+    tmpDirs.push(cwd);
+    tempAgentDirs.push(agentDir);
+    mkdirSync(agentDir, { recursive: true });
+    writeAuthJson(agentDir, { "kimi-coding": { type: "api_key", key: "dead-key" } });
+    setAgentDirForTests(() => agentDir);
+    writeSettings(cwd, { provider: "kimi-coding", id: "k3-256k", backend: "sdk" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    let streamCalls = 0;
+    setSdkStreamSimpleOverride(() => {
+      streamCalls++;
+      return fakeSdkStream(authRejectedMessage());
+    });
+
+    await assert.rejects(() => callSecondaryModel("kimi-coding", "k3-256k", "system", "user", { cwd }), /401/);
+    assert.equal(streamCalls, 1);
   });
 
   it("sdk backend throws when model is not in Pi catalog and backend is explicit", async () => {

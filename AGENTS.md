@@ -194,7 +194,7 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 - **`config.ts`** — Loads merged global + project config; validates and resolves `secondary` settings, task-model overrides, judge-council members (`resolveJudgeCouncilMembers`), and `DocsConfig`.
 - **`secondary-model.ts`** — Entry point for secondary model calls; resolves the API key, enforces the cost budget, dispatches to the chosen backend, and runs the tool-loop when the model requests `read_file`/`run_command`.
 - **`backends/`** — Pluggable model-call backends:
-  - `sdk-backend.ts` — Pi's `pi-ai` SDK (default); provider attribution headers, retries, caching, thinking-level mapping.
+  - `sdk-backend.ts` — Pi's `pi-ai` SDK (default); provider attribution headers, retries, caching, thinking-level mapping. On a provider credential rejection (401) with an OAuth credential it evicts cached resolutions, re-resolves (refreshing under the auth.json lock or picking up another process's fresh credential), and retries once; a second rejection surfaces a re-login hint.
   - `http-backend.ts` — Direct provider HTTP for custom `baseUrl` or explicit `backend: "http"`.
   - `pi-backend.ts` — Spawns the Pi CLI for fallback or explicit `backend: "pi"`.
   - `backend-resolver.ts` — Picks the backend and resolves SDK catalog metadata for token budgets.

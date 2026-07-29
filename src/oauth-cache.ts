@@ -90,3 +90,11 @@ export function clearOAuthCache(cwd: string): void {
     writeFileSync(path, JSON.stringify([], null, 2), { mode: 0o600 });
   }
 }
+
+/** Drop all cached API keys for one provider (e.g. after a 401 so the next
+ *  resolution re-derives instead of serving the rejected key). */
+export function clearCachedOAuthApiKey(cwd: string, provider: string): void {
+  const entries = loadCache(cwd);
+  const kept = entries.filter((e) => e.provider !== provider);
+  if (kept.length !== entries.length) saveCache(cwd, kept);
+}
