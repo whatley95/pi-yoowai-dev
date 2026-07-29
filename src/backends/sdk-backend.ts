@@ -77,6 +77,7 @@ export async function getPiAiCompat(): Promise<PiAiCompatModule> {
 async function fetchOAuthApiKey(
   provider: string,
   credential: Record<string, unknown>,
+  cwd: string | undefined,
 ): Promise<{ apiKey: string; newCredentials?: Record<string, unknown> } | undefined> {
   if (oauthResolverOverride) {
     return oauthResolverOverride(provider, credential);
@@ -95,9 +96,23 @@ async function fetchOAuthApiKey(
         // there are no out-of-band newCredentials to write back.
         return { apiKey };
       }
+      if (cwd) {
+        logEvent(cwd, "warn", "Models.getAuth returned no API key for OAuth provider", {
+          provider,
+          hasResult: result !== undefined,
+          source: result?.source,
+        });
+      }
+    } else if (cwd) {
+      logEvent(cwd, "debug", "pi-ai compat has no createModels; using legacy OAuth path", { provider });
     }
-  } catch {
-    // Fall through to the legacy entry point.
+  } catch (err) {
+    if (cwd) {
+      logEvent(cwd, "warn", "OAuth resolution via Models.getAuth failed", {
+        provider,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
   // pi-ai ≤ 0.81 legacy OAuth exchange.
   try {
@@ -178,7 +193,7 @@ async function resolveOAuthApiKey(
       return { apiKey: diskKey };
     }
   }
-  const result = await fetchOAuthApiKey(provider, credential);
+  const result = await fetchOAuthApiKey(provider, credential, cwd);
   if (result) {
     oauthApiKeyCache.set(provider, { credential, apiKey: result.apiKey });
     if (cwd) {
