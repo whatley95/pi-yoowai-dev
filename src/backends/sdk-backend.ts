@@ -14,6 +14,25 @@ import { join } from "node:path";
 type PiAiCompatModule = typeof import("@earendil-works/pi-ai/compat");
 type PiAiOAuthModule = typeof import("@earendil-works/pi-ai/oauth");
 type PiAiProvidersAllModule = typeof import("@earendil-works/pi-ai/providers/all");
+type PiModelRuntimeModule = typeof import("@earendil-works/pi-coding-agent");
+// ModelRuntime has a private constructor; derive the instance type from create().
+type PiModelRuntime = Awaited<ReturnType<PiModelRuntimeModule["ModelRuntime"]["create"]>>;
+
+/** Shared Pi ModelRuntime (lazy singleton). Uses Pi's own locked auth.json
+ *  AuthStorage, so OAuth refreshes are serialized with the main Pi agent —
+ *  no double-refresh of a rotated token. */
+let modelRuntimePromise: Promise<PiModelRuntime> | undefined;
+
+async function getModelRuntime(): Promise<PiModelRuntime | undefined> {
+  try {
+    const { ModelRuntime } = (await import("@earendil-works/pi-coding-agent")) as PiModelRuntimeModule;
+    if (typeof ModelRuntime?.create !== "function") return undefined;
+    modelRuntimePromise ??= ModelRuntime.create({ authPath: join(getAgentDir(), "auth.json") });
+    return await modelRuntimePromise;
+  } catch {
+    return undefined;
+  }
+}
 
 const sdkOverrides: {
   streamSimple?: PiAiCompatModule["streamSimple"];
@@ -84,6 +103,45 @@ export async function getPiAiCompat(): Promise<PiAiCompatModule> {
   return import("@earendil-works/pi-ai/compat");
 }
 
+/** Extract an OAuthResolution from a pi-ai AuthResult-shaped value
+ *  (`{ auth: { apiKey? | headers? }, source? }`). Returns undefined when the
+ *  result carries no usable auth. */
+function extractAuthResolution(result: unknown): OAuthResolution | undefined {
+  const auth = (result as { auth?: { apiKey?: unknown; headers?: Record<string, unknown> } } | undefined)?.auth;
+  const apiKey = auth?.apiKey;
+  const headers = auth?.headers;
+  const hasApiKey = typeof apiKey === "string" && apiKey.length > 0;
+  const hasHeaders = headers !== undefined && Object.values(headers).some((v) => typeof v === "string" && v.length > 0);
+  if (!hasApiKey && !hasHeaders) return undefined;
+  return {
+    apiKey: hasApiKey ? (apiKey as string) : undefined,
+    headers: hasHeaders ? (headers as Record<string, string | null>) : undefined,
+  };
+}
+
+/** Warn-log an OAuth provider that resolved to no usable auth. Logs field
+ *  names and expiry only — never token values — to tell apart an unconfigured
+ *  provider from a legacy-shaped credential (e.g. accessToken/refreshToken
+ *  instead of access/refresh). */
+function logNoOAuthAuth(
+  cwd: string,
+  provider: string,
+  via: string,
+  result: unknown,
+  credential: Record<string, unknown>,
+): void {
+  logEvent(cwd, "warn", "OAuth provider resolved no auth", {
+    provider,
+    via,
+    hasResult: result !== undefined,
+    source: (result as { source?: unknown } | undefined)?.source,
+    credentialKeys: Object.keys(credential).filter((k) => k !== "access" && k !== "refresh" && k !== "key"),
+    hasAccess: typeof credential.access === "string",
+    hasRefresh: typeof credential.refresh === "string",
+    expires: typeof credential.expires === "number" ? new Date(credential.expires).toISOString() : undefined,
+  });
+}
+
 async function fetchOAuthApiKey(
   provider: string,
   credential: Record<string, unknown>,
@@ -92,40 +150,45 @@ async function fetchOAuthApiKey(
   if (oauthResolverOverride) {
     return oauthResolverOverride(provider, credential);
   }
-  // pi-ai ≥ 0.82 removed getOAuthApiKey; Models.getAuth() is the replacement.
-  // NOTE: bare createModels() starts with ZERO providers — builtinModels()
-  // registers the built-in catalog, which is what makes the provider known.
-  // getAuth resolves OAuth credentials through our auth.json-backed store and
-  // runs the token refresh under the store lock (persisted by modify() below).
+  // Preferred path: Pi's own ModelRuntime, whose AuthStorage refreshes OAuth
+  // tokens inside a proper-lockfile lock on auth.json. Sharing it keeps
+  // pi-yoowai from racing Pi itself on refresh-token rotation (which used to
+  // force re-logins for rotating providers like kimi-coding).
+  try {
+    const runtime = await getModelRuntime();
+    if (runtime) {
+      const result = await runtime.getAuth(provider);
+      const resolution = extractAuthResolution(result);
+      if (resolution) return resolution;
+      // The runtime answered authoritatively over the same locked store; an
+      // empty answer means there is no usable credential — don't retry unlocked.
+      if (cwd) logNoOAuthAuth(cwd, provider, "ModelRuntime", result, credential);
+      return undefined;
+    }
+  } catch (err) {
+    if (cwd) {
+      logEvent(cwd, "warn", "OAuth resolution via Pi ModelRuntime failed; falling back to pi-ai Models.getAuth", {
+        provider,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  // Fallback: pi-ai ≥ 0.82 removed getOAuthApiKey; Models.getAuth() is the
+  // replacement. NOTE: bare createModels() starts with ZERO providers —
+  // builtinModels() registers the built-in catalog, which is what makes the
+  // provider known. getAuth resolves OAuth credentials through our
+  // auth.json-backed store and runs the token refresh under the store's
+  // modify() (persisted to auth.json there).
   try {
     const providersAll = (await import("@earendil-works/pi-ai/providers/all")) as PiAiProvidersAllModule;
     if (typeof providersAll.builtinModels === "function") {
       const models = providersAll.builtinModels({ credentials: authJsonCredentialStore() });
       const result = await models.getAuth(provider);
-      const apiKey = result?.auth?.apiKey;
-      const headers = result?.auth?.headers;
-      const hasApiKey = typeof apiKey === "string" && apiKey.length > 0;
-      const hasHeaders =
-        headers !== undefined && Object.values(headers).some((v) => typeof v === "string" && v.length > 0);
-      if (hasApiKey || hasHeaders) {
-        // Refreshed credentials were already persisted by the store's modify();
-        // there are no out-of-band newCredentials to write back.
-        return { apiKey: hasApiKey ? apiKey : undefined, headers: hasHeaders ? headers : undefined };
-      }
-      if (cwd) {
-        logEvent(cwd, "warn", "Models.getAuth returned no auth for OAuth provider", {
-          provider,
-          hasResult: result !== undefined,
-          source: result?.source,
-          // Field names and expiry only — never token values. Tells apart an
-          // unconfigured provider from a legacy-shaped credential (e.g.
-          // accessToken/refreshToken instead of access/refresh).
-          credentialKeys: Object.keys(credential).filter((k) => k !== "access" && k !== "refresh" && k !== "key"),
-          hasAccess: typeof credential.access === "string",
-          hasRefresh: typeof credential.refresh === "string",
-          expires: typeof credential.expires === "number" ? new Date(credential.expires).toISOString() : undefined,
-        });
-      }
+      const resolution = extractAuthResolution(result);
+      // Refreshed credentials were already persisted by the store's modify();
+      // there are no out-of-band newCredentials to write back.
+      if (resolution) return resolution;
+      if (cwd) logNoOAuthAuth(cwd, provider, "builtinModels", result, credential);
     } else if (cwd) {
       logEvent(cwd, "debug", "pi-ai has no builtinModels; using legacy OAuth path", { provider });
     }
