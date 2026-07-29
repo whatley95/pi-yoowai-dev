@@ -391,6 +391,27 @@ describe("richer markdown salvage", () => {
     assert.match(result?.suggestions[0] ?? "", /shared helper/);
   });
 
+  it("extracts severity-marker sections (### 🔴 Blocker:) as high issues", () => {
+    const text = `## Review: Config changes
+
+**Verdict: Request changes** — one file is fine, the other shouldn't be committed.
+
+### 🔴 Blocker: \`application.properties\` — \`spring.profiles.active=dev\` uncommented
+
+This forces the dev profile for every run. Revert it and activate the profile locally instead.
+
+### 🟢 OK: \`application-dev.properties\` — ddl-auto update → none
+
+Good safety change.`;
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.verdict, "needs-work");
+    assert.equal(result?.issues.length, 1);
+    assert.equal(result?.issues[0]?.severity, "high");
+    assert.equal(result?.issues[0]?.file, "application.properties");
+    assert.match(result?.issues[0]?.issue ?? "", /spring\.profiles\.active=dev/);
+    assert.match(result?.issues[0]?.issue ?? "", /forces the dev profile/);
+  });
+
   it("judge salvage reuses structured issues", () => {
     const text = `## Judgment: needs-work
 

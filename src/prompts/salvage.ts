@@ -117,7 +117,7 @@ function parseFileLocation(value: string | undefined): { file?: string; line?: n
 function detectVerdictExplicit(text: string): "pass" | "needs-work" | "blocked" | "needs-review" | null {
   const lower = text.toLowerCase();
   const verdictLine = lower.match(
-    /\bverdict\b\s*[:-]?\s*[*_`]?\s*(pass|needs-work|needs review|needsreview|blocked|fail|fails|failing)/,
+    /\bverdict\b\s*[:-]?\s*[*_`]?\s*(pass|needs-work|needs review|needsreview|blocked|fail|fails|failing|request changes|requests changes|changes requested)/,
   );
   if (verdictLine) {
     const v = verdictLine[1];
@@ -196,6 +196,32 @@ export function salvageReviewFromMarkdown(raw: string): ReviewResult | null {
         severity: /high|critical/i.test(bullet) ? "high" : /medium|moderate/i.test(bullet) ? "medium" : "low",
         file: locMatch?.[1]?.trim(),
         issue: locMatch?.[2]?.trim() ?? bullet,
+        suggestion: "",
+      });
+    }
+  }
+
+  // Severity-marker sections (e.g. `### 🔴 Blocker: \`file.ts\` — description`) each
+  // describe one real problem; without this they fall through to "suggestions" and a
+  // genuine blocker looks like a verdict with zero issues.
+  if (issues.length === 0) {
+    const blockerHeading = /^#{2,4}\s+\W{0,4}(?:\*\*)?(blocker|critical)\b(?:\*\*)?\s*[:\-—]\s*(.+)$/gim;
+    let heading: RegExpExecArray | null;
+    while ((heading = blockerHeading.exec(text)) !== null) {
+      const headingText = heading[2].trim();
+      const fileMatch = headingText.match(/`([^`]+)`/);
+      const bodyStart = heading.index + heading[0].length;
+      const nextHeading = /\n#{1,4}\s/.exec(text.slice(bodyStart));
+      const body = text.slice(bodyStart, nextHeading ? bodyStart + nextHeading.index : undefined);
+      const firstPara =
+        body
+          .split(/\n\s*\n/)
+          .map((p) => p.trim())
+          .find((p) => p.length > 0) ?? "";
+      issues.push({
+        severity: "high",
+        file: fileMatch?.[1],
+        issue: `${headingText.replace(/[`*]/g, "")} — ${firstPara}`.slice(0, 500),
         suggestion: "",
       });
     }

@@ -81,6 +81,25 @@ async function fetchOAuthApiKey(
   if (oauthResolverOverride) {
     return oauthResolverOverride(provider, credential);
   }
+  // pi-ai ≥ 0.82 removed getOAuthApiKey; Models.getAuth() is the replacement.
+  // It resolves OAuth credentials through our auth.json-backed store and runs
+  // the token refresh under the store lock (persisted by modify() below).
+  try {
+    const compat = await getPiAiCompat();
+    if (typeof compat.createModels === "function") {
+      const models = compat.createModels({ credentials: authJsonCredentialStore() });
+      const result = await models.getAuth(provider);
+      const apiKey = result?.auth?.apiKey;
+      if (typeof apiKey === "string" && apiKey.length > 0) {
+        // Refreshed credentials were already persisted by the store's modify();
+        // there are no out-of-band newCredentials to write back.
+        return { apiKey };
+      }
+    }
+  } catch {
+    // Fall through to the legacy entry point.
+  }
+  // pi-ai ≤ 0.81 legacy OAuth exchange.
   try {
     const oauth = (await import("@earendil-works/pi-ai/oauth")) as PiAiOAuthModule;
     if (typeof oauth.getOAuthApiKey !== "function") return undefined;
@@ -88,6 +107,59 @@ async function fetchOAuthApiKey(
   } catch {
     return undefined;
   }
+}
+
+function readAuthJson(): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(join(getAgentDir(), "auth.json"), "utf-8")) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function writeAuthJson(auth: Record<string, unknown>): void {
+  try {
+    writeFileSync(join(getAgentDir(), "auth.json"), JSON.stringify(auth, null, 2) + "\n", { mode: 0o600 });
+  } catch {
+    // Best-effort; the in-memory credential still serves this session.
+  }
+}
+
+type StoredCredential = import("@earendil-works/pi-ai").Credential;
+
+/** CredentialStore over ~/.pi/agent/auth.json for pi-ai ≥ 0.82 Models.getAuth().
+ *  modify() is pi-ai's only write path (OAuth refresh runs inside it), so
+ *  persisting there keeps refreshed tokens on disk for the next call. */
+function authJsonCredentialStore(): import("@earendil-works/pi-ai").CredentialStore {
+  return {
+    read(providerId) {
+      return Promise.resolve(readAuthJson()[providerId] as StoredCredential | undefined);
+    },
+    list() {
+      const entries = Object.entries(readAuthJson()).flatMap(([providerId, value]) => {
+        const type = (value as { type?: unknown } | undefined)?.type;
+        return type === "api_key" || type === "oauth" ? [{ providerId, type } as const] : [];
+      });
+      return Promise.resolve(entries);
+    },
+    async modify(providerId, fn) {
+      const auth = readAuthJson();
+      const next = await fn(auth[providerId] as StoredCredential | undefined);
+      if (next && JSON.stringify(next) !== JSON.stringify(auth[providerId])) {
+        auth[providerId] = next;
+        writeAuthJson(auth);
+      }
+      return (next ?? auth[providerId]) as StoredCredential | undefined;
+    },
+    delete(providerId) {
+      const auth = readAuthJson();
+      if (providerId in auth) {
+        delete auth[providerId];
+        writeAuthJson(auth);
+      }
+      return Promise.resolve();
+    },
+  };
 }
 
 async function resolveOAuthApiKey(

@@ -162,14 +162,54 @@ declare module "@earendil-works/pi-ai" {
     | { type: "done"; reason: Extract<StopReason, "stop" | "length" | "toolUse">; message: AssistantMessage }
     | { type: "error"; reason: Extract<StopReason, "aborted" | "error">; error: AssistantMessage };
 
+  export interface ModelAuth {
+    apiKey?: string;
+    headers?: ProviderHeaders;
+    baseUrl?: string;
+  }
+
+  export interface AuthResult {
+    auth: ModelAuth;
+    env?: ProviderEnv;
+    source?: string;
+  }
+
+  export interface ApiKeyCredential {
+    type: "api_key";
+    key?: string;
+    env?: ProviderEnv;
+  }
+
+  export interface OAuthCredential extends OAuthCredentials {
+    type: "oauth";
+  }
+
+  export type Credential = ApiKeyCredential | OAuthCredential;
+
+  export interface CredentialInfo {
+    providerId: string;
+    type: "api_key" | "oauth";
+  }
+
+  export interface CredentialStore {
+    read(providerId: string): Promise<Credential | undefined>;
+    list(): Promise<readonly CredentialInfo[]>;
+    modify(
+      providerId: string,
+      fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+    ): Promise<Credential | undefined>;
+    delete(providerId: string): Promise<void>;
+  }
+
   export interface CreateModelsOptions {
-    credentials?: unknown;
+    credentials?: CredentialStore;
     authContext?: unknown;
   }
 
   export interface MutableModels {
     streamSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream;
     completeSimple(model: Model<Api>, context: Context, options?: SimpleStreamOptions): Promise<AssistantMessage>;
+    getAuth(providerId: string): Promise<AuthResult | undefined>;
   }
 
   export function createModels(options?: CreateModelsOptions): MutableModels;
@@ -202,7 +242,9 @@ declare module "@earendil-works/pi-ai/compat" {
     AssistantMessage,
     AssistantMessageEventStream,
     Context,
+    CreateModelsOptions,
     Model,
+    MutableModels,
     SimpleStreamOptions,
   } from "@earendil-works/pi-ai";
 
@@ -221,6 +263,9 @@ declare module "@earendil-works/pi-ai/compat" {
   export function getModel(provider: string, modelId: string): Model<Api> | undefined;
   export function getModels(provider: string): Model<Api>[];
   export function getProviders(): string[];
+
+  /** pi-ai ≥ 0.80 canonical entry (re-exported from the root through compat). */
+  export function createModels(options?: CreateModelsOptions): MutableModels;
 }
 
 declare module "@earendil-works/pi-ai/providers/all" {
