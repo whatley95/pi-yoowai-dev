@@ -422,6 +422,7 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 | `/wai-learn --verify --deep [--query <keyword>]` | Check stored facts with the secondary model                                          |
 | `/wai-model`                                   | Interactively pick the base or per-tool model — see the selection flow above             |
 | `/wai-model <provider> [filter]`               | Pre-select provider and optionally filter the model list                               |
+| `/wai-model reset [base\|<task>]`               | Clear the base secondary model or a per-tool override (e.g. `reset review`)            |
 | `/wai-council`                                 | Interactively manage the judge council: add/remove members with the `/wai-model` pickers (models already in the council are marked ✓ current, and each member gets a thinking-level pick); fewer than 2 members means single-model judge |
 | `/wai-config`                                  | Show current `pi-yoowai` settings                                                      |
 | `/wai-config get <key>`                        | Read a dotted setting (e.g. `/wai-config get secondary.thinking`)                      |

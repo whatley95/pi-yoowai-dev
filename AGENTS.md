@@ -27,7 +27,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 | `/wai`                 | Run an action or show status: `/wai <plan|review|suggest|recommend|judge|scan|test|security|status> [args]`; `scan` accepts `--deep`. |
 | `/wai-scan-deep`       | Alias for `/wai scan --deep` (deep scan with source-file sampling and symbol index build).            |
 | `/wai-status`          | Detailed diagnostics (config, plan, VCS, conventions, cost).                                         |
-| `/wai-model`           | Interactively pick the secondary model (optionally per tool) and write it to `~/.pi/agent/settings.json`. |
+| `/wai-model`           | Interactively pick the secondary model (optionally per tool) and write it to `~/.pi/agent/settings.json`. `/wai-model reset [base\|<task>]` clears the base or a task override. |
 | `/wai-council`         | Interactively manage the judge council (add/remove members with the `/wai-model` pickers, with ✓ markers for existing members and a thinking-level pick per member); writes `judgeCouncil` to `~/.pi/agent/settings.json`. |
 | `/wai-config`          | View/edit pi-yoowai settings: `/wai-config <get|set|list> [key] [value]` or shorthand `/wai-config <provider.model>`. |
 | `/wai-clear`           | Clear the active plan, state, cost, memory, conventions, learned facts, loop history, and inherited session. |

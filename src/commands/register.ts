@@ -370,18 +370,18 @@ export async function pickRecentModel(ctx: ExtensionContext, recent: RecentModel
   return recent.find((m) => formatRecentModel(m) === picked);
 }
 
+function modelStatusLine(model: SecondaryModelConfig): string {
+  const backend = model.backend && model.backend !== "pi" ? ` (${model.backend})` : "";
+  const thinking = model.thinking ? ` · ${model.thinking}` : "";
+  return `${model.provider}:${model.id}${backend}${thinking}`;
+}
+
 async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
   const config = loadYoowaiConfig(ctx.cwd);
   const state = getState(ctx.cwd);
   const cost = getSessionCost(ctx.cwd);
   const conventions = loadConventions(ctx.cwd);
   const vcs = getVcsInfo(ctx.cwd);
-
-  function modelStatusLine(model: SecondaryModelConfig): string {
-    const backend = model.backend && model.backend !== "pi" ? ` (${model.backend})` : "";
-    const thinking = model.thinking ? ` · ${model.thinking}` : "";
-    return `${model.provider}:${model.id}${backend}${thinking}`;
-  }
 
   const taskModelEntries = WAI_MODEL_TASKS.filter((a) => {
     const override = config.taskModels?.[a];
@@ -462,6 +462,83 @@ async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
   lines.push("", `${HOMEPAGE} · pi-yoowai v${VERSION}`);
 
   await ctx.ui.select("wai status", lines.filter(Boolean));
+}
+
+/** Reset the base secondary model or a per-tool model override.
+ *  Exported for testing; the command handler wires in refreshWaiProvider. */
+export async function resetModelSelection(
+  ctx: ExtensionContext,
+  directTarget: string | undefined,
+  refresh: () => Promise<void>,
+): Promise<void> {
+  const agentDir = getAgentDir();
+  const settingsPath = join(agentDir, "settings.json");
+  if (!existsSync(settingsPath)) {
+    ctx.ui.notify("No settings file to reset.", "warning");
+    return;
+  }
+
+  let settings: Record<string, unknown>;
+  try {
+    settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+  } catch {
+    ctx.ui.notify("Failed to read settings file.", "error");
+    return;
+  }
+  if (!settings["pi-yoowai"] || typeof settings["pi-yoowai"] !== "object" || Array.isArray(settings["pi-yoowai"])) {
+    ctx.ui.notify("No pi-yoowai settings to reset.", "warning");
+    return;
+  }
+  const waiSettings = settings["pi-yoowai"] as Record<string, unknown>;
+
+  let target: "base" | WaiModelTask | undefined;
+  if (directTarget) {
+    if (directTarget === "base") {
+      target = "base";
+    } else if (WAI_MODEL_TASKS.includes(directTarget as WaiModelTask)) {
+      target = directTarget as WaiModelTask;
+    } else {
+      ctx.ui.notify(
+        `Invalid reset target "${directTarget}". Use "base" or one of: ${WAI_MODEL_TASKS.join(", ")}.`,
+        "warning",
+      );
+      return;
+    }
+  } else {
+    const currentConfig = loadYoowaiConfig(ctx.cwd);
+    const baseMarker = currentConfig.secondary.provider && currentConfig.secondary.id ? " ✓ current" : "";
+    const items = [
+      `Base secondary model — ${baseMarker || "not configured"}${
+        baseMarker ? ` (${modelStatusLine(currentConfig.secondary)})` : ""
+      }`,
+      ...WAI_MODEL_TASKS.map((action) => {
+        const task = resolveTaskModel(currentConfig, action);
+        const marker = task.provider && task.id ? " ✓ current" : "";
+        return `Use for ${action} only — ${marker || "not configured"}${marker ? ` (${modelStatusLine(task)})` : ""}`;
+      }),
+    ];
+    const picked = await ctx.ui.select("Reset which model selection?", items);
+    if (!picked) return;
+    const scope = picked.replace(/ ✓ current$/, "").split(" — ")[0];
+    target =
+      scope === "Base secondary model"
+        ? "base"
+        : (scope.replace(/^Use for /, "").replace(/ only$/, "") as WaiModelTask);
+  }
+
+  if (target === "base") {
+    delete waiSettings.secondary;
+    ctx.ui.notify("Base secondary model cleared. Run /wai-model to pick a new one.", "info");
+  } else {
+    const taskModels = (waiSettings.taskModels as Record<string, unknown>) || {};
+    delete taskModels[target];
+    if (Object.keys(taskModels).length === 0) delete waiSettings.taskModels;
+    else waiSettings.taskModels = taskModels;
+    ctx.ui.notify(`Task model override for ${target} cleared. It will use the base secondary model.`, "info");
+  }
+
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+  await refresh();
 }
 
 export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, LoopDetectionState>): void {
@@ -801,6 +878,11 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       const requestedProvider = tokens[0]?.toLowerCase();
       const filterQuery = tokens[1]?.toLowerCase();
 
+      if (requestedProvider === "reset") {
+        await resetModelSelection(ctx, filterQuery, () => refreshWaiProvider(pi, ctx.cwd));
+        return;
+      }
+
       const currentConfig = loadYoowaiConfig(ctx.cwd);
 
       // 1. Pick which wai tool this model is for.
@@ -940,7 +1022,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-model", {
     description:
-      "Interactively pick the secondary model for wai, optionally per tool. Usage: /wai-model [provider] [filter]",
+      "Interactively pick the secondary model for wai, optionally per tool. Use /wai-model reset [base|<task>] to clear the base or a task override. Usage: /wai-model [provider] [filter]",
     handler: modelHandler,
   });
 

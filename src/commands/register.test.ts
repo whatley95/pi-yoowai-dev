@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, after, afterEach } from "node:test";
 import assert from "node:assert";
 import {
   computeThinkingLevels,
@@ -13,11 +13,16 @@ import {
   promptSearchModels,
   buildModelConfigEntry,
   isScopeConfigured,
+  resetModelSelection,
   type ModelRef,
 } from "./register.js";
 import { setSdkGetModelOverride } from "../backends/sdk-backend.js";
+import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import type { RecentModel } from "../model-history.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const canonicalLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -523,5 +528,133 @@ describe("model picker helpers", () => {
     }));
     const result = await pickModelFromFlatList(ctx, "openrouter", models, "", "openai");
     assert.strictEqual(result, "openai/model-3");
+  });
+});
+
+function makeTempDir(prefix: string): string {
+  const dir = join(tmpdir(), `${prefix}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+describe("resetModelSelection", () => {
+  const originalAgentDir = getAgentDir();
+  let tmpDirs: string[] = [];
+
+  afterEach(() => {
+    setAgentDirForTests(() => originalAgentDir);
+  });
+
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    tmpDirs = [];
+  });
+
+  function makeTempAgentDir(): string {
+    const dir = join(tmpdir(), `wai-reset-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    mkdirSync(dir, { recursive: true });
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  function writeSettings(agentDir: string, waiSettings: Record<string, unknown>): void {
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ "pi-yoowai": waiSettings }, null, 2), "utf-8");
+  }
+
+  function resetCtx(cwd: string, selectQueue: (string | undefined)[] = []): ExtensionContext & { cwd: string } {
+    return { ...fakeContext(selectQueue), cwd } as ExtensionContext & { cwd: string };
+  }
+
+  it("clears the base secondary model", async () => {
+    const agentDir = makeTempAgentDir();
+    const cwd = makeTempDir("wai-reset-base-cwd-");
+    setAgentDirForTests(() => agentDir);
+    writeSettings(agentDir, {
+      secondary: { provider: "openai", id: "gpt-4o", thinking: "high" },
+      taskModels: { review: { provider: "deepseek", id: "deepseek-v4-pro" } },
+    });
+
+    let refreshed = false;
+    await resetModelSelection(resetCtx(cwd), "base", async () => {
+      refreshed = true;
+    });
+
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as {
+      "pi-yoowai": Record<string, unknown>;
+    };
+    assert.equal("secondary" in settings["pi-yoowai"], false);
+    assert.deepEqual(settings["pi-yoowai"].taskModels, { review: { provider: "deepseek", id: "deepseek-v4-pro" } });
+    assert.ok(refreshed);
+  });
+
+  it("clears a task override but keeps base and other tasks", async () => {
+    const agentDir = makeTempAgentDir();
+    const cwd = makeTempDir("wai-reset-task-cwd-");
+    setAgentDirForTests(() => agentDir);
+    writeSettings(agentDir, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      taskModels: {
+        review: { provider: "deepseek", id: "deepseek-v4-pro" },
+        judge: { provider: "opencode-go", id: "qwen3.7-max" },
+      },
+    });
+
+    await resetModelSelection(resetCtx(cwd), "review", async () => {});
+
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as {
+      "pi-yoowai": Record<string, unknown>;
+    };
+    assert.deepEqual(settings["pi-yoowai"].secondary, { provider: "openai", id: "gpt-4o" });
+    assert.deepEqual(settings["pi-yoowai"].taskModels, {
+      judge: { provider: "opencode-go", id: "qwen3.7-max" },
+    });
+  });
+
+  it("clears the last task override and removes the taskModels key", async () => {
+    const agentDir = makeTempAgentDir();
+    const cwd = makeTempDir("wai-reset-last-task-cwd-");
+    setAgentDirForTests(() => agentDir);
+    writeSettings(agentDir, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      taskModels: { review: { provider: "deepseek", id: "deepseek-v4-pro" } },
+    });
+
+    await resetModelSelection(resetCtx(cwd), "review", async () => {});
+
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as {
+      "pi-yoowai": Record<string, unknown>;
+    };
+    assert.equal("taskModels" in settings["pi-yoowai"], false);
+  });
+
+  it("rejects an invalid direct target", async () => {
+    const agentDir = makeTempAgentDir();
+    const cwd = makeTempDir("wai-reset-invalid-cwd-");
+    setAgentDirForTests(() => agentDir);
+    writeSettings(agentDir, { secondary: { provider: "openai", id: "gpt-4o" } });
+
+    let notified: { message: string; type: string } | undefined;
+    const ctx = {
+      ...fakeContext(),
+      cwd,
+      ui: {
+        ...fakeContext().ui,
+        notify: (message: string, type: string) => {
+          notified = { message, type };
+        },
+      },
+    } as ExtensionContext & { cwd: string };
+
+    await resetModelSelection(ctx, "not-a-task", async () => {});
+
+    assert.ok(notified);
+    assert.ok(notified!.message.includes('Invalid reset target "not-a-task"'));
+    assert.equal(notified!.type, "warning");
   });
 });
