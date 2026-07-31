@@ -280,4 +280,85 @@ describe("executeToolLoop", () => {
     assert.equal(calls.length, 7);
     assert.equal(calls[6].includes("maximum number of tool requests"), true);
   });
+
+  it("executes a search_code request and returns file:line matches with context", async () => {
+    const responses = ['{"tool": "search_code", "pattern": "foo", "contextLines": 0}', '{"verdict": "pass"}'];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    const toolResult = calls[1];
+    assert.equal(toolResult.includes("Tool result: search_code /foo/"), true);
+    assert.equal(toolResult.includes("src/foo.ts:1: export function foo"), true);
+  });
+
+  it("reports when search_code finds no matches", async () => {
+    const responses = ['{"tool": "search_code", "pattern": "zzz-no-such-thing"}', '{"verdict": "pass"}'];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    assert.equal(calls[1].includes("No matches for /zzz-no-such-thing/"), true);
+  });
+
+  it("rejects an invalid search_code regex", async () => {
+    const responses = ['{"tool": "search_code", "pattern": "("}', '{"verdict": "pass"}'];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    assert.equal(calls[1].includes("Invalid regex"), true);
+  });
+
+  it("scopes search_code to a directory path", async () => {
+    writeFileSync(join(cwd, "root-match.ts"), "export const fooOutside = 1;\n", "utf-8");
+    const responses = [
+      '{"tool": "search_code", "pattern": "foo", "path": "src", "contextLines": 0}',
+      '{"verdict": "pass"}',
+    ];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    const toolResult = calls[1];
+    assert.equal(toolResult.includes("src/foo.ts:1:"), true);
+    assert.equal(toolResult.includes("root-match.ts"), false, "matches outside the scope must be excluded");
+  });
+
+  it("stops search_code after the match cap", async () => {
+    mkdirSync(join(cwd, "many"), { recursive: true });
+    const lines = Array.from({ length: 80 }, (_, i) => `export const match${i} = ${i};`).join("\n");
+    writeFileSync(join(cwd, "many", "matches.ts"), lines + "\n", "utf-8");
+    const responses = [
+      '{"tool": "search_code", "pattern": "match", "path": "many", "contextLines": 0}',
+      '{"verdict": "pass"}',
+    ];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    const toolResult = calls[1];
+    assert.equal(toolResult.includes("stopped after 50 matches"), true);
+    assert.equal(toolResult.includes("match79"), false, "matches past the cap must not appear");
+  });
 });
