@@ -30,6 +30,9 @@ async function getModelRuntime(): Promise<PiModelRuntime | undefined> {
     modelRuntimePromise ??= ModelRuntime.create({ authPath: join(getAgentDir(), "auth.json") });
     return await modelRuntimePromise;
   } catch {
+    // Don't cache a rejected creation (e.g. auth.json briefly locked at
+    // startup) — the next call gets a fresh attempt.
+    modelRuntimePromise = undefined;
     return undefined;
   }
 }
@@ -411,7 +414,8 @@ function buildSdkHeaders(
 function isAuthRejectedError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const msg = err.message.toLowerCase();
-  return msg.includes("401") || msg.includes("authentication_error") || msg.includes("invalid or may have expired");
+  // Word-boundary 401 so ports/IDs like "14015" don't trigger a retry.
+  return /\b401\b/.test(msg) || msg.includes("authentication_error") || msg.includes("invalid or may have expired");
 }
 
 export async function callSdkBackend(

@@ -7,6 +7,8 @@ import { resolveApiKey, readRawAuthEntry } from "./auth-reader.js";
 import { getAgentDir, setAgentDirForTests } from "./pi-paths.js";
 
 const ENV_KEYS = [
+  "ANTHROPIC_OAUTH_TOKEN",
+  "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
   "DEEPSEEK_API_KEY",
@@ -74,6 +76,20 @@ describe("auth-reader", () => {
   it("falls back to provider env var when no configKey", () => {
     process.env.ANTHROPIC_API_KEY = "sk-from-anthropic-env";
     assert.equal(resolveApiKey("anthropic"), "sk-from-anthropic-env");
+  });
+
+  it("prefers ANTHROPIC_AUTH_TOKEN over ANTHROPIC_API_KEY (gateway bearer)", () => {
+    delete process.env.ANTHROPIC_OAUTH_TOKEN;
+    process.env.ANTHROPIC_AUTH_TOKEN = "gateway-bearer";
+    process.env.ANTHROPIC_API_KEY = "sk-from-anthropic-env";
+    assert.equal(resolveApiKey("anthropic"), "gateway-bearer");
+  });
+
+  it("prefers ANTHROPIC_OAUTH_TOKEN over ANTHROPIC_AUTH_TOKEN and API_KEY", () => {
+    process.env.ANTHROPIC_OAUTH_TOKEN = "oauth-token";
+    process.env.ANTHROPIC_AUTH_TOKEN = "gateway-bearer";
+    process.env.ANTHROPIC_API_KEY = "sk-from-anthropic-env";
+    assert.equal(resolveApiKey("anthropic"), "oauth-token");
   });
 
   it("maps opencode-go to OPENCODE_API_KEY (when no auth.json entry)", () => {

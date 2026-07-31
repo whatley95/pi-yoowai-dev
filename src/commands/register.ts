@@ -506,20 +506,21 @@ export async function resetModelSelection(
     }
   } else {
     const currentConfig = loadYoowaiConfig(ctx.cwd);
-    const baseMarker = currentConfig.secondary.provider && currentConfig.secondary.id ? " ✓ current" : "";
+    const baseConfigured = Boolean(currentConfig.secondary.provider && currentConfig.secondary.id);
     const items = [
-      `Base secondary model — ${baseMarker || "not configured"}${
-        baseMarker ? ` (${modelStatusLine(currentConfig.secondary)})` : ""
-      }`,
+      `Base secondary model — ${baseConfigured ? `✓ current (${modelStatusLine(currentConfig.secondary)})` : "not configured"}`,
       ...WAI_MODEL_TASKS.map((action) => {
-        const task = resolveTaskModel(currentConfig, action);
-        const marker = task.provider && task.id ? " ✓ current" : "";
-        return `Use for ${action} only — ${marker || "not configured"}${marker ? ` (${modelStatusLine(task)})` : ""}`;
+        // Mark from the raw override, not the merged resolution — otherwise
+        // every task shows ✓ current with the base model even when there is
+        // no override to clear.
+        const override = currentConfig.taskModels?.[action];
+        if (!override?.provider && !override?.id) return `Use for ${action} only — not configured`;
+        return `Use for ${action} only — ✓ current (${modelStatusLine(resolveTaskModel(currentConfig, action))})`;
       }),
     ];
     const picked = await ctx.ui.select("Reset which model selection?", items);
     if (!picked) return;
-    const scope = picked.replace(/ ✓ current$/, "").split(" — ")[0];
+    const scope = picked.split(" — ")[0];
     target =
       scope === "Base secondary model"
         ? "base"
@@ -528,7 +529,17 @@ export async function resetModelSelection(
 
   if (target === "base") {
     delete waiSettings.secondary;
-    ctx.ui.notify("Base secondary model cleared. Run /wai-model to pick a new one.", "info");
+    // A project-level .pi/settings.json secondary would still win in the
+    // merged config — say so instead of claiming wai is unconfigured.
+    const remaining = loadYoowaiConfig(ctx.cwd).secondary;
+    if (remaining.provider && remaining.id) {
+      ctx.ui.notify(
+        `Global base model cleared, but a project-level override is still active: ${remaining.provider}:${remaining.id}. Remove it from .pi/settings.json to fully reset.`,
+        "warning",
+      );
+    } else {
+      ctx.ui.notify("Base secondary model cleared. Run /wai-model to pick a new one.", "info");
+    }
   } else {
     const taskModels = (waiSettings.taskModels as Record<string, unknown>) || {};
     delete taskModels[target];

@@ -181,6 +181,31 @@ The changes are well-structured and correct.`;
       assert.ok(!/\b(old|new)\b\s*:/i.test(s), `Diff description leaked into suggestion: ${s}`);
     }
   });
+
+  it("does not salvage a pass from a negated heading verdict", () => {
+    const result = salvageReviewFromMarkdown("## Verdict: not approved\n\n- Fix the null check");
+    assert.equal(result?.verdict, "needs-work");
+  });
+
+  it("does not salvage a pass from a 'cannot approve' heading", () => {
+    const result = salvageReviewFromMarkdown("## Review: I cannot approve this change\n\n- Rework the parser");
+    assert.notEqual(result?.verdict, "pass");
+  });
+
+  it("salvages needs-work from a request-changes heading", () => {
+    const result = salvageReviewFromMarkdown("## Verdict: request changes\n\n- Add tests");
+    assert.equal(result?.verdict, "needs-work");
+  });
+
+  it("still salvages pass from an approved heading", () => {
+    const result = salvageReviewFromMarkdown("## Verdict: approved\n\n- Optional nit");
+    assert.equal(result?.verdict, "pass");
+  });
+
+  it("does not infer pass from negated approval in prose", () => {
+    const result = salvageReviewFromMarkdown("The change is not approved yet; several issues remain open.");
+    assert.equal(result?.verdict, "needs-work");
+  });
 });
 
 describe("salvageJudgeFromMarkdown", () => {

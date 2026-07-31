@@ -5,6 +5,27 @@ export type ProgressReporter = (stage: number, total: number, message: string) =
 
 const TICK_INTERVAL_MS = 1000;
 
+/** Active ticker stop functions per ctx. clearWaiStatus stops them all, so a
+ *  reporter that never saw its final stage (early return / exception) cannot
+ *  resurrect a cleared status line one second later. */
+const activeTickers = new Map<ExtensionContext, Set<() => void>>();
+
+function registerTicker(ctx: ExtensionContext, stop: () => void): void {
+  let stops = activeTickers.get(ctx);
+  if (!stops) {
+    stops = new Set();
+    activeTickers.set(ctx, stops);
+  }
+  stops.add(stop);
+}
+
+function unregisterTicker(ctx: ExtensionContext, stop: () => void): void {
+  const stops = activeTickers.get(ctx);
+  if (!stops) return;
+  stops.delete(stop);
+  if (stops.size === 0) activeTickers.delete(ctx);
+}
+
 export function createProgressReporter(
   action: WaiModelTask,
   ctx: ExtensionContext,
@@ -32,6 +53,7 @@ export function createProgressReporter(
     if (ticker !== undefined) {
       clearInterval(ticker);
       ticker = undefined;
+      unregisterTicker(ctx, stopTicker);
     }
   };
 
@@ -40,6 +62,7 @@ export function createProgressReporter(
     // A long stage (e.g. waiting on the model) otherwise leaves a frozen
     // status line that looks like a hang; refresh the elapsed time every second.
     ticker = setInterval(renderStatus, TICK_INTERVAL_MS);
+    registerTicker(ctx, stopTicker);
     // Never keep the process alive for a status tick.
     (ticker as { unref?: () => void }).unref?.();
   };
@@ -52,7 +75,9 @@ export function createProgressReporter(
     if (stage >= total) {
       current = undefined;
       stopTicker();
-      clearWaiStatus(ctx);
+      // Clear only the status text here — NOT clearWaiStatus, which also stops
+      // other reporters' tickers (concurrent actions like /wai-audit share ctx).
+      clearStatusText(ctx);
       if (onUpdate) {
         onUpdate({
           content: [{ type: "text", text: message }],
@@ -88,10 +113,19 @@ export function createProgressReporter(
   };
 }
 
-export function clearWaiStatus(ctx: ExtensionContext): void {
+function clearStatusText(ctx: ExtensionContext): void {
   try {
     ctx.ui.setStatus("wai", undefined);
   } catch {
     // ignore
   }
+}
+
+export function clearWaiStatus(ctx: ExtensionContext): void {
+  const stops = activeTickers.get(ctx);
+  if (stops) {
+    // stop() unregisters itself, so iterate over a snapshot.
+    for (const stop of [...stops]) stop();
+  }
+  clearStatusText(ctx);
 }

@@ -110,6 +110,16 @@ function parseFileLocation(value: string | undefined): { file?: string; line?: n
   return { file: match[1], line: match[2] ? Number(match[2]) : undefined };
 }
 
+/** Negation words that flip an accept keyword into a rejection
+ *  ("not approved", "can't pass") — the dangerous false-pass direction. */
+const NEGATION = /\b(?:not|no|never|cannot|can't|cant|won't|wont|don't|dont|doesn't|doesnt|didn't|didnt|isn't|isnt)\b/;
+
+/** True when an accept keyword is negated nearby ("not approved", "can't
+ *  pass review"). Used to veto pass verdicts salvaged from prose. */
+function isNegatedAccept(lower: string): boolean {
+  return new RegExp(`${NEGATION.source}\\s+(?:[\\w-]+\\s+){0,2}(?:pass|approv)`, "i").test(lower);
+}
+
 /**
  * Detect an explicit verdict line (`Verdict: pass`, `## Verdict: ✅ pass`,
  * `**Verdict:** needs-work`) before falling back to keyword heuristics.
@@ -126,16 +136,24 @@ function detectVerdictExplicit(text: string): "pass" | "needs-work" | "blocked" 
     if (v === "needs review" || v === "needsreview") return "needs-review";
     return "needs-work";
   }
-  // Heading form: `## Verdict: ✅ pass` / `## Judgment: pass`.
+  // Heading form: `## Verdict: ✅ pass` / `## Judgment: pass`. The gap is
+  // captured so a negated accept ("## Verdict: not approved") can be vetoed —
+  // salvaging that as pass would auto-advance work on a rejection.
   const heading = lower.match(
-    /^#{1,4}\s+(?:verdict|judgment|review|result)\b[^\n]*?(pass|needs-work|needs review|needsreview|blocked|approve|approved|approval)/m,
+    /^#{1,4}\s+(?:verdict|judgment|review|result)\b([^\n]*?)(pass|needs-work|needs review|needsreview|blocked|request changes|requests changes|changes requested|approve|approved|approval)/m,
   );
   if (heading) {
-    const v = heading[1];
-    if (v === "pass" || v === "approve" || v === "approved" || v === "approval") return "pass";
-    if (v === "blocked") return "blocked";
-    if (v === "needs review" || v === "needsreview") return "needs-review";
-    return "needs-work";
+    const gap = heading[1];
+    const v = heading[2];
+    const isAccept = v === "pass" || v === "approve" || v === "approved" || v === "approval";
+    if (!(isAccept && NEGATION.test(gap))) {
+      if (isAccept) return "pass";
+      if (v === "blocked") return "blocked";
+      if (v === "needs review" || v === "needsreview") return "needs-review";
+      return "needs-work";
+    }
+    // Negated accept — fall through to the unparseable-verdict-heading guard
+    // below, which defaults to the safe non-pass verdict.
   }
   // A verdict/judgment heading that matched NO known keyword is a verdict we
   // failed to parse (e.g. "## Review verdict: Claim does not match the working
@@ -154,7 +172,10 @@ function detectVerdictExplicit(text: string): "pass" | "needs-work" | "blocked" 
  */
 function heuristicReviewVerdict(lower: string): "pass" | "needs-work" {
   if (/\bneeds-work\b|\bneeds work\b/.test(lower)) return "needs-work";
-  if (/(?:^|[^-\w])pass(?![\w-])|\bapproved\b|\blooks good\b|\blgtm\b/.test(lower)) return "pass";
+  // Veto negated accepts ("not approved", "won't pass review") — a false pass
+  // auto-advances work, so doubt always resolves to needs-work.
+  if (!isNegatedAccept(lower) && /(?:^|[^-\w])pass(?![\w-])|\bapproved\b|\blooks good\b|\blgtm\b/.test(lower))
+    return "pass";
   return "needs-work";
 }
 

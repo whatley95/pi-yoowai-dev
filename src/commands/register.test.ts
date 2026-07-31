@@ -657,4 +657,36 @@ describe("resetModelSelection", () => {
     assert.ok(notified!.message.includes('Invalid reset target "not-a-task"'));
     assert.equal(notified!.type, "warning");
   });
+
+  it("interactive picker marks only scopes that are actually configured", async () => {
+    const agentDir = makeTempAgentDir();
+    const cwd = makeTempDir("wai-reset-marker-cwd-");
+    setAgentDirForTests(() => agentDir);
+    writeSettings(agentDir, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      taskModels: { review: { provider: "deepseek", id: "deepseek-v4-pro" } },
+    });
+
+    let items: string[] = [];
+    const ctx = {
+      ...fakeContext(),
+      cwd,
+      ui: {
+        ...fakeContext().ui,
+        select: async (_title: string, options: string[]) => {
+          items = options;
+          return undefined; // cancel
+        },
+      },
+    } as ExtensionContext & { cwd: string };
+
+    await resetModelSelection(ctx, undefined, async () => {});
+
+    assert.ok(items[0]?.startsWith("Base secondary model — ✓ current"), `base row: ${items[0]}`);
+    const reviewRow = items.find((i) => i.startsWith("Use for review only"));
+    const judgeRow = items.find((i) => i.startsWith("Use for judge only"));
+    assert.ok(reviewRow?.includes("✓ current"), `review row: ${reviewRow}`);
+    assert.ok(judgeRow?.includes("not configured"), `judge row: ${judgeRow}`);
+    assert.ok(!judgeRow?.includes("✓ current"), `judge row must not be marked current: ${judgeRow}`);
+  });
 });

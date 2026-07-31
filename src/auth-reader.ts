@@ -156,9 +156,10 @@ function tokenize(command: string): string[] {
 }
 
 // Providers with multiple env var candidates (checked in order, first match wins).
-// Matches Pi's env-api-keys.ts precedence.
+// Matches Pi's env-api-keys.ts precedence (Pi ≥ 0.82.1 added ANTHROPIC_AUTH_TOKEN
+// for Anthropic-compatible gateways that require Authorization: Bearer).
 const PROVIDER_ENV_MAP_MULTI: Record<string, string[]> = {
-  anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+  anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"],
 };
 
 const PROVIDER_ENV_MAP: Record<string, string> = {
