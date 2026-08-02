@@ -127,7 +127,7 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | `codemapMaxTokens`             | number                                  | Token budget for the project symbol map injected into review/judge prompts (default: `1500`; `0` disables)                          |
 | `entryRenderer`                | boolean                                 | Render wai audit entries with a custom TUI entry renderer (default: `true`)                                                         |
 | `shortcuts`                    | boolean                                 | Register keyboard shortcuts for common wai actions (default: `true`)                                                                |
-| `planWidget`                   | boolean                                 | Show a compact plan-progress widget above the editor (default: `true`)                                                              |
+| `planWidget`                   | boolean                                 | Show a compact plan-progress widget above the editor, including a "blocked by step N" line when the current step's `dependsOn` steps are unmet (default: `true`)                                                              |
 | `registerProvider`             | boolean                                 | Register the configured secondary model as a Pi provider named `wai` (default: `false`)                                             |
 | `preReviewCommands`            | string[]                                | Commands to run before each review; output is included in the review prompt                                                         |
 | `testCommand`                  | string                                  | Command to run for `/wai test` analysis (e.g. `npm test`). Auto-detected from `package.json` if omitted                             |
@@ -328,7 +328,7 @@ The `wai` tool is called by the main agent during development:
 
 Plan steps can include `priority` (`high`, `medium`, `low`) and `dependsOn` (1-based list of earlier steps). Plain-string steps still work for backward compatibility.
 
-**Plan tracker.** wai tracks file edits and sends a workflow reminder after `reviewReminderEdits` (default 3) unreviewed edits without a `wai.review` or `wai.done` call, so the plan tracker stays in sync. Review automatically advances the plan by the number of steps the model reports as completed (`completedSteps`). Judge re-syncs the tracker in both directions: it advances from `completedStepIds` and regresses from `incompleteStepIds` (steps the tracker marks complete that the code does not actually satisfy). You can also correct the tracker manually: `wai({ done: N })` or `/wai-done N` sets progress to step N — a number below the current progress regresses it, and `0` resets it.
+**Plan tracker.** wai tracks file edits and sends a workflow reminder after `reviewReminderEdits` (default 3) unreviewed edits without a `wai.review` or `wai.done` call, so the plan tracker stays in sync. The reminder names the current plan step when one is active ("Step 2/5 (…)"). A passing review automatically advances the plan: a consensus pass (verdict `pass` with zero issues) advances by the number of steps the model reports as completed (`completedSteps`), and a pass that explicitly sets `stepComplete: true` advances exactly the current step even when minor issues remain. Either advance records a `step-done` audit entry. Judge re-syncs the tracker in both directions: it advances from `completedStepIds` and regresses from `incompleteStepIds` (steps the tracker marks complete that the code does not actually satisfy). You can also correct the tracker manually: `wai({ done: N })` or `/wai-done N` sets progress to step N — a number below the current progress regresses it, and `0` resets it.
 
 ### `wai_index` tool
 
@@ -589,7 +589,7 @@ wai.judge("auth refactor complete")
   → Tracker auto-synced to 5/5
 ```
 
-If the implementation diverges from the original plan, wai flags the plan as stale in review/judge output and you can regenerate it with `wai({ planUpdate: "..." })` or `/wai-plan-update`. The tracker resets cleanly when a new plan is created.
+If the implementation diverges from the original plan, wai flags the plan as stale in review/judge output and you can regenerate it with `wai({ planUpdate: "..." })` or `/wai-plan-update`. A review that flags `planStale` also surfaces a one-time suggestion to run `/wai-plan-update` (or `wai({ planUpdate: "..." })`) in its result text, throttled to once per review round (the throttle is per step, so it resets whenever the current step changes — advancing or regressing the tracker) — the plan itself is never modified automatically. The tracker resets cleanly when a new plan is created.
 
 ### Review escalation
 
@@ -600,7 +600,7 @@ If a single plan step fails review 3 times, wai marks the review as escalated. T
 Four layers make it hard to finish work without ever running `wai.review`. The visibility metric is always on, the escalating steer starts gentle, and the done gate and auto-review are enabled by default (set them to `false` to opt out).
 
 1. **Visibility (always on).** wai tracks turns that end with unreviewed edits pending and the total edits left unreviewed when session state flushes. `/wai-status` shows them (`Unreviewed edits: N (M turns ended with review pending)`), and a session audit entry is appended whenever state flushes with unreviewed edits outstanding.
-2. **Escalating steer.** The `turn_end` workflow reminder escalates from a gentle nudge to an explicit stop directive after `steerEscalationThreshold` (default `3`) consecutive turns end with review still pending. The streak resets when a review runs.
+2. **Escalating steer.** The `turn_end` workflow reminder escalates from a gentle nudge to an explicit stop directive after `steerEscalationThreshold` (default `3`) consecutive turns end with review still pending. With an active plan the reminder names the current step and its pending edit count; without one it falls back to the plain edit-count message. The streak resets when a review runs.
 3. **Done gate (default: on).** With `requireReviewBeforeDone` enabled, `wai.done` / `/wai-done` refuses to mark a step complete while unreviewed edits are pending and reports the pending count instead. Override explicitly with `wai({ done: true, force: true })` or `/wai-done --force`; the step is then recorded as manually marked (not reviewed).
 4. **Auto-review on settle (default: on).** With `autoReviewOnSettle` enabled, settling the agent with unreviewed edits pending triggers `wai.review` automatically before any auto-judge. If the review would exceed `costBudgetUsd`, it is logged and skipped quietly.
 

@@ -46,16 +46,31 @@ function supportsMaxCompletionTokens(provider: string, model: string): boolean {
   return known.has(key) || model.toLowerCase().startsWith("o") || model.toLowerCase().startsWith("gpt-5");
 }
 
-function parseSseEvents(buffer: string): { events: Array<{ event: string; data: string }>; remainder: string } {
+/** Split an SSE buffer into complete events and a remainder. CR (`\r`) is
+ *  stripped so CRLF streams (line endings and `\r\n\r\n` separators) parse
+ *  identically to LF-only ones. When `final` is true the stream has ended, so
+ *  a non-empty remainder without a trailing blank line is itself one last
+ *  complete event and is parsed too (SSE events are separated BY blank lines;
+ *  the final event does not need one after it). */
+export function parseSseEvents(
+  buffer: string,
+  final = false,
+): { events: Array<{ event: string; data: string }>; remainder: string } {
   const events: Array<{ event: string; data: string }> = [];
   const separator = "\n\n";
-  const idx = buffer.lastIndexOf(separator);
-  if (idx === -1) {
-    return { events: [], remainder: buffer };
+  const normalized = buffer.replace(/\r/g, "");
+  const idx = normalized.lastIndexOf(separator);
+  let body = normalized;
+  let remainder = "";
+  if (idx !== -1) {
+    body = normalized.slice(0, idx);
+    remainder = normalized.slice(idx + separator.length);
+  } else if (!final) {
+    return { events: [], remainder: normalized };
   }
-  const complete = buffer.slice(0, idx);
-  const remainder = buffer.slice(idx + separator.length);
-  for (const rawEvent of complete.split(separator)) {
+  const chunks = body.split(separator);
+  if (final && remainder) chunks.push(remainder);
+  for (const rawEvent of chunks) {
     if (!rawEvent.trim()) continue;
     let event = "";
     let data = "";
@@ -71,7 +86,7 @@ function parseSseEvents(buffer: string): { events: Array<{ event: string; data: 
       events.push({ event, data });
     }
   }
-  return { events, remainder };
+  return { events, remainder: final ? "" : remainder };
 }
 
 async function* readAnthropicSseStream(response: Response, signal?: AbortSignal): AsyncGenerator<AnthropicSseEvent> {
@@ -106,7 +121,7 @@ async function* readAnthropicSseStream(response: Response, signal?: AbortSignal)
       }
     }
     // Flush any trailing event that did not end with a blank line.
-    const parsed = parseSseEvents(buffer + decoder.decode());
+    const parsed = parseSseEvents(buffer + decoder.decode(), true);
     for (const sse of parsed.events) {
       if (sse.event === "error") throw new Error(sse.data);
       if (sse.event === "ping") continue;

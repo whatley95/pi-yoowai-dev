@@ -29,6 +29,20 @@ const DEFAULT_MAX_ITERATIONS = 5;
 const MAX_TOOL_FILE_BYTES = 100 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 4000;
 const MAX_SEARCH_MATCHES = 50;
+// Guardrails for the model-generated search pattern: length cap, and a
+// nested-quantifier heuristic for catastrophic-backtracking shapes like
+// (a+)+ or (\w+\s?)+ — a group that contains a quantifier and is itself
+// quantified. Coverage boundary: the heuristic does not parse character
+// classes or nesting — a + or * inside [...] is treated as a quantifier
+// (false positive, e.g. ([a+])+), and shapes where the quantifier is hidden
+// an extra nesting level deep with no group-close directly followed by a
+// quantifier (e.g. (?:(a+))+) are missed. Plain non-capturing groups like
+// (?:a+)+ are caught. An escaped-literal pattern like \\(a+\\)+ is a false
+// positive too (it only rejects the pattern with an explanatory error —
+// acceptable for a model-retryable tool).
+const MAX_SEARCH_PATTERN_CHARS = 200;
+const MAX_SEARCH_LINE_CHARS = 10_000;
+const NESTED_QUANTIFIER_RE = /\([^)]*[+*{][^)]*\)\s*[+*{]/;
 
 function buildToolInstruction(maxIterations: number): string {
   return `You may request additional context before producing your final structured JSON result. To request context, output a single JSON block exactly like one of these examples and nothing else:
@@ -134,6 +148,19 @@ async function runCommandTool(cwd: string, command: string): Promise<ToolResult>
 function searchCodeTool(cwd: string, request: ToolRequest): ToolResult {
   const pattern = request.pattern;
   if (!pattern) return { output: "", error: "search_code requires a pattern" };
+  if (pattern.length > MAX_SEARCH_PATTERN_CHARS) {
+    return {
+      output: "",
+      error: `search_code pattern too long (${pattern.length} chars; max ${MAX_SEARCH_PATTERN_CHARS})`,
+    };
+  }
+  if (NESTED_QUANTIFIER_RE.test(pattern)) {
+    return {
+      output: "",
+      error:
+        "search_code pattern rejected: nested quantifiers (e.g. (a+)+) can cause catastrophic backtracking; simplify the pattern",
+    };
+  }
   let regex: RegExp;
   try {
     regex = new RegExp(pattern);
@@ -177,6 +204,10 @@ function searchCodeTool(cwd: string, request: ToolRequest): ToolResult {
       if (content.includes("\0")) continue; // skip binary files
       const fileLines = content.split(/\r?\n/);
       for (let i = 0; i < fileLines.length; i++) {
+        // Very long lines (minified files) are skipped: with model-generated
+        // patterns, even linear regexes get slow on megabyte lines, and
+        // catastrophic backtracking only bites on long input.
+        if (fileLines[i].length > MAX_SEARCH_LINE_CHARS) continue;
         if (!regex.test(fileLines[i])) continue;
         const from = Math.max(0, i - context);
         const to = Math.min(fileLines.length - 1, i + context);

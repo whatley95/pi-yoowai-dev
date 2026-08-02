@@ -161,6 +161,11 @@ export async function executeWaiReview(
         description,
         modelProfile,
         currentStep,
+        // Plan progress is part of the key: without it, a cached review with
+        // stepComplete/consensus auto-advance could replay after a tracker
+        // regression (identical step description + identical diff within the
+        // TTL) and advance the plan without a fresh model call.
+        planProgress: state.plan ? `${state.completedSteps}/${state.totalSteps}` : "none",
         options,
         reviewMaxDiffChars: config.reviewMaxDiffChars,
         reviewStrategy: config.reviewStrategy,

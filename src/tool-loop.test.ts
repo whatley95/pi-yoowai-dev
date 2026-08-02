@@ -322,6 +322,50 @@ describe("executeToolLoop", () => {
     assert.equal(calls[1].includes("Invalid regex"), true);
   });
 
+  it("rejects catastrophic search_code patterns without executing them", async () => {
+    const responses = ['{"tool": "search_code", "pattern": "(a+)+"}', '{"verdict": "pass"}'];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].includes("nested quantifiers"), true);
+  });
+
+  it("rejects overlong search_code patterns", async () => {
+    const longPattern = "a".repeat(201);
+    const responses = [`{"tool": "search_code", "pattern": "${longPattern}"}`, '{"verdict": "pass"}'];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].includes("pattern too long"), true);
+  });
+
+  it("skips very long (minified) lines when searching", async () => {
+    writeFileSync(join(cwd, "src", "minified.ts"), "x".repeat(12_000) + " needle\n", "utf-8");
+    const responses = ['{"tool": "search_code", "pattern": "needle", "contextLines": 0}', '{"verdict": "pass"}'];
+    const calls: string[] = [];
+    const callModel = async (_system: string, user: string) => {
+      calls.push(user);
+      return { content: responses[calls.length - 1] ?? "{}", usage: zeroUsage() };
+    };
+
+    await executeToolLoop(cwd, "system", "user", {}, callModel, 2);
+
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].includes("No matches for /needle/"), true);
+  });
+
   it("scopes search_code to a directory path", async () => {
     writeFileSync(join(cwd, "root-match.ts"), "export const fooOutside = 1;\n", "utf-8");
     const responses = [
