@@ -1,5 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   applyExclude,
   extractChangedFiles,
@@ -7,7 +11,34 @@ import {
   splitDiffByHunk,
   processDiff,
   DEFAULT_MAX_DIFF_CHARS,
+  getGitDiff,
 } from "./diff-grabber.js";
+import { gitSpawnEnv } from "./git-env.js";
+
+function gitAvailable(): boolean {
+  try {
+    execFileSync("git", ["--version"], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+const hasGit = gitAvailable();
+
+function gitOpts() {
+  return { stdio: "pipe" as const, env: gitSpawnEnv() };
+}
+
+function initGitRepo(dir: string): void {
+  execFileSync("git", ["init"], { cwd: dir, ...gitOpts() });
+  execFileSync("git", ["config", "user.email", "wai-test@example.com"], { cwd: dir, ...gitOpts() });
+  execFileSync("git", ["config", "user.name", "wai test"], { cwd: dir, ...gitOpts() });
+}
+
+function commitAll(dir: string): void {
+  execFileSync("git", ["add", "."], { cwd: dir, ...gitOpts() });
+  execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], { cwd: dir, ...gitOpts() });
+}
 
 describe("diff-grabber helpers", () => {
   it("excludes matching SVN blocks", () => {
@@ -141,5 +172,54 @@ describe("diff-grabber helpers", () => {
     assert.match(hunks[1], /@@ -10,3/);
     assert.match(hunks[0], /line2a/);
     assert.match(hunks[1], /line11a/);
+  });
+
+  it("ignores ambient GIT_DIR/GIT_WORK_TREE redirectors from the parent environment", { skip: !hasGit }, () => {
+    const root = mkdtempSync(join(tmpdir(), "wai-git-redirect-"));
+    try {
+      // repoA is the decoy the parent environment would redirect git into.
+      const repoA = join(root, "repoA");
+      mkdirSync(join(repoA, "src"), { recursive: true });
+      initGitRepo(repoA);
+      writeFileSync(join(repoA, "src", "a.ts"), "export const a = 1;\n", "utf-8");
+      commitAll(repoA);
+
+      // repoB is the real project under review (cwd).
+      const repoB = join(root, "repoB");
+      mkdirSync(join(repoB, "src"), { recursive: true });
+      initGitRepo(repoB);
+      writeFileSync(join(repoB, "src", "b.ts"), "export const b = 1;\n", "utf-8");
+      commitAll(repoB);
+      writeFileSync(join(repoB, "src", "b.ts"), "export const b = 2;\n", "utf-8"); // dirty
+
+      // Simulate running inside a git hook of repoA.
+      const savedDir = process.env.GIT_DIR;
+      const savedTree = process.env.GIT_WORK_TREE;
+      process.env.GIT_DIR = join(repoA, ".git");
+      process.env.GIT_WORK_TREE = repoA;
+      try {
+        const result = getGitDiff(repoB, { maxDiffChars: 10_000 });
+        assert.ok(
+          result.changedFiles.includes("src/b.ts"),
+          "the diff must come from cwd (repoB), not the GIT_DIR redirect target",
+        );
+        assert.ok(!result.changedFiles.includes("src/a.ts"), "repoA files must not leak into the diff");
+        assert.ok(
+          result.diff.includes("export const b = 2"),
+          "the diff content must come from repoB, not the redirect target",
+        );
+      } finally {
+        if (savedDir === undefined) delete process.env.GIT_DIR;
+        else process.env.GIT_DIR = savedDir;
+        if (savedTree === undefined) delete process.env.GIT_WORK_TREE;
+        else process.env.GIT_WORK_TREE = savedTree;
+      }
+    } finally {
+      try {
+        rmSync(root, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
   });
 });

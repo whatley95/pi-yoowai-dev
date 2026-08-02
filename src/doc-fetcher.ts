@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { join } from "node:path";
 import type * as dds from "duck-duck-scrape";
 import { resolveApiKey } from "./auth-reader.js";
+import { captureImportFailure, type ImportFailureDetail } from "./import-diagnostics.js";
 import { getProjectConfigPath } from "./pi-paths.js";
 import { logEvent } from "./logger.js";
 import type { DocsConfig, WebSearchConfig, WebSearchProvider } from "./types.js";
@@ -19,14 +20,33 @@ const FILE_MODE = 0o600;
 
 type SearchFn = typeof dds.search;
 
+// Every failed duck-duck-scrape import gets a fresh Error object, so the
+// warning must recognize ANY of them (WeakSet membership) rather than the
+// exact first failure. The detail is still captured once.
+const ddsImportErrors = new WeakSet<object>();
+let ddsLoadError: ImportFailureDetail | undefined;
+
 /**
  * Default DuckDuckGo search, imported lazily on first use. A broken or
  * outdated duck-duck-scrape install then degrades /wai-search with a logged
- * warning instead of breaking extension startup at import time.
+ * warning instead of breaking extension startup at import time. The try
+ * covers ONLY the import — a successful import whose search call then fails
+ * (network etc.) must not be tagged as an import failure.
  */
 const defaultSearchFn: SearchFn = async (query, options) => {
-  const dds = await import("duck-duck-scrape");
-  return dds.search(query, options);
+  let mod: typeof import("duck-duck-scrape");
+  try {
+    mod = await import("duck-duck-scrape");
+  } catch (err) {
+    if (err && typeof err === "object") {
+      ddsImportErrors.add(err);
+    }
+    if (!ddsLoadError) {
+      ddsLoadError = captureImportFailure(err, "duck-duck-scrape");
+    }
+    throw err;
+  }
+  return mod.search(query, options);
 };
 
 let searchFn: SearchFn = defaultSearchFn;
@@ -39,6 +59,7 @@ export function setSearchFnForTests(fn: SearchFn): void {
 /** Restore the real DuckDuckGo search function. */
 export function resetSearchFnForTests(): void {
   searchFn = defaultSearchFn;
+  ddsLoadError = undefined;
 }
 
 type BraveSearchResult = {
@@ -271,7 +292,15 @@ async function searchWeb(cwd: string, query: string, config: WebSearchConfig): P
     return formatted;
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logEvent(cwd, "warn", "Web search failed", { query, provider, error });
+    logEvent(cwd, "warn", "Web search failed", {
+      query,
+      provider,
+      error,
+      // Attach the import-failure detail only for duck-duck-scrape import
+      // errors (ANY of them — each failed import throws a fresh Error); later
+      // unrelated failures (network, Brave provider) must not be misattributed.
+      ...(err && typeof err === "object" && ddsImportErrors.has(err) ? (ddsLoadError ?? {}) : {}),
+    });
     return null;
   }
 }

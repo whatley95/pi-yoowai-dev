@@ -4,6 +4,7 @@ import type * as TS from "typescript";
 import { resolveProjectPath } from "./path-security.js";
 import { estimateTokens } from "./token-budget.js";
 import { logEvent } from "./logger.js";
+import { captureImportFailure, type ImportFailureDetail } from "./import-diagnostics.js";
 
 const DEFAULT_MAX_TOKENS = 1000;
 const MAX_DECLARATION_LINES = 30;
@@ -19,10 +20,15 @@ export interface AstContextOptions {
  * duck-duck-scrape import in doc-fetcher.ts.
  */
 let tsModule: typeof import("typescript") | null = null;
+/** Populated when the lazy typescript import fails; included in the warning
+ *  so the log shows why and where resolution pointed (the runtime copy Pi
+ *  loads the extension from may lack node_modules/typescript). */
+let tsLoadError: ImportFailureDetail | undefined;
 try {
   tsModule = await import("typescript");
-} catch {
+} catch (err) {
   tsModule = null;
+  tsLoadError = captureImportFailure(err, "typescript");
 }
 
 export function buildAstContext(cwd: string, changedFiles: string[], options: AstContextOptions = {}): string {
@@ -30,6 +36,7 @@ export function buildAstContext(cwd: string, changedFiles: string[], options: As
   if (!ts) {
     logEvent(cwd, "warn", "typescript not installed; AST context disabled", {
       hint: "run `npm install` in the extension directory to enable import-aware context",
+      ...(tsLoadError ?? {}),
     });
     return "";
   }

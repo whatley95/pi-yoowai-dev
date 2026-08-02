@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { logEvent } from "./logger.js";
 import { isSafeRelativePath, validateRevision } from "./path-security.js";
+import { gitSpawnEnv } from "./git-env.js";
 
 export const DEFAULT_MAX_DIFF_CHARS = 200_000;
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
@@ -35,6 +36,7 @@ function getGitInfo(cwd: string): VcsInfo {
   try {
     const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd,
+      env: gitSpawnEnv(),
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -42,6 +44,7 @@ function getGitInfo(cwd: string): VcsInfo {
     }).trim();
     const revision = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd,
+      env: gitSpawnEnv(),
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -49,6 +52,7 @@ function getGitInfo(cwd: string): VcsInfo {
     }).trim();
     const status = execFileSync("git", ["status", "--porcelain"], {
       cwd,
+      env: gitSpawnEnv(),
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -276,12 +280,15 @@ function runVcsDiff(cwd: string, command: string[]): string {
     timeout: 10000,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
+    // Strip ambient GIT_* redirectors for git spawns (hook-hosted CI).
+    env: file === "git" ? gitSpawnEnv() : undefined,
   });
 }
 
-function listGitUntrackedFiles(cwd: string, files?: string[], exclude?: string[]): string[] {
+export function listGitUntrackedFiles(cwd: string, files?: string[], exclude?: string[]): string[] {
   const output = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
     cwd,
+    env: gitSpawnEnv(),
     encoding: "utf-8",
     maxBuffer: 1024 * 1024,
     timeout: 10000,
@@ -318,6 +325,7 @@ function runGitUntrackedDiff(cwd: string, files: string[]): string {
     try {
       const diff = execFileSync("git", ["diff", "--no-index", NULL_DEVICE, file], {
         cwd,
+        env: gitSpawnEnv(),
         encoding: "utf-8",
         maxBuffer: 1024 * 1024,
         timeout: 10000,
@@ -461,6 +469,7 @@ function detectVcs(cwd: string): VcsType {
   try {
     execFileSync("git", ["rev-parse", "--git-dir"], {
       cwd,
+      env: gitSpawnEnv(),
       encoding: "utf-8",
       timeout: 3000,
       stdio: ["pipe", "pipe", "pipe"],

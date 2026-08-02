@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { dirname } from "node:path";
 import type * as TS from "typescript";
 import { filterSourceFiles, listTrackedFiles } from "./conventions.js";
+import { listGitUntrackedFiles } from "./diff-grabber.js";
+import { captureImportFailure, type ImportFailureDetail } from "./import-diagnostics.js";
 import { logEvent } from "./logger.js";
 import { getProjectConfigPath } from "./pi-paths.js";
 import type { Conventions } from "./types.js";
@@ -14,10 +16,15 @@ import type { Conventions } from "./types.js";
  * doc-fetcher.ts.
  */
 let tsModule: typeof import("typescript") | null = null;
+/** Populated when the lazy typescript import fails; included in the first
+ *  warning so the log shows why and where resolution pointed (the runtime
+ *  copy Pi loads the extension from may lack node_modules/typescript). */
+let tsLoadError: ImportFailureDetail | undefined;
 try {
   tsModule = await import("typescript");
-} catch {
+} catch (err) {
   tsModule = null;
+  tsLoadError = captureImportFailure(err, "typescript");
 }
 
 let warnedTsMissing = false;
@@ -26,6 +33,7 @@ function getTs(cwd: string): typeof import("typescript") | null {
     warnedTsMissing = true;
     logEvent(cwd, "warn", "typescript not installed; project indexing disabled", {
       hint: "run `npm install` in the extension directory to enable symbol indexing",
+      ...(tsLoadError ?? {}),
     });
   }
   return tsModule;
@@ -43,6 +51,9 @@ export interface FileIndex {
   file: string;
   symbols: SymbolInfo[];
   mtime?: number;
+  /** Byte size at index time; compared alongside mtime so edits that land
+   *  within the filesystem's mtime granularity but change size are caught. */
+  size?: number;
 }
 
 export interface ProjectIndex {
@@ -63,6 +74,14 @@ export interface ProjectIndex {
 
 const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 const MAX_FILE_BYTES = 500 * 1024;
+
+/** True when the file falls inside the index's scope — same predicate
+ *  buildProjectIndex's collection uses (supported extension, not filtered
+ *  out as binary/lockfile). Consumers like the codemap freshness check use
+ *  this to decide whether a file absent from the index is a real gap. */
+export function isIndexableFile(file: string): boolean {
+  return SUPPORTED_EXTENSIONS.has(getExtension(file)) && filterSourceFiles([file]).length === 1;
+}
 
 function getIndexPath(cwd: string): string {
   return getProjectConfigPath(cwd, "yoowai", "index.json");
@@ -111,6 +130,7 @@ function isValidProjectIndex(value: unknown): value is ProjectIndex {
     if (typeof file.file !== "string") return false;
     if (!Array.isArray(file.symbols)) return false;
     if (file.mtime !== undefined && typeof file.mtime !== "number") return false;
+    if (file.size !== undefined && typeof file.size !== "number") return false;
   }
   if (v.stats && typeof v.stats === "object" && !Array.isArray(v.stats)) {
     const s = v.stats as Record<string, unknown>;
@@ -138,7 +158,22 @@ export function saveProjectIndex(cwd: string, index: ProjectIndex): void {
 
 export function buildProjectIndex(cwd: string): ProjectIndex {
   const tracked = listTrackedFiles(cwd);
-  const files = filterSourceFiles(tracked).filter((f) => SUPPORTED_EXTENSIONS.has(getExtension(f)));
+  let files = tracked.filter(isIndexableFile);
+  // Untracked files too: the review/diff world already includes them
+  // (untracked diffs are on by default), so the symbol map must not silently
+  // miss a newly created file's symbols until it is staged. Not gated on a
+  // local .git entry: cwd may be a repo subdirectory or worktree, and
+  // listGitUntrackedFiles throws outside git repos (swallowed below).
+  try {
+    const seen = new Set(files);
+    const untracked = listGitUntrackedFiles(cwd).filter((f) => !seen.has(f));
+    files = [...files, ...untracked.filter(isIndexableFile)];
+  } catch (err) {
+    // Not a git repo (or git unavailable) — the tracked/portable list applies.
+    logEvent(cwd, "debug", "Untracked-file listing unavailable; tracked list only", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
   const existing = loadProjectIndex(cwd);
   const existingByFile = new Map(existing?.files.map((f) => [f.file, f]) ?? []);
 
@@ -153,12 +188,15 @@ export function buildProjectIndex(cwd: string): ProjectIndex {
     const cached = existingByFile.get(rel);
     const fileIndex = buildFileIndex(cwd, filePath, rel, cached);
     if (fileIndex) {
+      // All indexable files are persisted — including zero-symbol ones — so
+      // the codemap freshness check can treat them as covered instead of
+      // re-reporting them stale forever.
+      index.files.push(fileIndex);
       if (fileIndex.symbols.length > 0) {
-        index.files.push(fileIndex);
         index.stats!.indexed += 1;
         index.stats!.symbols += fileIndex.symbols.length;
       }
-      if (fileIndex.mtime && cached && fileIndex.mtime === cached.mtime) {
+      if (fileIndex.mtime && cached && fileIndex.mtime === cached.mtime && fileIndex.size === cached.size) {
         index.stats!.reused = (index.stats!.reused ?? 0) + 1;
       }
     } else {
@@ -184,17 +222,18 @@ function buildFileIndex(cwd: string, filePath: string, relPath: string, cached?:
   try {
     const stats = statSync(filePath);
     const mtime = stats.mtimeMs;
-    if (cached && cached.mtime === mtime && cached.symbols.length > 0) {
-      return { file: relPath, symbols: cached.symbols, mtime };
+    const size = stats.size;
+    if (cached && cached.mtime === mtime && cached.size === size) {
+      return cached;
     }
     const content = readFileSync(filePath, "utf-8");
     if (content.length > MAX_FILE_BYTES) {
-      return { file: relPath, symbols: [], mtime };
+      return { file: relPath, symbols: [], mtime, size };
     }
     const ts = getTs(cwd);
     if (!ts) return undefined;
     const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true, getScriptKind(ts, relPath));
-    return { file: relPath, symbols: extractSymbols(ts, sourceFile), mtime };
+    return { file: relPath, symbols: extractSymbols(ts, sourceFile), mtime, size };
   } catch (err) {
     logEvent(cwd, "warn", "Failed to index file", {
       file: relPath,

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { getConfigDirName, getProjectConfigPath } from "./pi-paths.js";
+import { gitSpawnEnv } from "./git-env.js";
 import { logEvent } from "./logger.js";
 import type { Conventions, ScanResult } from "./types.js";
 
@@ -108,6 +109,7 @@ export function listTrackedFiles(cwd: string): string[] {
     try {
       const output = execFileSync("git", ["ls-files"], {
         cwd,
+        env: gitSpawnEnv(),
         encoding: "utf-8",
         maxBuffer: 1024 * 1024,
         timeout: 10000,
