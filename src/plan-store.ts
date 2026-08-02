@@ -46,6 +46,8 @@ export function loadState(cwd: string): YoowaiSessionState | null {
       editedFiles: Array.isArray(data.editedFiles)
         ? data.editedFiles.filter((f): f is string => typeof f === "string" && f.length > 0)
         : [],
+      planStaleSuggestedRound:
+        typeof data.planStaleSuggestedRound === "number" ? data.planStaleSuggestedRound : undefined,
     };
   } catch (err) {
     logEvent(cwd, "warn", "Failed to load wai plan state", { error: err instanceof Error ? err.message : String(err) });
@@ -93,6 +95,7 @@ export function saveState(cwd: string, state: YoowaiSessionState): void {
           unreviewedEditsTotal: state.unreviewedEditsTotal ?? 0,
           unreviewedEditsFlushed: state.unreviewedEditsFlushed ?? 0,
           editedFiles: state.editedFiles ?? [],
+          planStaleSuggestedRound: state.planStaleSuggestedRound,
         },
         null,
         2,

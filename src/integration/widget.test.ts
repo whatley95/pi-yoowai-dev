@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { updateWaiPlanWidget, hideWaiPlanWidget, INNER_WIDTH } from "./widget.js";
-import { setPlan, dropSessionState } from "../session-state.js";
+import { setPlan, dropSessionState, markStepComplete } from "../session-state.js";
 
 function makeContext(cwd: string, capture: Map<string, string[] | undefined>): ExtensionContext {
   return {
@@ -101,6 +101,56 @@ describe("updateWaiPlanWidget", () => {
 
     // Updating state and re-rendering is tested implicitly via setPlan; the widget
     // simply reflects whatever session-state holds.
+  });
+
+  it("shows a blocked-step line when the current step has unmet dependencies", () => {
+    setPlan(cwd, {
+      summary: "Refactor auth",
+      todo: [{ description: "Setup", dependsOn: [3] }, { description: "Middleware", dependsOn: [1] }, "Teardown"],
+      acceptanceCriteria: [],
+    });
+
+    const capture = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, capture));
+
+    const content = capture.get("wai-plan");
+    assert.ok(content);
+    // The blocked step itself is shown, and the blocker is named.
+    assert.ok(content.some((line) => line.includes("Setup")));
+    assert.ok(content.some((line) => line.includes("blocked by step 3")));
+  });
+
+  it("hides the blocked line once the current step advances past the blocker", () => {
+    setPlan(cwd, {
+      summary: "Refactor auth",
+      todo: [{ description: "Setup", dependsOn: [3] }, "Middleware", "Teardown"],
+      acceptanceCriteria: [],
+    });
+
+    // Before: the current step is blocked by an unmet forward dependency.
+    const before = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, before));
+    assert.ok(before.get("wai-plan")!.some((line) => line.includes("blocked by step 3")));
+
+    // After advancing, the current step is a plain step: the line is gone.
+    markStepComplete(cwd, true);
+    const after = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, after));
+    assert.ok(!after.get("wai-plan")!.some((line) => line.includes("blocked by")));
+  });
+
+  it("does not throw on malformed dependency entries", () => {
+    setPlan(cwd, {
+      summary: "Refactor auth",
+      todo: [{ description: "Setup", dependsOn: ["not-a-number"] as unknown as number[] }, "Middleware"],
+      acceptanceCriteria: [],
+    });
+
+    const capture = new Map<string, string[] | undefined>();
+    assert.doesNotThrow(() => updateWaiPlanWidget(makeContext(cwd, capture)));
+    const content = capture.get("wai-plan");
+    assert.ok(content);
+    assert.ok(!content.some((line) => line.includes("blocked by")));
   });
 
   it("hideWaiPlanWidget clears the widget", () => {

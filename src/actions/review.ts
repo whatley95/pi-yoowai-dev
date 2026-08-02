@@ -20,8 +20,10 @@ import {
   markJudgeCompleted,
   getLastReviewedCommit,
   setLastReviewedCommit,
+  planStaleSuggestionDue,
 } from "../session-state.js";
 import { planStepDescription } from "../types.js";
+import { auditStepDone } from "../integration/audit.js";
 import {
   STAGES,
   secondaryModelLabel,
@@ -44,6 +46,33 @@ import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
 import type { ProgressReporter } from "../progress.js";
 import type { WaiToolResult, ReviewResult, UsageCost } from "../types.js";
+
+/** Decide whether a passing review advances the plan tracker, and by how
+ *  many steps. Guards the guarded auto-completion contract:
+ *  - consensus (verdict "pass" with zero issues) advances by the model's
+ *    relative "completedSteps" count (default 1), as before;
+ *  - an explicit stepComplete: true signal advances exactly one step (the
+ *    current one) even when minor issues remain, because the model
+ *    explicitly confirmed the step's work is finished and covered;
+ *  - anything else (needs-work/blocked, or a bare pass without stepComplete
+ *    and without consensus) does not advance.
+ *  Returns null when no plan is active; when the plan is already complete the
+ *  returned count is 0 (bookkeeping may still run, auto-advance must not). */
+export function planAdvanceFromReview(
+  review: Pick<ReviewResult, "verdict" | "consensus" | "stepComplete" | "completedSteps">,
+  planActive: boolean,
+  planComplete: boolean,
+): { count: number } | null {
+  if (!planActive) return null;
+  if (review.consensus) {
+    const count = typeof review.completedSteps === "number" && review.completedSteps > 1 ? review.completedSteps : 1;
+    return { count: planComplete ? 0 : count };
+  }
+  if (review.verdict === "pass" && review.stepComplete === true) {
+    return { count: planComplete ? 0 : 1 };
+  }
+  return null;
+}
 
 export async function executeWaiReview(
   cwd: string,
@@ -78,6 +107,10 @@ export async function executeWaiReview(
     state.plan && state.completedSteps < state.plan.todo.length
       ? planStepDescription(state.plan.todo[state.completedSteps])
       : undefined;
+  // Files edited since the current step started (the list resets when a step
+  // completes): a focus hint for the reviewer, never a diff filter.
+  const stepFocusFiles =
+    state.plan && state.editedFiles && state.editedFiles.length > 0 ? state.editedFiles : undefined;
 
   progress(1, STAGES.review, "Collecting diff…");
   const diffOptions = {
@@ -305,6 +338,7 @@ export async function executeWaiReview(
           sessionManager: ctx.sessionManager,
           relevantPaths: [file],
           nativeJson,
+          focusFiles: stepFocusFiles,
           ...toolLoopOptions(config),
         });
         return { review: result.review, usage: result.usage, rounds: result.rounds, truncated: result.truncated };
@@ -455,6 +489,7 @@ export async function executeWaiReview(
         sessionManager: ctx.sessionManager,
         relevantPaths: [p.file],
         nativeJson,
+        focusFiles: stepFocusFiles,
         ...toolLoopOptions(config),
       });
       return {
@@ -572,6 +607,7 @@ export async function executeWaiReview(
         relevantPaths: Array.from(new Set([...(options.files ?? []), ...changedFiles])),
         progress,
         nativeJson,
+        focusFiles: stepFocusFiles,
         ...toolLoopOptions(config),
       });
     } catch (err) {
@@ -682,14 +718,38 @@ export async function executeWaiReview(
     setCachedResult(cwd, "review", cacheKey, { review, model: modelProfile, cost });
   }
 
-  if (review.consensus) {
-    // The model reports completedSteps as a RELATIVE count (how many plan
-    // steps this diff completes, including the current one), but
-    // markStepsComplete takes an ABSOLUTE target step — convert, otherwise a
-    // reported 1 (the common case) pins the tracker at step 1 forever.
-    const completedCount =
-      typeof review.completedSteps === "number" && review.completedSteps > 1 ? review.completedSteps : 1;
-    markStepsComplete(cwd, state.completedSteps + completedCount, true);
+  // Propose-only staleness: never touch the plan; surface the update
+  // suggestion once per review round (auto-review on settle must not repeat
+  // it for the same round). The suggestion annotates ONLY the result handed
+  // to the caller — the cached payload stays raw so a later cache hit on an
+  // identical diff does not replay it outside the guard.
+  if (review.planStale && state.plan && planStaleSuggestionDue(cwd)) {
+    review = {
+      ...review,
+      suggestions: [
+        "The review flagged the active plan as stale (it no longer matches the code). Once the code is in a consistent state, update the plan with `/wai-plan-update` or `wai({ planUpdate: '...' })`.",
+        ...review.suggestions,
+      ],
+    };
+    logEvent(cwd, "info", "Review flagged the plan as stale; suggested a plan update", {
+      provider: modelConfig.provider,
+      model: modelConfig.id,
+    });
+  }
+
+  // Guarded auto-completion: consensus (pass with zero issues) advances as
+  // before; an explicit stepComplete signal advances exactly the current step.
+  const advance = planAdvanceFromReview(
+    review,
+    state.plan !== undefined && state.totalSteps > 0,
+    state.completedSteps >= state.totalSteps,
+  );
+  if (advance) {
+    if (advance.count > 0) {
+      const newCompleted = Math.min(state.completedSteps + advance.count, state.totalSteps);
+      markStepsComplete(cwd, newCompleted, true);
+      auditStepDone(ctx, newCompleted, state.totalSteps, true);
+    }
     const planProgress = getProgress(cwd);
     review.planProgress = `${planProgress.completed}/${planProgress.total} steps done`;
     if (planProgress.nextStep) {

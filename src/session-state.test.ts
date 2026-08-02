@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   setPlan,
   markStepComplete,
+  markStepsComplete,
   incrementReviewRounds,
   getProgress,
   getState,
@@ -19,6 +20,7 @@ import {
   getEditTracker,
   recordUnreviewedTurn,
   flushSessionState,
+  planStaleSuggestionDue,
 } from "./session-state.js";
 import type { PlanResult } from "./types.js";
 
@@ -226,4 +228,80 @@ test("setPlan resets the unreviewed-edit metrics for a new plan", () => {
   assert.equal(state.unreviewedTurns, 0);
   assert.equal(state.unreviewedEditsTotal, 0);
   assert.equal(state.unreviewedEditsFlushed, 0);
+});
+
+test("step completion resets the edited-files list but not the edit counters", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  recordFileEdit(cwd, "src/a.ts");
+  recordFileEdit(cwd, "src/b.ts");
+
+  // markStepComplete: the file list becomes the next step's focus list, while
+  // the gate counters (editsSinceLastReview / editsSinceLastDone) survive —
+  // they are reset only by a review or done, respectively.
+  markStepComplete(cwd, true);
+  let tracker = getEditTracker(cwd);
+  assert.deepEqual(tracker.editedFiles, []);
+  assert.equal(tracker.editsSinceLastReview, 2);
+  assert.equal(tracker.editsSinceLastDone, 2);
+
+  recordFileEdit(cwd, "src/c.ts");
+  markStepsComplete(cwd, 3, true);
+  tracker = getEditTracker(cwd);
+  assert.deepEqual(tracker.editedFiles, []);
+  assert.equal(tracker.editsSinceLastReview, 3);
+  assert.equal(getProgress(cwd).completed, 3);
+
+  recordFileEdit(cwd, "src/d.ts");
+  markStepsDoneByIds(cwd, [1], true); // no-op at completed 3, list untouched
+  assert.deepEqual(getEditTracker(cwd).editedFiles, ["src/d.ts"]);
+});
+
+test("setPlanProgress backward keeps reviewedSteps aligned with progress", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  markStepsDoneByIds(cwd, [1, 2, 3], true);
+  assert.deepEqual(getState(cwd).reviewedSteps, [true, true, true]);
+
+  setPlanProgress(cwd, 1);
+  const state = getState(cwd);
+  assert.equal(state.completedSteps, 1);
+  // Every index at or beyond the new progress must be false again.
+  for (let i = state.completedSteps; i < state.reviewedSteps.length; i++) {
+    assert.equal(state.reviewedSteps[i], false, `reviewedSteps[${i}] should be cleared`);
+  }
+  assert.equal(state.reviewedSteps[0], true);
+});
+
+test("planStaleSuggestionDue surfaces once per review round and resets with a new plan", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+
+  // First time in the current round: due.
+  assert.equal(planStaleSuggestionDue(cwd), true);
+  // Same round: suppressed (e.g. an auto-review on settle repeating the call).
+  assert.equal(planStaleSuggestionDue(cwd), false);
+
+  // A failed review increments the round counter → due again.
+  incrementReviewRounds(cwd);
+  assert.equal(planStaleSuggestionDue(cwd), true);
+  assert.equal(planStaleSuggestionDue(cwd), false);
+
+  // A new plan resets the marker.
+  setPlan(cwd, { summary: "next task", todo: ["new step"], acceptanceCriteria: [] });
+  assert.equal(planStaleSuggestionDue(cwd), true);
+});
+
+test("planStaleSuggestionDue fires again on the next step after an advance", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+
+  // Surface at step 1 (round 0), then complete the step.
+  assert.equal(planStaleSuggestionDue(cwd), true);
+  markStepComplete(cwd, true);
+
+  // Step 2 also starts at round 0: without a marker reset the bare round
+  // number would collide and suppress the suggestion forever. It must fire.
+  assert.equal(planStaleSuggestionDue(cwd), true);
+  assert.equal(planStaleSuggestionDue(cwd), false);
 });

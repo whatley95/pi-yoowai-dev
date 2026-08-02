@@ -28,7 +28,7 @@ import { formatResultText } from "../format.js";
 import { clearWaiStatus } from "../progress.js";
 import { type LoopDetectionState } from "../loop-detector.js";
 import { logEvent } from "../logger.js";
-import type { WaiToolResult } from "../types.js";
+import { planStepDescription, type WaiToolResult } from "../types.js";
 import { updateWaiStatus } from "./status.js";
 import { publishWaiResult } from "./publish.js";
 import { auditUnreviewedEdits } from "./audit.js";
@@ -276,12 +276,25 @@ export function registerLifecycleHandlers(
       // After K consecutive turns with review pending, escalate from a gentle
       // reminder to an explicit stop directive. The counter resets on review.
       const escalated = (state.unreviewedTurns ?? 0) >= (config.steerEscalationThreshold ?? 3);
+      // With an active plan, the reminder names the current step so the nag is
+      // tied to the plan unit; without one it falls back to the plain message.
+      const stepLabel =
+        state.plan && state.completedSteps < state.totalSteps
+          ? `Step ${state.completedSteps + 1}/${state.totalSteps} (${planStepDescription(state.plan.todo[state.completedSteps])})`
+          : undefined;
       const reminder = escalated
-        ? `STOP. Do not continue new work until \`wai review\` has been run on the pending edits. ` +
-          `You have ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList} spanning ${state.unreviewedTurns} turn(s). ` +
-          `Call \`wai({ review: '...' })\` now.`
-        : `WORKFLOW REMINDER: you have made ${editState.editsSinceLastReview} file edit(s) since the last review. ` +
-          `Call \`wai({ review: '...' })\` to review the changes${fileList} before continuing.`;
+        ? stepLabel
+          ? `STOP. Do not continue new work until \`wai review\` has been run on the pending edits. ` +
+            `${stepLabel} has ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList} spanning ${state.unreviewedTurns} turn(s). ` +
+            `Call \`wai({ review: '...' })\` now.`
+          : `STOP. Do not continue new work until \`wai review\` has been run on the pending edits. ` +
+            `You have ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList} spanning ${state.unreviewedTurns} turn(s). ` +
+            `Call \`wai({ review: '...' })\` now.`
+        : stepLabel
+          ? `WORKFLOW REMINDER: ${stepLabel} has ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList}. ` +
+            `Call \`wai({ review: '...' })\` to review the changes before continuing.`
+          : `WORKFLOW REMINDER: you have made ${editState.editsSinceLastReview} file edit(s) since the last review. ` +
+            `Call \`wai({ review: '...' })\` to review the changes${fileList} before continuing.`;
       pi.sendUserMessage(`${reminder}${planNudge}${noPlanNudge}`, { deliverAs: "steer" });
       updateWaiStatus(ctx);
     } catch {

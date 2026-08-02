@@ -120,6 +120,49 @@ Verdict: pass
     assert.equal(result?.verdict, "needs-work");
   });
 
+  it("detects an explicit step-complete statement for guarded auto-completion", () => {
+    const text = "Verdict: pass\n\nThe current step is complete and all its files were reviewed.";
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.verdict, "pass");
+    assert.equal(result?.stepComplete, true);
+  });
+
+  it("does not infer stepComplete from negated or conditional prose", () => {
+    const text = "Verdict: needs-work\n\nThe step is not complete yet; the parser still needs tests.";
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.stepComplete, undefined);
+  });
+
+  it("does not infer stepComplete from adjectival uses of the keyword", () => {
+    const text = "Verdict: pass\n\nThe step is complete garbage and should be rewritten.";
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.stepComplete, undefined);
+  });
+
+  it("does not infer stepComplete from conditional or temporal framing", () => {
+    const text = "Verdict: pass\n\nOnce the step is complete, run the tests and close the ticket.";
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.stepComplete, undefined);
+  });
+
+  it("detects an explicit stale-plan statement", () => {
+    const text = "Verdict: pass\n\nThe plan is stale — the code no longer matches the plan's step two.";
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.planStale, true);
+  });
+
+  it("does not infer planStale from negated prose", () => {
+    const text = "Verdict: pass\n\nThe plan is not stale; the implementation follows it exactly.";
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.planStale, undefined);
+  });
+
+  it("does not infer planStale from conditional advice", () => {
+    const text = "Verdict: pass\n\nIf the plan no longer matches the code, run /wai-plan-update.";
+    const result = salvageReviewFromMarkdown(text);
+    assert.equal(result?.planStale, undefined);
+  });
+
   it("does not extract file names as suggestions", () => {
     const text = `## Review
 
@@ -572,6 +615,20 @@ describe("validateReviewResult", () => {
     assert.equal("extraField" in result!, false);
   });
 
+  it("passes through stepComplete and planStale", () => {
+    const result = validateReviewResult({
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: false,
+      stepComplete: true,
+      planStale: false,
+    });
+    assert.ok(result);
+    assert.equal(result?.stepComplete, true);
+    assert.equal(result?.planStale, false);
+  });
+
   it("normalizes null line values to undefined", () => {
     const result = validateReviewResult({
       verdict: "needs-work",
@@ -965,6 +1022,16 @@ describe("native JSON prompt instruction", () => {
     assert.ok(!prompt.system.includes("Return only valid JSON"));
   });
 
+  it("instructs guarded stepComplete in the plan rules when a current step is shown", () => {
+    const prompt = buildAdaptiveReviewPrompt("desc", "diff", [], { currentStep: "step 1" });
+    assert.ok(prompt.system.includes("ONLY when the current plan step's work is genuinely finished"));
+  });
+
+  it("instructs stepComplete false when no current step is shown", () => {
+    const prompt = buildAdaptiveReviewPrompt("desc", "diff", [], {});
+    assert.ok(prompt.system.includes('Set "planStale" to false, "stepComplete" to false'));
+  });
+
   it("scan prompt uses raw JSON instruction when nativeJson is true", () => {
     const prompt = buildScanPrompt(true);
     assert.ok(!prompt.system.includes("## Result"));
@@ -1144,5 +1211,14 @@ describe("buildReviewUserContext (review block assembly)", () => {
     assert.ok(user.includes("<file_contents>"));
     assert.ok(user.includes("src/a.ts"));
     assert.ok(user.includes("const x = 1;"));
+  });
+
+  it("includes the focus-files hint when provided and omits it otherwise", () => {
+    const withFocus = buildReviewUserContext({ ...base, focusFiles: ["src/a.ts", "src/b.ts"] });
+    assert.ok(withFocus.includes("<focus_files>"));
+    assert.ok(withFocus.includes("src/a.ts, src/b.ts"));
+
+    const without = buildReviewUserContext(base);
+    assert.ok(!without.includes("<focus_files>"));
   });
 });

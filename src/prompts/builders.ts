@@ -168,6 +168,7 @@ export function buildReviewUserContext(args: {
   truncated?: boolean;
   droppedFiles?: string[];
   budgetNote?: string;
+  focusFiles?: string[];
 }): string {
   const {
     description,
@@ -185,6 +186,7 @@ export function buildReviewUserContext(args: {
     truncated,
     droppedFiles,
     budgetNote,
+    focusFiles,
   } = args;
 
   const criteriaBlock = criteria ? `\n\n<acceptance_criteria>\n${criteria}\n</acceptance_criteria>` : "";
@@ -216,8 +218,12 @@ export function buildReviewUserContext(args: {
 
   const budgetBlock = budgetNote ? `\n\n${budgetNote}` : "";
   const vcsLine = vcs ? `\n\nVersion control: ${vcs}` : "";
+  const focusBlock =
+    focusFiles && focusFiles.length > 0
+      ? `\n\n<focus_files>\nFiles edited as part of the current plan step (primary review target, but the full diff still matters for cross-file impact): ${focusFiles.join(", ")}\n</focus_files>`
+      : "";
 
-  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${relatedBlock}${codemapBlock}${truncationNotice}${droppedBlock}${budgetBlock}`;
+  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${relatedBlock}${codemapBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
 }
 
 function buildAdaptiveReviewPromptImpl(
@@ -238,6 +244,7 @@ function buildAdaptiveReviewPromptImpl(
     droppedFiles?: string[];
     budgetNote?: string;
     nativeJson?: boolean;
+    focusFiles?: string[];
   } = {},
 ): { system: string; user: string } {
   const {
@@ -254,6 +261,7 @@ function buildAdaptiveReviewPromptImpl(
     droppedFiles,
     budgetNote,
     nativeJson,
+    focusFiles,
   } = options;
 
   // Plan-related rules only make sense when a plan step is actually shown;
@@ -261,8 +269,9 @@ function buildAdaptiveReviewPromptImpl(
   // non-pass verdict it cannot justify with issues.
   const planRules = currentStep
     ? `- Set "planStale": true if the current plan step contradicts the actual code and the code is internally consistent. Do not flag the code as wrong solely because it differs from the plan.
-- Set "completedSteps" to the number of plan steps (including the current step) that the diff fully completes. If only the current step is done, use 1.`
-    : `- There is no active plan for this review. Set "planStale" to false and "completedSteps" to 0; judge the change on its own merits against the developer's description.`;
+- Set "completedSteps" to the number of plan steps (including the current step) that the diff fully completes. If only the current step is done, use 1.
+- Set "stepComplete" to true ONLY when the current plan step's work is genuinely finished AND this review fully covered it (all of its edited files were in scope and no remaining work belongs to the step); otherwise set it to false. Do not use it to advance steps whose work is only partially done.`
+    : `- There is no active plan for this review. Set "planStale" to false, "stepComplete" to false, and "completedSteps" to 0; judge the change on its own merits against the developer's description.`;
 
   return {
     system: `${COMMON_SYSTEM_PREFIX}
@@ -282,6 +291,7 @@ ${finalJsonBlock(
   "suggestions": ["improvement 1", "improvement 2"],
   "consensus": false,
   "planStale": false,
+  "stepComplete": false,
   "completedSteps": 1
 }`,
   nativeJson,
@@ -328,6 +338,7 @@ ${EVIDENCE_RULES}`,
       truncated,
       droppedFiles,
       budgetNote,
+      focusFiles,
     }),
   };
 }

@@ -54,6 +54,10 @@ export interface ProjectIndex {
     skipped: number;
     symbols: number;
     reused?: number;
+    /** True when the build ran without the lazy `typescript` dependency.
+     *  Distinguishes a genuinely empty index (all files skipped or
+     *  symbol-less — keep it) from a broken one built without TS (rebuild). */
+    tsUnavailable?: boolean;
   };
 }
 
@@ -72,6 +76,18 @@ export function loadProjectIndex(cwd: string): ProjectIndex | null {
     const parsed = JSON.parse(raw) as unknown;
     if (!isValidProjectIndex(parsed)) {
       logEvent(cwd, "warn", "Invalid project index shape; ignoring", { path });
+      return null;
+    }
+    // A persisted index that scanned source files but indexed none was built
+    // while the lazy `typescript` dependency was missing or broken (see
+    // ast-context/project-index lazy-load warning). Only then is it invalid:
+    // a legitimately empty index (all files skipped for size, or symbol-less)
+    // must be kept, or it would be discarded and rebuilt on every load.
+    if (parsed.stats && parsed.stats.scanned > 0 && parsed.stats.indexed === 0 && parsed.stats.tsUnavailable === true) {
+      logEvent(cwd, "warn", "Project index scanned files but indexed none (built without TypeScript?); ignoring", {
+        path,
+        scanned: parsed.stats.scanned,
+      });
       return null;
     }
     return parsed;
@@ -149,6 +165,10 @@ export function buildProjectIndex(cwd: string): ProjectIndex {
       index.stats!.skipped += 1;
     }
   }
+
+  // Record whether this build had TypeScript available, so loaders can tell a
+  // broken empty index from a legitimately empty one.
+  index.stats!.tsUnavailable = getTs(cwd) === null;
 
   return index;
 }

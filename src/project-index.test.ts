@@ -65,6 +65,33 @@ export interface Config {
     assert.equal(loaded, null);
   });
 
+  it("rejects a persisted index that scanned files but indexed none (built without TypeScript)", () => {
+    mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
+    const emptyIndex = {
+      generatedAt: new Date().toISOString(),
+      files: [],
+      stats: { scanned: 141, indexed: 0, skipped: 141, symbols: 0, tsUnavailable: true },
+    };
+    writeFileSync(join(cwd, ".pi", "yoowai", "index.json"), JSON.stringify(emptyIndex), "utf-8");
+
+    assert.equal(loadProjectIndex(cwd), null);
+  });
+
+  it("keeps a legitimately empty index (all files skipped) instead of rebuilding every load", () => {
+    mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
+    const emptyIndex = {
+      generatedAt: new Date().toISOString(),
+      files: [],
+      stats: { scanned: 141, indexed: 0, skipped: 141, symbols: 0 },
+    };
+    writeFileSync(join(cwd, ".pi", "yoowai", "index.json"), JSON.stringify(emptyIndex), "utf-8");
+
+    const loaded = loadProjectIndex(cwd);
+    assert.ok(loaded);
+    assert.equal(loaded?.stats?.indexed, 0);
+    assert.equal(loaded?.stats?.tsUnavailable, undefined);
+  });
+
   it("ignores unsupported and generated files", () => {
     mkdirSync(join(cwd, "src"), { recursive: true });
     writeFileSync(join(cwd, "src", "main.ts"), "export const a = 1;", "utf-8");

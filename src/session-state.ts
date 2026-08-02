@@ -43,6 +43,7 @@ export function setPlan(cwd: string, plan: PlanResult): void {
   state.unreviewedEditsFlushed = 0;
   state.lastSteerAt = undefined;
   state.lastReviewedCommit = undefined;
+  state.planStaleSuggestedRound = undefined;
   saveState(cwd, state);
 }
 
@@ -51,6 +52,10 @@ export function markStepComplete(cwd: string, reviewed = false): void {
   if (state.totalSteps > 0 && state.completedSteps < state.totalSteps) {
     state.completedSteps++;
     state.reviewedSteps[state.completedSteps - 1] = reviewed;
+    state.editedFiles = [];
+    // A different step starts fresh: the stale-suggestion throttle marker
+    // must not collide with the new step's round counter (both are 0).
+    state.planStaleSuggestedRound = undefined;
     saveState(cwd, state);
   }
 }
@@ -59,11 +64,19 @@ export function markStepsComplete(cwd: string, count: number, reviewed = false):
   const state = getState(cwd);
   if (state.totalSteps === 0) return;
   const target = Math.min(count, state.totalSteps);
+  let advanced = false;
   while (state.completedSteps < target) {
     state.completedSteps++;
     state.reviewedSteps[state.completedSteps - 1] = reviewed;
+    advanced = true;
   }
-  saveState(cwd, state);
+  if (advanced) {
+    state.editedFiles = [];
+    // New step → reset the stale-suggestion throttle marker (fresh steps all
+    // start at round 0, so a bare round number would collide across steps).
+    state.planStaleSuggestedRound = undefined;
+    saveState(cwd, state);
+  }
 }
 
 /** Set the tracker to an exact completed-step count in EITHER direction.
@@ -76,6 +89,9 @@ export function setPlanProgress(cwd: string, completed: number): void {
   if (state.totalSteps === 0) return;
   const target = Math.max(0, Math.min(Math.trunc(completed), state.totalSteps));
   if (target === state.completedSteps) return;
+  // Any progress change moves to a different step: the stale-suggestion
+  // throttle marker must not collide with the new step's round counter.
+  state.planStaleSuggestedRound = undefined;
   if (target > state.completedSteps) {
     while (state.completedSteps < target) {
       state.completedSteps++;
@@ -108,11 +124,17 @@ export function markStepsDoneByIds(cwd: string, ids: number[], reviewed = true):
   }
   if (target > 0) {
     const newTarget = Math.min(target, state.totalSteps);
+    let advanced = false;
     while (state.completedSteps < newTarget) {
       state.completedSteps++;
       state.reviewedSteps[state.completedSteps - 1] = reviewed;
+      advanced = true;
     }
-    saveState(cwd, state);
+    if (advanced) {
+      state.editedFiles = [];
+      state.planStaleSuggestedRound = undefined;
+      saveState(cwd, state);
+    }
   }
   return state.completedSteps;
 }
@@ -123,6 +145,20 @@ export function incrementReviewRounds(cwd: string): void {
   while (state.reviewRounds.length <= idx) state.reviewRounds.push(0);
   state.reviewRounds[idx]++;
   saveState(cwd, state);
+}
+
+/** Decide whether a plan-stale suggestion may be surfaced for the current
+ *  step, and mark it as surfaced when due. Returns true at most once per
+ *  review round: a later review in the same round (e.g. an auto-review after
+ *  a settle) does not repeat the suggestion, while a new round (failed review
+ *  incrementing the counter) or a new plan may surface it again. */
+export function planStaleSuggestionDue(cwd: string): boolean {
+  const state = getState(cwd);
+  const round = state.reviewRounds[state.completedSteps] ?? 0;
+  if ((state.planStaleSuggestedRound ?? -1) === round) return false;
+  state.planStaleSuggestedRound = round;
+  saveState(cwd, state);
+  return true;
 }
 
 export function getProgress(cwd: string): { completed: number; total: number; nextStep?: string } {

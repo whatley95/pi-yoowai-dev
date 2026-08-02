@@ -138,6 +138,8 @@ export interface ReviewResult {
   droppedFiles?: string[];
   contextLimited?: boolean;
   planStale?: boolean;
+  /** True only when the review explicitly confirms the CURRENT plan step's work is finished and fully reviewed. Drives guarded auto-completion. */
+  stepComplete?: boolean;
   completedSteps?: number;
   fixPlan?: string[];
 }
@@ -242,6 +244,8 @@ export interface YoowaiSessionState {
   unreviewedEditsFlushed?: number;
   lastSteerAt?: number;
   lastReviewedCommit?: string;
+  /** reviewRounds[completedSteps] value when the last plan-stale suggestion was surfaced; suppresses repeats within the same review round. */
+  planStaleSuggestedRound?: number;
 }
 
 export interface WaiToolParams {

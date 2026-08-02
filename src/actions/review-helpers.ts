@@ -113,6 +113,11 @@ export function mergeReviewResults(results: ReviewResult[]): ReviewResult {
     consensus: verdict === "pass" && issues.length === 0,
     truncated,
     droppedFiles,
+    // Conservative merges for the plan-tracker signals: a step is only
+    // complete when EVERY per-file sub-review confirms it; a plan is stale
+    // when ANY sub-review flags it.
+    stepComplete: results.length > 0 && results.every((r) => r.stepComplete === true),
+    planStale: results.some((r) => r.planStale === true),
   };
 }
 
@@ -141,6 +146,7 @@ export interface ReviewBatchInput {
   nativeJson?: boolean;
   enableToolLoop?: boolean;
   maxToolIterations?: number;
+  focusFiles?: string[];
 }
 
 export async function runReviewBatch(input: ReviewBatchInput): Promise<{
@@ -176,6 +182,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
     nativeJson,
     enableToolLoop,
     maxToolIterations,
+    focusFiles,
   } = input;
 
   const systemPromptEstimate = 1000;
@@ -210,6 +217,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       droppedFiles,
       budgetNote: `Context window: ${budget.contextWindow.toLocaleString()} tokens. Reserved output: ${budget.reservedOutputTokens.toLocaleString()}. Available for context: ${budget.availableInputTokens.toLocaleString()}.`,
       nativeJson,
+      focusFiles,
     },
   );
 

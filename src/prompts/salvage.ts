@@ -179,6 +179,40 @@ function heuristicReviewVerdict(lower: string): "pass" | "needs-work" {
   return "needs-work";
 }
 
+/** Conservative explicit-statement detectors for markdown salvage: a stray
+ *  mention in prose must not flip these flags, because they drive plan-tracker
+ *  decisions (guarded auto-completion and stale-plan suggestions). "The step
+ *  is not complete" / "the plan is not stale" deliberately do not match, the
+ *  keyword must end its clause ("the step is complete garbage" must not
+ *  match, while "complete and ..." / "stale — ..." do), and conditional or
+ *  temporal framing directly before the claim ("if/when/once/until/after the
+ *  step is complete, ...") asserts nothing about the present state and is
+ *  rejected too.
+ */
+function isConditionallyFramed(text: string, matchIndex: number): boolean {
+  const before = text.slice(Math.max(0, matchIndex - 16), matchIndex).toLowerCase();
+  return /\b(?:if|when|once|until|after)\s*$/.test(before);
+}
+
+function detectStepComplete(text: string): boolean {
+  const m =
+    /\b(?:the\s+|this\s+|current\s+)?step\s+(?:is\s+now\s+|is\s+|was\s+)?(?:fully\s+)?(?:complete|completed|done|finished)\b(?=\s*(?:[.,;!?—\-)]|$|\band\b))/i.exec(
+      text,
+    );
+  return m !== null && !isConditionallyFramed(text, m.index);
+}
+
+function detectPlanStale(text: string): boolean {
+  const m =
+    /\b(?:the\s+|this\s+|current\s+)?plan\s+(?:is\s+now\s+|is\s+|looks\s+|appears\s+|seems\s+)?(?:stale|outdated|obsolete|out\s+of\s+(?:date|sync))\b(?=\s*(?:[.,;!?—\-)]|$|\band\b))/i.exec(
+      text,
+    );
+  const direct = m !== null && !isConditionallyFramed(text, m.index);
+  // The "no longer matches" phrasing gets the same conditional guard.
+  const m2 = /\b(?:the\s+|this\s+)?plan\s+no\s+longer\s+(?:matches|reflects|fits|applies)\b/i.exec(text);
+  return direct || (m2 !== null && !isConditionallyFramed(text, m2.index));
+}
+
 export function salvageReviewFromMarkdown(raw: string): ReviewResult | null {
   const text = raw.trim();
   if (!text) return null;
@@ -287,6 +321,8 @@ export function salvageReviewFromMarkdown(raw: string): ReviewResult | null {
     issues: issues.slice(0, 20),
     suggestions: suggestions.slice(0, 10),
     consensus: verdict === "pass" && issues.length === 0 && suggestions.length === 0,
+    stepComplete: detectStepComplete(text) ? true : undefined,
+    planStale: detectPlanStale(text) ? true : undefined,
   };
 }
 

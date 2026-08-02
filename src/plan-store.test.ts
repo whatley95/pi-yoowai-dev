@@ -1,9 +1,10 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadState, saveState } from "./plan-store.js";
+import { getSessionConfigPath } from "./session-scope.js";
 import type { YoowaiSessionState } from "./types.js";
 
 describe("plan-store", () => {
@@ -30,6 +31,28 @@ describe("plan-store", () => {
     saveState(cwd, state);
     const loaded = loadState(cwd);
     assert.deepEqual(loaded?.plan?.todo, state.plan?.todo);
+  });
+
+  it("round-trips planStaleSuggestedRound and defaults it for legacy state", () => {
+    const state: YoowaiSessionState = {
+      completedSteps: 0,
+      totalSteps: 2,
+      reviewRounds: [0],
+      reviewedSteps: [false, false],
+      editsSinceLastReview: 0,
+      editsSinceLastDone: 0,
+      planStaleSuggestedRound: 1,
+      plan: { summary: "Legacy plan", todo: ["Step one", "Step two"], acceptanceCriteria: [] },
+    };
+    saveState(cwd, state);
+    const loaded = loadState(cwd);
+    assert.equal(loaded?.planStaleSuggestedRound, 1);
+
+    // A state file written before the field existed loads without it.
+    writeFileSync(getSessionConfigPath(cwd, "plan.json"), JSON.stringify({ plan: state.plan, completedSteps: 0 }));
+    const legacy = loadState(cwd);
+    assert.equal(legacy?.planStaleSuggestedRound, undefined);
+    assert.equal(legacy?.completedSteps, 0);
   });
 
   it("round-trips plan steps with priority and dependencies", () => {
