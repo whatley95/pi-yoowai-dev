@@ -99,7 +99,6 @@ export function validateWaiToolParams(params: unknown): ValidationResult {
     untracked: p.untracked === true ? true : undefined,
     verify: p.verify === true ? true : undefined,
     docs: stringArray(p.docs),
-    level: action === "review" && (p.level === "min" || p.level === "med" || p.level === "high") ? p.level : undefined,
   };
 
   return { ok: true, params: result, action } as ValidatedParams;

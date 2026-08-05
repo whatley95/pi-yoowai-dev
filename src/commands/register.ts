@@ -689,6 +689,52 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     handler: async (_args, ctx) => waiHandler("scan --deep", ctx),
   });
 
+  const reviewLevelHandler = (level: ReviewLevel) => async (args: string, ctx: ExtensionCommandContext) => {
+    const signal = undefined;
+    const start = Date.now();
+    const { description, options: reviewOptions } = parseReviewCommandArgs(args);
+    const progress = createProgressReporter("review", ctx);
+    const notifyProgress = (stage: number, total: number, message: string) => {
+      progress(stage, total, message);
+      ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
+    };
+    let result: WaiToolResult;
+    try {
+      result = await executeWaiReview(ctx.cwd, description, ctx, { ...reviewOptions, level }, signal, notifyProgress);
+      // A manual review counts as a review: keep the unreviewed-edits steer in sync.
+      if (!result.error) resetEditsSinceReview(ctx.cwd);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logEvent(ctx.cwd, "error", `wai-review-${level} command failed`, { error: message });
+      ctx.ui.notify(`wai error: ${message}`, "error");
+      return;
+    } finally {
+      clearWaiStatus(ctx);
+    }
+    result.elapsedMs = Date.now() - start;
+    publishWaiResult(ctx, result);
+    const text = formatResultText(result);
+    ctx.ui.notify(text.slice(0, 500), result.error ? "error" : "info");
+  };
+
+  pi.registerCommand("wai-review-min", {
+    description:
+      "Run a minimal wai review for small/low-risk changes. Usage: /wai-review-min [description] [--files ...] [--exclude ...] [--revision ...] [--since ...] [--vcs git|svn] [--untracked] [--verify]",
+    handler: reviewLevelHandler("min"),
+  });
+
+  pi.registerCommand("wai-review-med", {
+    description:
+      "Run a standard wai review for normal changes. Usage: /wai-review-med [description] [--files ...] [--exclude ...] [--revision ...] [--since ...] [--vcs git|svn] [--untracked] [--verify]",
+    handler: reviewLevelHandler("med"),
+  });
+
+  pi.registerCommand("wai-review-high", {
+    description:
+      "Run a deep wai review for complex, risky, or security-sensitive changes. Usage: /wai-review-high [description] [--files ...] [--exclude ...] [--revision ...] [--since ...] [--vcs git|svn] [--untracked] [--verify]",
+    handler: reviewLevelHandler("high"),
+  });
+
   const configHandler = async (args: string, ctx: ExtensionCommandContext) => {
     const agentDir = getAgentDir();
     const settingsPath = join(agentDir, "settings.json");

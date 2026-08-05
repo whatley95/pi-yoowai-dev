@@ -4,10 +4,11 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SearchResults } from "duck-duck-scrape";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { validateWaiToolParams } from "./wai-tool-params.js";
 import { handleWaiSearchCommand } from "./wai-search.js";
 import { setSearchFnForTests, resetSearchFnForTests } from "./doc-fetcher.js";
+import initWai from "./index.js";
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -84,26 +85,6 @@ describe("validateWaiToolParams", () => {
     assert.equal(notForced.ok, true);
     if (notForced.ok) {
       assert.equal(notForced.params.force, undefined);
-    }
-  });
-
-  it("passes level through only for the review action", () => {
-    const review = validateWaiToolParams({ review: "changes", level: "high" });
-    assert.equal(review.ok, true);
-    if (review.ok) {
-      assert.equal(review.params.level, "high");
-    }
-
-    const other = validateWaiToolParams({ suggest: "question", level: "min" });
-    assert.equal(other.ok, true);
-    if (other.ok) {
-      assert.equal(other.params.level, undefined);
-    }
-
-    const invalid = validateWaiToolParams({ review: "changes", level: "extreme" });
-    assert.equal(invalid.ok, true);
-    if (invalid.ok) {
-      assert.equal(invalid.params.level, undefined);
     }
   });
 });
@@ -191,5 +172,57 @@ describe("handleWaiSearchCommand", () => {
 
     const result = await handleWaiSearchCommand("xyz123nomatch", mockCtx(cwd));
     assert.equal(result.content[0]?.text, 'No results for "xyz123nomatch".');
+  });
+});
+
+describe("wai extension registration", () => {
+  function createMockPi(): {
+    pi: ExtensionAPI;
+    tools: Array<{ name: string; label?: string; description?: string }>;
+    commands: Array<{ name: string; description?: string }>;
+  } {
+    const tools: Array<{ name: string; label?: string; description?: string }> = [];
+    const commands: Array<{ name: string; description?: string }> = [];
+    const pi = {
+      on: () => {},
+      registerTool: (tool: { name: string; label?: string; description?: string }) => {
+        tools.push(tool);
+      },
+      registerCommand: (name: string, command: { description?: string }) => {
+        commands.push({ name, description: command.description });
+      },
+      registerShortcut: () => {},
+      registerEntryRenderer: () => {},
+      registerProvider: () => {},
+      unregisterProvider: () => {},
+      sendUserMessage: () => {},
+      appendEntry: () => {},
+      ui: {
+        setStatus: () => {},
+        setWidget: () => {},
+        select: async () => undefined,
+        notify: () => {},
+        input: async () => undefined,
+      },
+    } as unknown as ExtensionAPI;
+    return { pi, tools, commands };
+  }
+
+  it("registers the explicit review-depth tools", async () => {
+    const { pi, tools } = createMockPi();
+    await initWai(pi);
+    const names = tools.map((t) => t.name);
+    assert.ok(names.includes("wai_review_min"), `expected wai_review_min in ${names.join(", ")}`);
+    assert.ok(names.includes("wai_review_med"), `expected wai_review_med in ${names.join(", ")}`);
+    assert.ok(names.includes("wai_review_high"), `expected wai_review_high in ${names.join(", ")}`);
+  });
+
+  it("registers slash commands for explicit review levels", async () => {
+    const { pi, commands } = createMockPi();
+    await initWai(pi);
+    const names = commands.map((c) => c.name);
+    assert.ok(names.includes("wai-review-min"), `expected wai-review-min in ${names.join(", ")}`);
+    assert.ok(names.includes("wai-review-med"), `expected wai-review-med in ${names.join(", ")}`);
+    assert.ok(names.includes("wai-review-high"), `expected wai-review-high in ${names.join(", ")}`);
   });
 });

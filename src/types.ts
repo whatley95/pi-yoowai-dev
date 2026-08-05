@@ -275,8 +275,6 @@ export interface WaiToolParams {
   untracked?: boolean;
   verify?: boolean;
   docs?: string[];
-  /** Review depth override for this call only. */
-  level?: ReviewLevel;
 }
 
 export interface WaiToolResult {

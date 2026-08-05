@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { WaiToolResult, WaiModelTask } from "./types.js";
+import type { WaiToolResult, WaiModelTask, ReviewLevel } from "./types.js";
 import { Type } from "@sinclair/typebox";
 import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { setPiSessionId, clearPiSessionId } from "./secondary-model.js";
@@ -258,6 +258,166 @@ export default async function (pi: ExtensionAPI) {
     };
   }
 
+  interface WaiReviewToolParams {
+    description: string;
+    files?: string[];
+    exclude?: string[];
+    revision?: string;
+    since?: string;
+    vcs?: "git" | "svn";
+    untracked?: boolean;
+    verify?: boolean;
+    docs?: string[];
+  }
+
+  function validateWaiReviewToolParams(
+    params: unknown,
+  ): { ok: true; params: WaiReviewToolParams } | { ok: false; error: string } {
+    if (!params || typeof params !== "object") {
+      return { ok: false, error: "Invalid parameters: expected an object." };
+    }
+    const p = params as Record<string, unknown>;
+    if (typeof p.description !== "string" || p.description.length === 0) {
+      return { ok: false, error: "Missing or empty 'description' parameter." };
+    }
+    const stringArray = (value: unknown): string[] | undefined => {
+      if (!Array.isArray(value)) return undefined;
+      const filtered = value.filter((v): v is string => typeof v === "string" && v.length > 0);
+      return filtered.length > 0 ? filtered : undefined;
+    };
+    return {
+      ok: true,
+      params: {
+        description: p.description,
+        files: stringArray(p.files),
+        exclude: stringArray(p.exclude),
+        revision: typeof p.revision === "string" ? p.revision : undefined,
+        since: typeof p.since === "string" ? p.since : undefined,
+        vcs: p.vcs === "git" || p.vcs === "svn" ? p.vcs : undefined,
+        untracked: p.untracked === true ? true : undefined,
+        verify: p.verify === true ? true : undefined,
+        docs: stringArray(p.docs),
+      },
+    };
+  }
+
+  async function runWaiReviewTool(
+    level: ReviewLevel,
+    params: unknown,
+    signal: AbortSignal | undefined,
+    ctx: ExtensionContext,
+  ): Promise<import("@earendil-works/pi-coding-agent").AgentToolResult<WaiToolResult> & { isError: boolean }> {
+    const validation = validateWaiReviewToolParams(params);
+    if (!validation.ok) {
+      return {
+        content: [{ type: "text", text: `wai_review_${level}: ${validation.error}` }],
+        details: { action: "review", error: validation.error },
+        isError: true,
+      };
+    }
+    const p = validation.params;
+    const config = loadYoowaiConfig(ctx.cwd);
+
+    setWaiToolExecuting(ctx.cwd, true);
+    const start = Date.now();
+    const progress = createProgressReporter("review", ctx);
+    let result: WaiToolResult;
+
+    try {
+      result = await executeWaiReview(
+        ctx.cwd,
+        p.description,
+        ctx,
+        {
+          files: p.files,
+          exclude: p.exclude,
+          revision: p.revision,
+          since: p.since,
+          vcs: p.vcs,
+          untracked: p.untracked,
+          level,
+        },
+        signal,
+        progress,
+      );
+      if (!result.error) resetEditsSinceReview(ctx.cwd);
+    } catch (err) {
+      logEvent(ctx.cwd, "error", `wai_review_${level} failed`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      result = { action: "review", error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      setWaiToolExecuting(ctx.cwd, false);
+      clearWaiStatus(ctx);
+    }
+
+    publishWaiResult(ctx, result);
+    result.elapsedMs = Date.now() - start;
+
+    const shouldVerify = p.verify ?? config.verifyByDefault ?? false;
+    if (shouldVerify && !result.error) {
+      result.verificationRequested = true;
+    }
+
+    const text = formatResultText(result);
+
+    return {
+      content: [{ type: "text", text }],
+      details: result,
+      isError: Boolean(result.error),
+    };
+  }
+
+  function reviewToolSchema() {
+    return Type.Object({
+      description: Type.String({
+        description:
+          "Describe what you just implemented. Be specific and technical: name the files/functions changed, how the change works, and why — not just the intent.",
+      }),
+      files: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "Limit the review diff to these file paths.",
+        }),
+      ),
+      exclude: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "Exclude these file paths from the review diff.",
+        }),
+      ),
+      revision: Type.Optional(
+        Type.String({
+          description: "Compare against this revision (e.g. 'HEAD~1', '1234', '1234:HEAD').",
+        }),
+      ),
+      since: Type.Optional(
+        Type.String({
+          description: "Include changes since this revision or commit ID.",
+        }),
+      ),
+      vcs: Type.Optional(
+        Type.Union([Type.Literal("git"), Type.Literal("svn")], {
+          description: "Version control system to use for diff. Auto-detected if omitted.",
+        }),
+      ),
+      untracked: Type.Optional(
+        Type.Boolean({
+          description: "Include untracked (new) files in the diff.",
+        }),
+      ),
+      verify: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, the result asks the main agent to confirm or refute the finding with evidence before acting.",
+        }),
+      ),
+      docs: Type.Optional(
+        Type.Array(Type.String(), {
+          description: "Named documentation sources to include in the prompt (configured in pi-yoowai.docs.sources).",
+        }),
+      ),
+    });
+  }
+
   pi.registerTool({
     name: "wai",
     label: "Wai — Pair Programmer",
@@ -269,6 +429,7 @@ export default async function (pi: ExtensionAPI) {
       "Always use wai with plan:true before starting any non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria; do not write code without a plan.",
       "Always use wai with review:true after every code change. Treat review feedback as blocking; fix issues and re-run review until it returns 'pass'. You may disagree with a finding: if the code is actually correct, refute the finding with concrete evidence (file/line, test output, docs) instead of changing correct code — re-run review explaining why, use verify:true for high-stakes disagreements, and ask the user when unsure.",
       "Use wai with review:true and files:[...] to limit the review to specific files, or exclude:[...] to skip files like generated output.",
+      "Prefer the explicit review-depth tools over wai.review when you know the change's complexity or risk: wai_review_min for small/simple/low-risk changes, wai_review_med for normal changes, and wai_review_high for complex, risky, or security-sensitive changes. These tools override the configured default review level.",
       "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans. Add scanDeep:true on that first scan to also sample source files and build the project symbol index.",
       "Use wai with suggest:true whenever you are uncertain about the best approach for a specific technical question. If you are stuck, looping, or about to ask the user for help, call wai.suggest first.",
       "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call wai.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without wai.",
@@ -296,7 +457,7 @@ export default async function (pi: ExtensionAPI) {
       review: Type.Optional(
         Type.String({
           description:
-            "Provide a description of what you just implemented. Be specific and technical: name the files/functions changed, how the change works (null handling, fallbacks, edge cases), and why — not just the intent. Vague descriptions get vaguer reviews. The secondary model examines the diff and returns a verdict with issues.",
+            "Provide a description of what you just implemented. Be specific and technical: name the files/functions changed, how the change works (null handling, fallbacks, edge cases), and why — not just the intent. Vague descriptions get vaguer reviews. The secondary model examines the diff and returns a verdict with issues. Uses the configured default review level (set via /wai-model or pi-yoowai.reviewLevel).",
         }),
       ),
       suggest: Type.Optional(
@@ -404,6 +565,57 @@ export default async function (pi: ExtensionAPI) {
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       return runWaiTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
+    },
+  });
+
+  pi.registerTool({
+    name: "wai_review_min",
+    label: "Wai Review — Minimal",
+    description:
+      "Lightweight diff review for small or low-risk changes. Flags obvious bugs, syntax errors, clear regressions, and surface-level style issues. Skips architecture, speculative edge cases, and deep cross-file analysis.",
+    promptSnippet: "wai_review_min: quick lightweight review for small or low-risk changes",
+    promptGuidelines: [
+      "Use wai_review_min for small, low-risk changes where a quick sanity check is enough.",
+      "The tool uses the MINIMAL review level: it skips architecture, deep edge cases, and cross-file analysis.",
+      "Pass files:[...] to scope the review, or verify:true when a finding is surprising.",
+    ],
+    parameters: reviewToolSchema(),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      return runWaiReviewTool("min", params, signal, ctx);
+    },
+  });
+
+  pi.registerTool({
+    name: "wai_review_med",
+    label: "Wai Review — Standard",
+    description:
+      "Balanced code review for normal changes. Checks logic, correctness, tests, conventions, and cross-file impact. Flags real problems without nit-picking or speculative issues without evidence.",
+    promptSnippet: "wai_review_med: standard balanced review for most changes",
+    promptGuidelines: [
+      "Use wai_review_med as the default review for most code changes.",
+      "The tool uses the STANDARD review level: it checks logic, correctness, tests, conventions, and cross-file impact.",
+      "Pass files:[...] to scope the review, or verify:true for high-stakes disagreements.",
+    ],
+    parameters: reviewToolSchema(),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      return runWaiReviewTool("med", params, signal, ctx);
+    },
+  });
+
+  pi.registerTool({
+    name: "wai_review_high",
+    label: "Wai Review — Deep",
+    description:
+      "Thorough critical review for complex, risky, or security-sensitive changes. Examines architecture, security, edge cases, error handling, concurrency, API contracts, and cross-file implications. Strict: only passes when the change is genuinely robust.",
+    promptSnippet: "wai_review_high: deep thorough review for complex or risky changes",
+    promptGuidelines: [
+      "Use wai_review_high for complex, risky, or security-sensitive changes.",
+      "The tool uses the DEEP review level: it examines architecture, security, edge cases, error handling, concurrency, and API contracts.",
+      "Pass files:[...] to scope the review, or verify:true for high-stakes findings.",
+    ],
+    parameters: reviewToolSchema(),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      return runWaiReviewTool("high", params, signal, ctx);
     },
   });
 
