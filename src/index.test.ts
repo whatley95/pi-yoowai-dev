@@ -86,6 +86,26 @@ describe("validateWaiToolParams", () => {
       assert.equal(notForced.params.force, undefined);
     }
   });
+
+  it("passes level through only for the review action", () => {
+    const review = validateWaiToolParams({ review: "changes", level: "high" });
+    assert.equal(review.ok, true);
+    if (review.ok) {
+      assert.equal(review.params.level, "high");
+    }
+
+    const other = validateWaiToolParams({ suggest: "question", level: "min" });
+    assert.equal(other.ok, true);
+    if (other.ok) {
+      assert.equal(other.params.level, undefined);
+    }
+
+    const invalid = validateWaiToolParams({ review: "changes", level: "extreme" });
+    assert.equal(invalid.ok, true);
+    if (invalid.ok) {
+      assert.equal(invalid.params.level, undefined);
+    }
+  });
 });
 
 describe("handleWaiSearchCommand", () => {

@@ -54,7 +54,8 @@ import { reflectOnMemory, formatReflectionReport, learnReflectionSuggestions } f
 import { formatCouncilMember, addCouncilMember, councilMemberKey } from "../council-members.js";
 import { WAI_MODEL_TASKS } from "../wai-tool-params.js";
 import { planStepDescription } from "../types.js";
-import type { SecondaryModelConfig, WaiToolResult, WaiModelTask, WaiAction } from "../types.js";
+import { getDefaultReviewLevel } from "../model-registry.js";
+import type { SecondaryModelConfig, WaiToolResult, WaiModelTask, WaiAction, ReviewLevel } from "../types.js";
 import type { LoopDetectionState } from "../loop-detector.js";
 
 export interface ModelThinkingDetails {
@@ -397,6 +398,7 @@ async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
       ? `  Base model: ${modelStatusLine(config.secondary)}`
       : "  Base model: not configured",
     `  Backend: ${config.secondary.backend ?? "sdk"}`,
+    `  Review level: ${config.reviewLevel ?? getDefaultReviewLevel(config.secondary.provider, config.secondary.id)}`,
     `  Auto-judge: ${config.autoJudge ? "enabled" : "disabled"}`,
     config.preReviewCommands && config.preReviewCommands.length > 0
       ? `  Pre-review commands: ${config.preReviewCommands.join(", ")}`
@@ -991,7 +993,19 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       if (!thinkingPicked) return;
       const thinking = thinkingPicked.replace(" ✓ current", "");
 
-      // 4. Save.
+      // 4. Pick review level (suggested from the selected model).
+      const suggestedLevel = getDefaultReviewLevel(provider, modelId);
+      const currentLevel = currentConfig.reviewLevel;
+      const levelItems = ["min", "med", "high"].map((l) => {
+        const marker = l === currentLevel ? " ✓ current" : "";
+        const suggestion = l === suggestedLevel ? " (suggested)" : "";
+        return `${l}${marker}${suggestion}`;
+      });
+      const levelPicked = await ctx.ui.select("Pick default review level:", levelItems);
+      if (!levelPicked) return;
+      const reviewLevel = levelPicked.replace(/ ✓ current|\s*\(suggested\)/g, "").trim() as ReviewLevel;
+
+      // 5. Save.
       const agentDir = getAgentDir();
       const settingsPath = join(agentDir, "settings.json");
       if (!existsSync(agentDir)) {
@@ -1024,6 +1038,8 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
       saveRecentModel(ctx.cwd, { provider, id: modelId, thinking, scope: action ?? "base" });
 
+      waiSettings.reviewLevel = reviewLevel;
+
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
       await refreshWaiProvider(pi, ctx.cwd);
     } catch (err) {
@@ -1033,7 +1049,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-model", {
     description:
-      "Interactively pick the secondary model for wai, optionally per tool. Use /wai-model reset [base|<task>] to clear the base or a task override. Usage: /wai-model [provider] [filter]",
+      "Interactively pick the secondary model for wai, optionally per tool, and set the default review level. Use /wai-model reset [base|<task>] to clear the base or a task override. Usage: /wai-model [provider] [filter]",
     handler: modelHandler,
   });
 

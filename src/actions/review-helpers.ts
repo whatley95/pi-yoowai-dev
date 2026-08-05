@@ -147,6 +147,7 @@ export interface ReviewBatchInput {
   enableToolLoop?: boolean;
   maxToolIterations?: number;
   focusFiles?: string[];
+  levelInstructions?: string;
 }
 
 export async function runReviewBatch(input: ReviewBatchInput): Promise<{
@@ -218,6 +219,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       budgetNote: `Context window: ${budget.contextWindow.toLocaleString()} tokens. Reserved output: ${budget.reservedOutputTokens.toLocaleString()}. Available for context: ${budget.availableInputTokens.toLocaleString()}.`,
       nativeJson,
       focusFiles,
+      levelInstructions: input.levelInstructions,
     },
   );
 

@@ -6,6 +6,9 @@ export type WaiAction =
 export type WaiModelTask =
   "plan" | "review" | "suggest" | "recommend" | "judge" | "scan" | "test" | "security" | "done" | "explain";
 
+/** Review depth preset. Higher levels spend more tokens and catch deeper issues. */
+export type ReviewLevel = "min" | "med" | "high";
+
 import type { BackendType } from "./types/secondary-model.js";
 export type {
   BackendType,
@@ -46,6 +49,8 @@ export interface YoowaiConfig {
   reviewMaxConventionsTokens?: number;
   reviewMaxMemoryTokens?: number;
   reviewStrategy?: "auto" | "diff-only" | "full-files";
+  /** Review depth preset. Defaults to a model-derived value; individual review budgets override the preset. */
+  reviewLevel?: ReviewLevel;
   verifyByDefault?: boolean;
   /** Run a second model pass that critiques review/judge results for unsupported claims. Default false. */
   selfVerify?: boolean;
@@ -270,6 +275,8 @@ export interface WaiToolParams {
   untracked?: boolean;
   verify?: boolean;
   docs?: string[];
+  /** Review depth override for this call only. */
+  level?: ReviewLevel;
 }
 
 export interface WaiToolResult {

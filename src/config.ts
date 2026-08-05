@@ -105,7 +105,8 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     reviewFullFileThresholdLines: 300,
     reviewMaxConventionsTokens: 1000,
     reviewMaxMemoryTokens: 800,
-    reviewStrategy: "auto",
+    reviewStrategy: undefined,
+    reviewLevel: undefined,
     verifyDoneClaims: true,
     reviewReminderEdits: 3,
     autoInjectContext: true,
@@ -179,6 +180,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   "reviewMaxConventionsTokens",
   "reviewMaxMemoryTokens",
   "reviewStrategy",
+  "reviewLevel",
   "verifyByDefault",
   "selfVerify",
   "toolUseLoop",
@@ -434,6 +436,9 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
     reviewStrategy: ["auto", "diff-only", "full-files"].includes(o.reviewStrategy ?? "")
       ? o.reviewStrategy
       : base.reviewStrategy,
+    reviewLevel: ["min", "med", "high"].includes(o.reviewLevel ?? "")
+      ? (o.reviewLevel as "min" | "med" | "high")
+      : base.reviewLevel,
     verifyByDefault: typeof o.verifyByDefault === "boolean" ? o.verifyByDefault : base.verifyByDefault,
     selfVerify: typeof o.selfVerify === "boolean" ? o.selfVerify : base.selfVerify,
     toolUseLoop: mergeFlag(base.toolUseLoop, o.toolUseLoop),

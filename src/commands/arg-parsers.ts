@@ -1,3 +1,5 @@
+import type { ReviewLevel } from "../types.js";
+
 export function parseReviewCommandArgs(input: string): {
   description: string;
   options: {
@@ -7,6 +9,7 @@ export function parseReviewCommandArgs(input: string): {
     exclude?: string[];
     vcs?: "git" | "svn";
     untracked?: boolean;
+    level?: ReviewLevel;
   };
 } {
   const options: {
@@ -16,6 +19,7 @@ export function parseReviewCommandArgs(input: string): {
     exclude?: string[];
     vcs?: "git" | "svn";
     untracked?: boolean;
+    level?: ReviewLevel;
   } = {};
   const tokens = input.match(/(?:[^\s"']+|["'][^"']*["'])+/g) ?? [];
   const args = tokens.map((t) => t.replace(/^["']|["']$/g, ""));
@@ -68,6 +72,13 @@ export function parseReviewCommandArgs(input: string): {
       case "--untracked":
         options.untracked = true;
         break;
+      case "--level":
+      case "-l":
+        if (next === "min" || next === "med" || next === "high") {
+          options.level = next;
+          i++;
+        }
+        break;
       default:
         descriptionParts.push(arg);
     }
@@ -86,6 +97,7 @@ export function parseTestCommandArgs(input: string): {
     since?: string;
     vcs?: "git" | "svn";
     untracked?: boolean;
+    level?: ReviewLevel;
   };
 } {
   const base = parseReviewCommandArgs(input);
@@ -111,6 +123,7 @@ export function parseSecurityCommandArgs(input: string): {
     vcs?: "git" | "svn";
     untracked?: boolean;
     fullProject?: boolean;
+    level?: ReviewLevel;
   };
 } {
   const base = parseReviewCommandArgs(input);

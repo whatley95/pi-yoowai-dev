@@ -44,8 +44,9 @@ import { resolveBackendType } from "../backends/backend-resolver.js";
 import { validateReviewResult, getReviewValidationErrors, salvageReviewFromMarkdown } from "../prompts.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
+import { resolveReviewSettings } from "../review-level.js";
 import type { ProgressReporter } from "../progress.js";
-import type { WaiToolResult, ReviewResult, UsageCost } from "../types.js";
+import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../types.js";
 
 /** Decide whether a passing review advances the plan tracker, and by how
  *  many steps. Guards the guarded auto-completion contract:
@@ -85,11 +86,14 @@ export async function executeWaiReview(
     since?: string;
     vcs?: "git" | "svn";
     untracked?: boolean;
+    level?: ReviewLevel;
   } = {},
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
 ): Promise<WaiToolResult> {
   const config = loadYoowaiConfig(cwd);
+  const reviewSettings = resolveReviewSettings(config, options.level);
+  const effectiveConfig = { ...config, ...reviewSettings };
   const modelConfig = resolveTaskModel(config, "review");
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "review", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
@@ -115,7 +119,7 @@ export async function executeWaiReview(
   progress(1, STAGES.review, "Collecting diff…");
   const diffOptions = {
     ...options,
-    maxDiffChars: config.reviewMaxDiffChars,
+    maxDiffChars: effectiveConfig.reviewMaxDiffChars,
     untracked: options.untracked ?? true,
   };
   const vcsInfo = getVcsInfo(cwd);
@@ -139,19 +143,22 @@ export async function executeWaiReview(
   const { diff, truncated, changedFiles, vcs } = getDiff(cwd, diffOptions);
   const relatedContext =
     buildAstContext(cwd, changedFiles, { maxTokens: 1000 }) || buildRelatedContext(cwd, changedFiles).context;
-  const codemap = buildCodemap(cwd, changedFiles, config.codemapMaxTokens ?? 1500);
+  const codemap = buildCodemap(cwd, changedFiles, effectiveConfig.codemapMaxTokens ?? 1500);
   const sessionContext = getSessionContext(ctx);
 
   progress(2, STAGES.review, "Loading project conventions…");
   let conventionsText = "";
   const conventions = loadConventions(cwd);
   if (conventions) {
-    conventionsText = truncateToTokenBudget(formatConventions(conventions), config.reviewMaxConventionsTokens ?? 1000);
+    conventionsText = truncateToTokenBudget(
+      formatConventions(conventions),
+      effectiveConfig.reviewMaxConventionsTokens ?? 1000,
+    );
   }
 
   const memoryContext = truncateToTokenBudget(
     getPastIssuesForFiles(cwd, changedFiles, description),
-    config.reviewMaxMemoryTokens ?? 800,
+    effectiveConfig.reviewMaxMemoryTokens ?? 800,
   );
 
   const cacheable = !config.preReviewCommands || config.preReviewCommands.length === 0;
@@ -167,8 +174,8 @@ export async function executeWaiReview(
         // TTL) and advance the plan without a fresh model call.
         planProgress: state.plan ? `${state.completedSteps}/${state.totalSteps}` : "none",
         options,
-        reviewMaxDiffChars: config.reviewMaxDiffChars,
-        reviewStrategy: config.reviewStrategy,
+        reviewMaxDiffChars: effectiveConfig.reviewMaxDiffChars,
+        reviewStrategy: effectiveConfig.reviewStrategy,
         reviewFullFileThresholdLines: config.reviewFullFileThresholdLines,
         parallelReview: config.parallelReview,
         selfVerify: config.selfVerify,
@@ -194,7 +201,7 @@ export async function executeWaiReview(
   const baseBudget = calculateReviewBudget(
     modelConfig.provider,
     modelConfig.id,
-    config,
+    effectiveConfig,
     {
       systemPrompt: "",
       sessionContext,
@@ -221,13 +228,13 @@ export async function executeWaiReview(
     progress(4, STAGES.review, "Preparing review context…");
   }
 
-  const strategy = config.reviewStrategy ?? "auto";
+  const strategy = effectiveConfig.reviewStrategy ?? "auto";
   const fullFileThresholdLines = config.reviewFullFileThresholdLines ?? 300;
   progress(5, STAGES.review, "Calculating token budget with pre-review output…");
   const budgetWithPreReview = calculateReviewBudget(
     modelConfig.provider,
     modelConfig.id,
-    config,
+    effectiveConfig,
     {
       systemPrompt: "",
       sessionContext,
@@ -267,12 +274,12 @@ export async function executeWaiReview(
     if (hunks.length > 1) {
       const fileMemoryContext = truncateToTokenBudget(
         getPastIssuesForFiles(cwd, [file], description),
-        config.reviewMaxMemoryTokens ?? 800,
+        effectiveConfig.reviewMaxMemoryTokens ?? 800,
       );
       const fileBudget = calculateReviewBudget(
         modelConfig.provider,
         modelConfig.id,
-        config,
+        effectiveConfig,
         {
           systemPrompt: "",
           sessionContext,
@@ -344,6 +351,7 @@ export async function executeWaiReview(
           relevantPaths: [file],
           nativeJson,
           focusFiles: stepFocusFiles,
+          levelInstructions: reviewSettings.instructions,
           ...toolLoopOptions(config),
         });
         return { review: result.review, usage: result.usage, rounds: result.rounds, truncated: result.truncated };
@@ -424,12 +432,12 @@ export async function executeWaiReview(
       filesWithDiff.map(async (file): Promise<FilePrep> => {
         const fileMemoryContext = truncateToTokenBudget(
           getPastIssuesForFiles(cwd, [file], description),
-          config.reviewMaxMemoryTokens ?? 800,
+          effectiveConfig.reviewMaxMemoryTokens ?? 800,
         );
         const fileBudget = calculateReviewBudget(
           modelConfig.provider,
           modelConfig.id,
-          config,
+          effectiveConfig,
           {
             systemPrompt: "",
             sessionContext,
@@ -495,6 +503,7 @@ export async function executeWaiReview(
         relevantPaths: [p.file],
         nativeJson,
         focusFiles: stepFocusFiles,
+        levelInstructions: reviewSettings.instructions,
         ...toolLoopOptions(config),
       });
       return {
@@ -613,6 +622,7 @@ export async function executeWaiReview(
         progress,
         nativeJson,
         focusFiles: stepFocusFiles,
+        levelInstructions: reviewSettings.instructions,
         ...toolLoopOptions(config),
       });
     } catch (err) {
@@ -627,7 +637,7 @@ export async function executeWaiReview(
     continuationRounds = result.rounds ?? 0;
     continuationTruncated = result.truncated ?? false;
 
-    if (config.selfVerify) {
+    if (effectiveConfig.selfVerify) {
       progress(8, STAGES.review, "Self-verifying review result…");
       try {
         const verified = await verifyResult(cwd, modelConfig, {
