@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveReviewTaskModel } from "../config.js";
 import { getDiff, splitDiffByFile, splitDiffByHunk, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js";
@@ -94,7 +94,7 @@ export async function executeWaiReview(
   const config = loadYoowaiConfig(cwd);
   const reviewSettings = resolveReviewSettings(config, options.level);
   const effectiveConfig = { ...config, ...reviewSettings };
-  const modelConfig = resolveTaskModel(config, "review");
+  const modelConfig = resolveReviewTaskModel(config, options.level);
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "review", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveTaskModel, loadYoowaiConfig, resolveJudgeCouncilMembers } from "./config.js";
+import { resolveTaskModel, resolveReviewTaskModel, loadYoowaiConfig, resolveJudgeCouncilMembers } from "./config.js";
 import { setAgentDirForTests, getAgentDir } from "./pi-paths.js";
 import type { YoowaiConfig } from "./types.js";
 
@@ -147,6 +147,65 @@ describe("resolveTaskModel", () => {
     assert.equal(result.maxRetries, 5);
     assert.equal(result.maxRetryDelayMs, 1000);
     assert.equal(result.timeoutMs, 60000);
+  });
+});
+
+describe("resolveReviewTaskModel", () => {
+  it("uses the per-level override when it exists", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: {
+        reviewMin: { provider: "deepseek", id: "deepseek-v4-flash", thinking: "off" },
+      },
+    };
+    const result = resolveReviewTaskModel(config, "min");
+    assert.equal(result.provider, "deepseek");
+    assert.equal(result.id, "deepseek-v4-flash");
+    assert.equal(result.thinking, "off");
+  });
+
+  it("falls back to the generic review override when no per-level override exists", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: {
+        review: { provider: "anthropic", id: "claude-sonnet-4" },
+      },
+    };
+    const result = resolveReviewTaskModel(config, "high");
+    assert.equal(result.provider, "anthropic");
+    assert.equal(result.id, "claude-sonnet-4");
+  });
+
+  it("falls back to the base secondary when neither override exists", () => {
+    const result = resolveReviewTaskModel(baseConfig, "med");
+    assert.equal(result.provider, "openai");
+    assert.equal(result.id, "gpt-4o-mini");
+  });
+
+  it("treats a per-level override with empty provider/id as unset", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: {
+        reviewHigh: { provider: "", id: "" },
+        review: { provider: "anthropic", id: "claude-sonnet-4" },
+      },
+    };
+    const result = resolveReviewTaskModel(config, "high");
+    assert.equal(result.provider, "anthropic");
+    assert.equal(result.id, "claude-sonnet-4");
+  });
+
+  it("uses the generic review override when no level is given", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: {
+        reviewMin: { provider: "deepseek", id: "deepseek-v4-flash" },
+        review: { provider: "anthropic", id: "claude-sonnet-4" },
+      },
+    };
+    const result = resolveReviewTaskModel(config);
+    assert.equal(result.provider, "anthropic");
+    assert.equal(result.id, "claude-sonnet-4");
   });
 });
 

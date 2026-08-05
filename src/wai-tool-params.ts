@@ -15,6 +15,9 @@ export const WAI_ACTIONS: WaiAction[] = [
 export const WAI_MODEL_TASKS: WaiModelTask[] = [
   "plan",
   "review",
+  "reviewMin",
+  "reviewMed",
+  "reviewHigh",
   "suggest",
   "recommend",
   "judge",

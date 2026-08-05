@@ -2,9 +2,24 @@ export type WaiAction =
   "plan" | "review" | "suggest" | "recommend" | "judge" | "scan" | "test" | "security" | "done" | "planUpdate";
 
 /** Tasks that can have a per-model override in settings.json.
- *  planUpdate intentionally shares the plan model, so it is not selectable separately. */
+ *  planUpdate intentionally shares the plan model, so it is not selectable separately.
+ *  The reviewMin/reviewMed/reviewHigh tasks let each explicit review-depth tool
+ *  (wai_review_min/med/high) use its own model; they fall back to the review
+ *  task override, then the base secondary model. */
 export type WaiModelTask =
-  "plan" | "review" | "suggest" | "recommend" | "judge" | "scan" | "test" | "security" | "done" | "explain";
+  | "plan"
+  | "review"
+  | "reviewMin"
+  | "reviewMed"
+  | "reviewHigh"
+  | "suggest"
+  | "recommend"
+  | "judge"
+  | "scan"
+  | "test"
+  | "security"
+  | "done"
+  | "explain";
 
 /** Review depth preset. Higher levels spend more tokens and catch deeper issues. */
 export type ReviewLevel = "min" | "med" | "high";

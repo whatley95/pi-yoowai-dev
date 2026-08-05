@@ -2,7 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, getProjectConfigPath } from "./pi-paths.js";
 import { logEvent } from "./logger.js";
-import type { YoowaiConfig, YoowaiPreset, SecondaryModelConfig, WaiModelTask, DocsConfig } from "./types.js";
+import type {
+  YoowaiConfig,
+  YoowaiPreset,
+  SecondaryModelConfig,
+  WaiModelTask,
+  DocsConfig,
+  ReviewLevel,
+} from "./types.js";
 
 export { getAgentDir, getProjectConfigPath } from "./pi-paths.js";
 
@@ -77,6 +84,27 @@ export function resolveTaskModel(config: YoowaiConfig, action: WaiModelTask): Se
   const override = config.taskModels?.[action];
   if (override) return mergeSecondary(config.secondary, override);
   return config.secondary;
+}
+
+/** Map an explicit review level to its per-level task override key. */
+export const REVIEW_LEVEL_TASKS: Record<ReviewLevel, WaiModelTask> = {
+  min: "reviewMin",
+  med: "reviewMed",
+  high: "reviewHigh",
+};
+
+/** Resolve the model for a review call: when an explicit level is given (the
+ *  wai_review_min/med/high tools), its per-level task override wins, then the
+ *  generic review task override, then the base secondary model. */
+export function resolveReviewTaskModel(config: YoowaiConfig, level?: ReviewLevel): SecondaryModelConfig {
+  if (level) {
+    const task = REVIEW_LEVEL_TASKS[level];
+    const override = config.taskModels?.[task];
+    if (override && (override.provider || override.id)) {
+      return mergeSecondary(config.secondary, override);
+    }
+  }
+  return resolveTaskModel(config, "review");
 }
 
 /** Resolve judge council entries to full secondary configs the same way taskModels
@@ -279,6 +307,9 @@ function mergePartialSecondary(
 const VALID_WAI_MODEL_TASKS = new Set<string>([
   "plan",
   "review",
+  "reviewMin",
+  "reviewMed",
+  "reviewHigh",
   "suggest",
   "recommend",
   "judge",

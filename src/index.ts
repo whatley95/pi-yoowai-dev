@@ -4,7 +4,7 @@ import { Type } from "@sinclair/typebox";
 import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { setPiSessionId, clearPiSessionId } from "./secondary-model.js";
 
-import { renderCall, renderResult } from "./render.js";
+import { renderCall, renderResult, renderReviewToolCall } from "./render.js";
 import { resetCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import {
@@ -429,7 +429,7 @@ export default async function (pi: ExtensionAPI) {
       "Always use wai with plan:true before starting any non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria; do not write code without a plan.",
       "Always use wai with review:true after every code change. Treat review feedback as blocking; fix issues and re-run review until it returns 'pass'. You may disagree with a finding: if the code is actually correct, refute the finding with concrete evidence (file/line, test output, docs) instead of changing correct code — re-run review explaining why, use verify:true for high-stakes disagreements, and ask the user when unsure.",
       "Use wai with review:true and files:[...] to limit the review to specific files, or exclude:[...] to skip files like generated output.",
-      "Prefer the explicit review-depth tools over wai.review when you know the change's complexity or risk: wai_review_min for small/simple/low-risk changes, wai_review_med for normal changes, and wai_review_high for complex, risky, or security-sensitive changes. These tools override the configured default review level.",
+      "Pick the review depth by the change's risk and complexity: wai_review_min for docs, comments, config, tests-only, or tiny mechanical changes (renames, version bumps); wai_review_med as the default for normal features and bugfixes when unsure; wai_review_high for changes touching auth, secrets, payments, migrations, public APIs, or concurrency, and for complex logic such as algorithm changes, state machines, intricate control flow, or cross-module refactors. These tools override the configured default review level.",
       "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans. Add scanDeep:true on that first scan to also sample source files and build the project symbol index.",
       "Use wai with suggest:true whenever you are uncertain about the best approach for a specific technical question. If you are stuck, looping, or about to ask the user for help, call wai.suggest first.",
       "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call wai.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without wai.",
@@ -580,6 +580,8 @@ export default async function (pi: ExtensionAPI) {
       "Pass files:[...] to scope the review, or verify:true when a finding is surprising.",
     ],
     parameters: reviewToolSchema(),
+    renderCall: (args, theme, context) => renderReviewToolCall("min", args as { description?: string }, theme, context),
+    renderResult,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       return runWaiReviewTool("min", params, signal, ctx);
     },
@@ -597,6 +599,8 @@ export default async function (pi: ExtensionAPI) {
       "Pass files:[...] to scope the review, or verify:true for high-stakes disagreements.",
     ],
     parameters: reviewToolSchema(),
+    renderCall: (args, theme, context) => renderReviewToolCall("med", args as { description?: string }, theme, context),
+    renderResult,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       return runWaiReviewTool("med", params, signal, ctx);
     },
@@ -614,6 +618,9 @@ export default async function (pi: ExtensionAPI) {
       "Pass files:[...] to scope the review, or verify:true for high-stakes findings.",
     ],
     parameters: reviewToolSchema(),
+    renderCall: (args, theme, context) =>
+      renderReviewToolCall("high", args as { description?: string }, theme, context),
+    renderResult,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       return runWaiReviewTool("high", params, signal, ctx);
     },

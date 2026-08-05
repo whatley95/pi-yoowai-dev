@@ -1039,17 +1039,22 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       if (!thinkingPicked) return;
       const thinking = thinkingPicked.replace(" ✓ current", "");
 
-      // 4. Pick review level (suggested from the selected model).
-      const suggestedLevel = getDefaultReviewLevel(provider, modelId);
-      const currentLevel = currentConfig.reviewLevel;
-      const levelItems = ["min", "med", "high"].map((l) => {
-        const marker = l === currentLevel ? " ✓ current" : "";
-        const suggestion = l === suggestedLevel ? " (suggested)" : "";
-        return `${l}${marker}${suggestion}`;
-      });
-      const levelPicked = await ctx.ui.select("Pick default review level:", levelItems);
-      if (!levelPicked) return;
-      const reviewLevel = levelPicked.replace(/ ✓ current|\s*\(suggested\)/g, "").trim() as ReviewLevel;
+      // 4. Pick review level — only relevant for the base model or the review task itself.
+      //    Other tasks (plan, suggest, judge, …) do not consume reviewLevel, so asking
+      //    for it there is confusing and writes a setting that has no effect.
+      let reviewLevel: ReviewLevel | undefined;
+      if (scope === "Base secondary model" || scope === "Use for review only") {
+        const suggestedLevel = getDefaultReviewLevel(provider, modelId);
+        const currentLevel = currentConfig.reviewLevel;
+        const levelItems = ["min", "med", "high"].map((l) => {
+          const marker = l === currentLevel ? " ✓ current" : "";
+          const suggestion = l === suggestedLevel ? " (suggested)" : "";
+          return `${l}${marker}${suggestion}`;
+        });
+        const levelPicked = await ctx.ui.select("Pick default review level:", levelItems);
+        if (!levelPicked) return;
+        reviewLevel = levelPicked.replace(/ ✓ current|\s*\(suggested\)/g, "").trim() as ReviewLevel;
+      }
 
       // 5. Save.
       const agentDir = getAgentDir();
@@ -1084,7 +1089,9 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
       saveRecentModel(ctx.cwd, { provider, id: modelId, thinking, scope: action ?? "base" });
 
-      waiSettings.reviewLevel = reviewLevel;
+      if (reviewLevel !== undefined) {
+        waiSettings.reviewLevel = reviewLevel;
+      }
 
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
       await refreshWaiProvider(pi, ctx.cwd);

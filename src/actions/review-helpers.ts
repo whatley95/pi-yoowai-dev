@@ -236,6 +236,11 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
     sessionManager,
     relevantPaths,
     task: "review",
+    // The model was already resolved in executeWaiReview with the correct
+    // fallback chain (level override → review override → base). Without this
+    // override, task-based resolution would clobber a per-level model with
+    // the generic review task model.
+    secondaryOverride: modelConfig,
     structuredOutput: true,
     onStreamProgress: progress ? createStreamProgressCallback(progress, 8, STAGES.review) : undefined,
     enableToolLoop,

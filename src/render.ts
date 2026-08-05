@@ -109,6 +109,22 @@ export function renderCall(args: WaiToolParams, theme: Theme, context?: ToolRend
   return text;
 }
 
+/** Render a call to one of the explicit review-depth tools (wai_review_min/med/high),
+ *  whose params are `{ description, files?, ... }` instead of the wai action shape. */
+export function renderReviewToolCall(
+  level: string,
+  args: { description?: string },
+  theme: Theme,
+  context?: ToolRenderContext,
+): Text {
+  const label = args.description
+    ? `wai review (${level}): ${truncate(String(args.description), 80)}`
+    : `wai review (${level})`;
+  const text = getTextComponent(context);
+  text.setText(theme.fg("accent", label));
+  return text;
+}
+
 export function renderResult(
   result: AgentToolResult<WaiToolResult>,
   opts: ToolRenderResultOptions,
