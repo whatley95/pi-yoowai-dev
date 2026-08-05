@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { WaiModelTask } from "./types.js";
+import type { WaiModelTask, ReviewLevel } from "./types.js";
 
 export type ProgressReporter = (stage: number, total: number, message: string) => void;
 
@@ -30,6 +30,7 @@ export function createProgressReporter(
   action: WaiModelTask,
   ctx: ExtensionContext,
   onUpdate?: (update: unknown) => void,
+  level?: ReviewLevel,
 ): ProgressReporter {
   let startTime = 0;
   let current: { stage: number; total: number; message: string } | undefined;
@@ -43,7 +44,10 @@ export function createProgressReporter(
   const renderStatus = () => {
     if (!current) return;
     try {
-      ctx.ui.setStatus("wai", `[${current.stage}/${current.total}] ${current.message}${elapsedText()}`);
+      ctx.ui.setStatus(
+        "wai",
+        `${level ? `(${level}) ` : ""}[${current.stage}/${current.total}] ${current.message}${elapsedText()}`,
+      );
     } catch {
       // setStatus may not be available in all modes; ignore.
     }
@@ -83,6 +87,7 @@ export function createProgressReporter(
           content: [{ type: "text", text: message }],
           details: {
             action,
+            level,
             inProgress: false,
             progressMessage: message,
             stage,
@@ -100,6 +105,7 @@ export function createProgressReporter(
         content: [{ type: "text", text: message }],
         details: {
           action,
+          level,
           inProgress: true,
           progressMessage: message,
           stage,

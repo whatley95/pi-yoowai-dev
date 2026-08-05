@@ -106,6 +106,34 @@ test("formatResultText renders judge plan-update suggestion", () => {
   assert.ok(text.includes("wai-plan-update"));
 });
 
+test("formatResultText shows the review level in the header when set", () => {
+  const text = formatResultText({
+    action: "review",
+    level: "med",
+    review: {
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+    },
+  });
+  assert.ok(text.includes("## wai review (med) ✓ pass"), text);
+});
+
+test("formatResultText omits the review level marker when absent", () => {
+  const text = formatResultText({
+    action: "review",
+    review: {
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+    },
+  });
+  assert.ok(text.includes("## wai review ✓ pass"), text);
+  assert.ok(!text.includes("(med)"), text);
+});
+
 test("formatResultText renders review fix plan", () => {
   const text = formatResultText({
     action: "review",

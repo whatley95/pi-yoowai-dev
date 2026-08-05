@@ -72,4 +72,48 @@ describe("progress reporter ticker", () => {
     );
     clearWaiStatus(ctx);
   });
+
+  it("shows the level in the status line and carries it in update details", () => {
+    const { ctx, statuses } = fakeCtx();
+    const updates: Array<{ details: Record<string, unknown> }> = [];
+    const progress = createProgressReporter(
+      "review",
+      ctx,
+      (u) => {
+        updates.push(u as { details: Record<string, unknown> });
+      },
+      "med",
+    );
+    progress(3, 10, "Working…");
+    assert.ok(
+      statuses.some((s) => typeof s === "string" && s.startsWith("(med) [3/10]")),
+      `expected level-prefixed status, got ${JSON.stringify(statuses)}`,
+    );
+    assert.equal(updates[0]?.details.level, "med");
+    assert.equal(updates[0]?.details.inProgress, true);
+    progress(10, 10, "Done");
+    assert.equal(updates[updates.length - 1]?.details.level, "med");
+    assert.equal(updates[updates.length - 1]?.details.inProgress, false);
+    clearWaiStatus(ctx);
+  });
+
+  it("omits the level from status and details when none is passed", () => {
+    const { ctx, statuses } = fakeCtx();
+    const updates: Array<{ details: Record<string, unknown> }> = [];
+    const progress = createProgressReporter("review", ctx, (u) => {
+      updates.push(u as { details: Record<string, unknown> });
+    });
+    progress(3, 10, "Working…");
+    assert.ok(
+      statuses.some((s) => typeof s === "string" && s.startsWith("[3/10]")),
+      JSON.stringify(statuses),
+    );
+    assert.ok(
+      statuses.every((s) => typeof s !== "string" || !s.includes("(")),
+      JSON.stringify(statuses),
+    );
+    assert.equal(updates[0]?.details.level, undefined);
+    progress(10, 10, "Done");
+    clearWaiStatus(ctx);
+  });
 });

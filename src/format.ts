@@ -89,7 +89,9 @@ export function formatResultText(result: WaiToolResult): string {
 
   if (result.review) {
     const icon = result.review.verdict === "pass" ? "✓" : result.review.verdict === "blocked" ? "✗" : "⚠";
-    lines.push(`## wai review ${icon} ${result.review.verdict}${formatModelSuffix(result.model)}`);
+    lines.push(
+      `## wai review${result.level ? ` (${result.level})` : ""} ${icon} ${result.review.verdict}${formatModelSuffix(result.model)}`,
+    );
     lines.push("");
 
     if (

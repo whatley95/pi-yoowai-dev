@@ -93,6 +93,7 @@ export async function executeWaiReview(
 ): Promise<WaiToolResult> {
   const config = loadYoowaiConfig(cwd);
   const reviewSettings = resolveReviewSettings(config, options.level);
+  const level = reviewSettings.level;
   const effectiveConfig = { ...config, ...reviewSettings };
   const modelConfig = resolveReviewTaskModel(config, options.level);
   if (!modelConfig.provider || !modelConfig.id) {
@@ -193,6 +194,7 @@ export async function executeWaiReview(
         review: cached.review,
         model: cached.model,
         cost: cached.cost,
+        level,
       };
     }
   }
@@ -800,6 +802,7 @@ export async function executeWaiReview(
             judge: judgeResult.judge,
             cost: mergedCost,
             model: modelProfile,
+            level,
             continuation: continuationMeta(continuationRounds, continuationTruncated),
           };
         } else if (judgeResult.error) {
@@ -837,6 +840,7 @@ export async function executeWaiReview(
     review,
     cost,
     model: modelProfile,
+    level,
     continuation: continuationMeta(continuationRounds, continuationTruncated),
   };
 }

@@ -1,7 +1,9 @@
 import { Text } from "@earendil-works/pi-tui";
 import type { AgentToolResult, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { formatCost } from "./cost-tracker.js";
-import type { WaiToolParams, WaiToolResult, ReviewIssue, StageProfile } from "./types.js";
+import { loadYoowaiConfig } from "./config.js";
+import { resolveReviewLevel } from "./review-level.js";
+import type { WaiToolParams, WaiToolResult, ReviewIssue, StageProfile, ReviewLevel } from "./types.js";
 
 /** Local theme interface compatible with the real Pi Theme shape. */
 interface Theme {
@@ -12,6 +14,9 @@ interface Theme {
 /** Local render context compatible with the real ToolRenderContext shape. */
 interface ToolRenderContext {
   lastComponent?: unknown;
+  /** Working directory of the session, when available; used to resolve the
+   *  effective review level for call titles. */
+  cwd?: string;
 }
 
 interface ProgressDetails {
@@ -91,11 +96,20 @@ function severityIcon(severity: ReviewIssue["severity"]): string {
   }
 }
 
-export function renderCall(args: WaiToolParams, theme: Theme, context?: ToolRenderContext): Text {
+export function renderCall(args: WaiToolParams, theme: Theme, context?: ToolRenderContext, level?: ReviewLevel): Text {
   const p = args;
+  // The generic wai tool has no level param; the effective level is resolved
+  // from config for display (guarded — a config error only loses the marker).
+  if (p.review && !level && context?.cwd) {
+    try {
+      level = resolveReviewLevel(loadYoowaiConfig(context.cwd));
+    } catch {
+      // display-only; ignore
+    }
+  }
   let label: string;
   if (p.plan) label = `wai plan: ${truncate(String(p.plan), 80)}`;
-  else if (p.review) label = `wai review: ${truncate(String(p.review), 80)}`;
+  else if (p.review) label = `wai review${level ? ` (${level})` : ""}: ${truncate(String(p.review), 80)}`;
   else if (p.suggest) label = `wai suggest: ${truncate(String(p.suggest), 80)}`;
   else if (p.recommend) label = `wai recommend: ${truncate(String(p.recommend), 80)}`;
   else if (p.judge) label = `wai judge: ${truncate(String(p.judge), 80)}`;
@@ -143,7 +157,9 @@ export function renderResult(
   if (r.inProgress || opts.isPartial) {
     const stage = typeof r.stage === "number" && typeof r.total === "number" ? `[${r.stage}/${r.total}] ` : "";
     const message = r.progressMessage || "wai is thinking…";
-    text.setText(theme.fg("dim", `wai ${r.action ? r.action + " " : ""}${stage}${message}`));
+    text.setText(
+      theme.fg("dim", `wai ${r.action ? r.action + " " : ""}${r.level ? `(${r.level}) ` : ""}${stage}${message}`),
+    );
     return text;
   }
 
@@ -162,7 +178,9 @@ export function renderResult(
   if (r.review) {
     const icon = r.review.verdict === "pass" ? "✓" : r.review.verdict === "blocked" ? "✗" : "⚠";
     const color = r.review.verdict === "pass" ? "green" : r.review.verdict === "blocked" ? "error" : "yellow";
-    lines.push(theme.fg(color, `wai review ${icon} ${r.review.verdict}${modelSuffix(r.model)}`));
+    lines.push(
+      theme.fg(color, `wai review${r.level ? ` (${r.level})` : ""} ${icon} ${r.review.verdict}${modelSuffix(r.model)}`),
+    );
 
     if (r.review.contextLimited || r.review.truncated || (r.review.droppedFiles && r.review.droppedFiles.length > 0)) {
       const warnings: string[] = [];

@@ -304,6 +304,9 @@ export interface WaiToolResult {
   security?: SecurityResult;
   done?: DoneResult;
   error?: string;
+  /** Effective review level (min/med/high) when the action is a review.
+   *  Drives the level marker in TUI call titles, progress lines, and verdicts. */
+  level?: ReviewLevel;
   cost?: UsageCost;
   /** Wall-clock time the wai tool took to produce this result, in milliseconds. */
   elapsedMs?: number;

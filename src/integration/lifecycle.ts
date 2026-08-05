@@ -13,6 +13,7 @@ import type {
 import { isWriteToolResult, isEditToolResult } from "@earendil-works/pi-coding-agent";
 import { isFileWriteTool } from "../file-write-tools.js";
 import { loadYoowaiConfig } from "../config.js";
+import { resolveReviewLevel } from "../review-level.js";
 import { clearPromptCache } from "../prompts.js";
 import { getDiff } from "../diff-grabber.js";
 import {
@@ -143,9 +144,10 @@ export async function triggerAutoReview(
   // feed the workflow reminder back into the review prompt.
   setWaiToolExecuting(ctx.cwd, true);
 
+  const level = resolveReviewLevel(config);
   const notify = (stage: number, total: number, message: string) => {
     try {
-      ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
+      ctx.ui.notify(`${level ? `(${level}) ` : ""}[${stage}/${total}] ${message}`, "info");
     } catch {
       // ignore if UI is unavailable
     }

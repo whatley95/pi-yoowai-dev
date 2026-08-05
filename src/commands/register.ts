@@ -31,6 +31,7 @@ import { executeWaiExplain } from "../wai-explain.js";
 import { handleWaiSearchCommand } from "../wai-search.js";
 import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
 import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
+import { resolveReviewLevel } from "../review-level.js";
 import type { YoowaiConfig } from "../types.js";
 import { getState, getProgress, dropSessionState, resetEditsSinceReview } from "../session-state.js";
 import { loadRecentModels, saveRecentModel, formatRecentModel, type RecentModel } from "../model-history.js";
@@ -586,7 +587,16 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
     const action: WaiAction = known === "status" ? "scan" : known;
 
-    const progress = createProgressReporter(action, ctx);
+    // Parse review args up front so an explicit `--level` override matches the
+    // level the executor will use (status/notify lines and result agree).
+    const reviewArgs = known === "review" ? parseReviewCommandArgs(restText) : undefined;
+    const progress = createProgressReporter(
+      action,
+      ctx,
+      undefined,
+      // Show the effective review level in the status/notify lines of /wai review.
+      reviewArgs ? (reviewArgs.options.level ?? resolveReviewLevel(loadYoowaiConfig(ctx.cwd))) : undefined,
+    );
     const notifyProgress = (stage: number, total: number, message: string) => {
       progress(stage, total, message);
       ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
@@ -606,7 +616,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           result = await executeWaiPlan(ctx.cwd, restText, signal, notifyProgress, ctx.sessionManager);
           break;
         case "review": {
-          const { description, options: reviewOptions } = parseReviewCommandArgs(restText);
+          const { description, options: reviewOptions } = reviewArgs!;
           result = await executeWaiReview(ctx.cwd, description, ctx, reviewOptions, signal, notifyProgress);
           // A manual review counts as a review: keep the unreviewed-edits
           // steer in sync, but only when the review actually ran.
@@ -693,7 +703,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     const signal = undefined;
     const start = Date.now();
     const { description, options: reviewOptions } = parseReviewCommandArgs(args);
-    const progress = createProgressReporter("review", ctx);
+    const progress = createProgressReporter("review", ctx, undefined, level);
     const notifyProgress = (stage: number, total: number, message: string) => {
       progress(stage, total, message);
       ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");

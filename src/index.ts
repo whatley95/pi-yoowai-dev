@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { WaiToolResult, WaiModelTask, ReviewLevel } from "./types.js";
 import { Type } from "@sinclair/typebox";
 import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
+import { resolveReviewLevel } from "./review-level.js";
 import { setPiSessionId, clearPiSessionId } from "./secondary-model.js";
 
 import { renderCall, renderResult, renderReviewToolCall } from "./render.js";
@@ -145,7 +146,14 @@ export default async function (pi: ExtensionAPI) {
 
     const start = Date.now();
     const progressAction = (action === "planUpdate" ? "plan" : action) as WaiModelTask;
-    const progress = createProgressReporter(progressAction, ctx, onUpdate);
+    const progress = createProgressReporter(
+      progressAction,
+      ctx,
+      onUpdate,
+      // The generic wai tool has no level param; resolve the effective level
+      // from config so progress lines and the footer status show it.
+      p.review ? resolveReviewLevel(config) : undefined,
+    );
     let result: WaiToolResult;
 
     try {
@@ -320,7 +328,7 @@ export default async function (pi: ExtensionAPI) {
 
     setWaiToolExecuting(ctx.cwd, true);
     const start = Date.now();
-    const progress = createProgressReporter("review", ctx);
+    const progress = createProgressReporter("review", ctx, undefined, level);
     let result: WaiToolResult;
 
     try {
