@@ -179,6 +179,20 @@ export function buildModelConfigEntry(
   return merged;
 }
 
+/** Build the "Pick default review level:" picker items with the effective
+ *  current level (config value ?? model-suggested) listed first, so the
+ *  select's pre-highlighted first item is what a blind Enter keeps. */
+export function buildReviewLevelItems(currentLevel: ReviewLevel | undefined, suggestedLevel: ReviewLevel): string[] {
+  const effectiveLevel = currentLevel ?? suggestedLevel;
+  return ["min", "med", "high"]
+    .map((l) => ({
+      text: `${l}${l === currentLevel ? " ✓ current" : ""}${l === suggestedLevel ? " (suggested)" : ""}`,
+      isCurrent: l === effectiveLevel,
+    }))
+    .sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent))
+    .map((x) => x.text);
+}
+
 /** Whether a given /wai-model scope option has its own configured model entry.
  *  Used to mark scope options with "✓ current" independently, since the base
  *  secondary model and per-tool task models can each be configured at once. */
@@ -1049,21 +1063,23 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       if (!thinkingPicked) return;
       const thinking = thinkingPicked.replace(" ✓ current", "");
 
-      // 4. Pick review level — only relevant for the base model or the review task itself.
-      //    Other tasks (plan, suggest, judge, …) do not consume reviewLevel, so asking
-      //    for it there is confusing and writes a setting that has no effect.
+      // 4. Pick review level — a global default consumed by the review action
+      //    regardless of task model. Only the review-only scope asks for it:
+      //    the base-model flow must not redirect into an unrelated question
+      //    (and Esc there used to discard the whole model selection). The
+      //    level stays editable via `/wai-config set reviewLevel <min|med|high>`
+      //    or the review-only scope. The effective current level (config value
+      //    ?? model-suggested) is listed first so a blind Enter keeps it.
       let reviewLevel: ReviewLevel | undefined;
-      if (scope === "Base secondary model" || scope === "Use for review only") {
+      if (action === "review") {
         const suggestedLevel = getDefaultReviewLevel(provider, modelId);
         const currentLevel = currentConfig.reviewLevel;
-        const levelItems = ["min", "med", "high"].map((l) => {
-          const marker = l === currentLevel ? " ✓ current" : "";
-          const suggestion = l === suggestedLevel ? " (suggested)" : "";
-          return `${l}${marker}${suggestion}`;
-        });
+        const levelItems = buildReviewLevelItems(currentLevel, suggestedLevel);
         const levelPicked = await ctx.ui.select("Pick default review level:", levelItems);
-        if (!levelPicked) return;
-        reviewLevel = levelPicked.replace(/ ✓ current|\s*\(suggested\)/g, "").trim() as ReviewLevel;
+        if (levelPicked) {
+          reviewLevel = levelPicked.replace(/ ✓ current|\s*\(suggested\)/g, "").trim() as ReviewLevel;
+        }
+        // Esc skips: keep the current reviewLevel and still save the model below.
       }
 
       // 5. Save.

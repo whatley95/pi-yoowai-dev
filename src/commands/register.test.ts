@@ -12,6 +12,7 @@ import {
   pickRecentModel,
   promptSearchModels,
   buildModelConfigEntry,
+  buildReviewLevelItems,
   isScopeConfigured,
   resetModelSelection,
   type ModelRef,
@@ -688,5 +689,30 @@ describe("resetModelSelection", () => {
     assert.ok(reviewRow?.includes("✓ current"), `review row: ${reviewRow}`);
     assert.ok(judgeRow?.includes("not configured"), `judge row: ${judgeRow}`);
     assert.ok(!judgeRow?.includes("✓ current"), `judge row must not be marked current: ${judgeRow}`);
+  });
+});
+
+describe("buildReviewLevelItems", () => {
+  it("lists the configured current level first so a blind Enter keeps it", () => {
+    assert.deepStrictEqual(buildReviewLevelItems("min", "med"), ["min ✓ current", "med (suggested)", "high"]);
+  });
+
+  it("lists the model-suggested level first when no level is configured", () => {
+    assert.deepStrictEqual(buildReviewLevelItems(undefined, "med"), ["med (suggested)", "min", "high"]);
+  });
+
+  it("keeps the configured current level first even when it differs from the suggestion", () => {
+    assert.deepStrictEqual(buildReviewLevelItems("high", "med"), ["high ✓ current", "min", "med (suggested)"]);
+  });
+
+  it("never drops a level and always returns exactly three items", () => {
+    const items = buildReviewLevelItems("min", "high");
+    assert.strictEqual(items.length, 3);
+    for (const level of ["min", "med", "high"]) {
+      assert.ok(
+        items.some((i) => i === level || i.startsWith(`${level} `)),
+        `${level} missing from ${items}`,
+      );
+    }
   });
 });
