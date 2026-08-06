@@ -9,8 +9,9 @@ import { resolveProjectPath } from "./path-security.js";
 import { buildExplainPrompt } from "./prompts.js";
 import { loadDocContext, type DocContextRequest } from "./doc-fetcher.js";
 import { createStreamProgressCallback } from "./actions/shared.js";
+import { resolveBackendType } from "./backends/backend-resolver.js";
 import type { ProgressReporter } from "./progress.js";
-import type { ExplainResult, UsageCost } from "./types.js";
+import type { ExplainResult, StageProfile, UsageCost } from "./types.js";
 
 export interface YooExplainParams {
   target: string;
@@ -70,7 +71,7 @@ export async function executeWaiExplain(
     getHeader(): unknown;
     getBranch(): unknown[];
   },
-): Promise<{ result: ExplainResult; cost: UsageCost } | { error: string }> {
+): Promise<{ result: ExplainResult; cost: UsageCost; model: StageProfile } | { error: string }> {
   const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "explain");
   if (!modelConfig.provider || !modelConfig.id) {
@@ -115,6 +116,12 @@ export async function executeWaiExplain(
   });
 
   const cost = recordCost(cwd, usage, config.costBudgetUsd);
+  const model = {
+    provider: modelConfig.provider,
+    id: modelConfig.id,
+    thinking: modelConfig.thinking,
+    backend: resolveBackendType(modelConfig.provider, modelConfig),
+  };
   logEvent(cwd, "info", "Explain completed", {
     target: params.target.slice(0, 200),
     files: fileContents.map((f) => f.file),
@@ -129,6 +136,7 @@ export async function executeWaiExplain(
       relatedFiles: fileContents.map((f) => f.file),
     },
     cost,
+    model,
   };
 }
 

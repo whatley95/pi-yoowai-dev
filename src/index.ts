@@ -5,7 +5,15 @@ import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { resolveReviewLevel } from "./review-level.js";
 import { setPiSessionId, clearPiSessionId } from "./secondary-model.js";
 
-import { renderCall, renderResult, renderReviewToolCall } from "./render.js";
+import {
+  renderCall,
+  renderResult,
+  renderReviewToolCall,
+  renderIndexCall,
+  renderExplainCall,
+  renderLearnCall,
+  renderAuxResult,
+} from "./render.js";
 import { resetCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import {
@@ -712,6 +720,8 @@ export default async function (pi: ExtensionAPI) {
         }),
       ),
     }),
+    renderCall: (args, theme, context) => renderIndexCall(args as { topic?: string; update?: boolean }, theme, context),
+    renderResult: (result, opts, theme, context) => renderAuxResult("index", result, opts, theme, context),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       return runWaiIndexTool(params, ctx);
     },
@@ -720,6 +730,7 @@ export default async function (pi: ExtensionAPI) {
   async function runWaiExplainTool(
     params: unknown,
     signal: AbortSignal | undefined,
+    onUpdate: ((update: unknown) => void) | undefined,
     ctx: ExtensionContext,
   ): Promise<
     import("@earendil-works/pi-coding-agent").AgentToolResult<Record<string, unknown>> & { isError: boolean }
@@ -733,7 +744,7 @@ export default async function (pi: ExtensionAPI) {
       };
     }
 
-    const progress = createProgressReporter("explain", ctx);
+    const progress = createProgressReporter("explain", ctx, onUpdate);
     const result = await executeWaiExplain(ctx.cwd, validation.params, signal, progress, ctx.sessionManager);
     if ("error" in result) {
       return {
@@ -745,7 +756,7 @@ export default async function (pi: ExtensionAPI) {
 
     return {
       content: [{ type: "text", text: result.result.details }],
-      details: { action: "explain", explain: result.result, cost: result.cost },
+      details: { action: "explain", explain: result.result, cost: result.cost, model: result.model },
       isError: false,
     };
   }
@@ -782,14 +793,17 @@ export default async function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return runWaiExplainTool(params, signal, ctx);
+    renderCall: (args, theme, context) => renderExplainCall(args as { target?: string }, theme, context),
+    renderResult: (result, opts, theme, context) => renderAuxResult("explain", result, opts, theme, context),
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      return runWaiExplainTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
     },
   });
 
   async function runWaiLearnTool(
     params: unknown,
     signal: AbortSignal | undefined,
+    onUpdate: ((update: unknown) => void) | undefined,
     ctx: ExtensionContext,
   ): Promise<
     import("@earendil-works/pi-coding-agent").AgentToolResult<Record<string, unknown>> & { isError: boolean }
@@ -805,7 +819,7 @@ export default async function (pi: ExtensionAPI) {
     const query = typeof r.query === "string" ? r.query : undefined;
 
     if (r.verify === true && r.deep === true) {
-      const progress = createProgressReporter("explain", ctx);
+      const progress = createProgressReporter("explain", ctx, onUpdate);
       const learnConfig = loadYoowaiConfig(ctx.cwd);
       const learnModelConfig = resolveTaskModel(learnConfig, "explain");
       const learnModelLabel = secondaryModelLabel(learnModelConfig);
@@ -910,8 +924,11 @@ export default async function (pi: ExtensionAPI) {
         }),
       ),
     }),
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return runWaiLearnTool(params, signal, ctx);
+    renderCall: (args, theme, context) =>
+      renderLearnCall(args as { fact?: string; verify?: boolean; deep?: boolean; query?: string }, theme, context),
+    renderResult: (result, opts, theme, context) => renderAuxResult("learn", result, opts, theme, context),
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      return runWaiLearnTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
     },
   });
 

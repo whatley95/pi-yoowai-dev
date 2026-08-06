@@ -3,7 +3,7 @@ import type { AgentToolResult, ToolRenderResultOptions } from "@earendil-works/p
 import { formatCost } from "./cost-tracker.js";
 import { loadYoowaiConfig } from "./config.js";
 import { resolveReviewLevel } from "./review-level.js";
-import type { WaiToolParams, WaiToolResult, ReviewIssue, StageProfile, ReviewLevel } from "./types.js";
+import type { WaiToolParams, WaiToolResult, ReviewIssue, StageProfile, ReviewLevel, UsageCost } from "./types.js";
 
 /** Local theme interface compatible with the real Pi Theme shape. */
 interface Theme {
@@ -53,12 +53,16 @@ function resolveToolResult(result: AgentToolResult<WaiToolResult>): {
   return { result: candidate ?? undefined, isError: false };
 }
 
+function formatCostText(cost?: UsageCost): string | undefined {
+  if (!cost) return undefined;
+  const inTokens = formatTokenCount(cost.estimatedInputTokens);
+  const outTokens = formatTokenCount(cost.estimatedOutputTokens);
+  const value = formatCost(cost.estimatedCostUsd);
+  return `${inTokens} in · ${outTokens} out · ${value}`;
+}
+
 function formatCostLine(result: WaiToolResult): string | undefined {
-  if (!result.cost) return undefined;
-  const inTokens = formatTokenCount(result.cost.estimatedInputTokens);
-  const outTokens = formatTokenCount(result.cost.estimatedOutputTokens);
-  const cost = formatCost(result.cost.estimatedCostUsd);
-  return `${inTokens} in · ${outTokens} out · ${cost}`;
+  return formatCostText(result.cost);
 }
 
 function formatTokenCount(n: number): string {
@@ -134,6 +138,46 @@ export function renderReviewToolCall(
   const label = args.description
     ? `wai review (${level}): ${truncate(String(args.description), 80)}`
     : `wai review (${level})`;
+  const text = getTextComponent(context);
+  text.setText(theme.fg("accent", label));
+  return text;
+}
+
+/** Render a call to the wai_index tool. */
+export function renderIndexCall(
+  args: { topic?: string; update?: boolean },
+  theme: Theme,
+  context?: ToolRenderContext,
+): Text {
+  const topic = typeof args.topic === "string" && args.topic ? args.topic : "all";
+  const label = `wai index: ${topic}${args.update ? " (update)" : ""}`;
+  const text = getTextComponent(context);
+  text.setText(theme.fg("accent", label));
+  return text;
+}
+
+/** Render a call to the wai_explain tool. */
+export function renderExplainCall(args: { target?: string }, theme: Theme, context?: ToolRenderContext): Text {
+  const target = typeof args.target === "string" ? args.target : "";
+  const label = `wai explain: ${truncate(target, 80) || "…"}`;
+  const text = getTextComponent(context);
+  text.setText(theme.fg("accent", label));
+  return text;
+}
+
+/** Render a call to the wai_learn tool (record or verify). */
+export function renderLearnCall(
+  args: { fact?: string; verify?: boolean; deep?: boolean; query?: string },
+  theme: Theme,
+  context?: ToolRenderContext,
+): Text {
+  let label: string;
+  if (args.verify) {
+    const query = typeof args.query === "string" && args.query ? truncate(args.query, 60) : "";
+    label = `wai learn verify${args.deep ? " (deep)" : ""}${query ? `: ${query}` : ""}`;
+  } else {
+    label = `wai learn: ${truncate(typeof args.fact === "string" ? args.fact : "", 80) || "…"}`;
+  }
   const text = getTextComponent(context);
   text.setText(theme.fg("accent", label));
   return text;
@@ -285,4 +329,64 @@ export function renderResult(
 
 function truncate(text: string, maxLen: number): string {
   return text.length <= maxLen ? text : text.slice(0, maxLen - 3) + "...";
+}
+
+/** Render the result of an auxiliary tool (wai_index / wai_explain / wai_learn):
+ *  error line, in-progress line, then title + cost + a preview of the returned
+ *  text content. The row name is the registered tool name, so learn shows
+ *  "wai learn" even when the progress reporter ran under the explain action. */
+export function renderAuxResult(
+  name: "index" | "explain" | "learn",
+  result: AgentToolResult<unknown>,
+  opts: ToolRenderResultOptions,
+  theme: Theme,
+  context?: ToolRenderContext,
+): Text {
+  const details = (result.details ?? {}) as Record<string, unknown> & ProgressDetails;
+  const text = getTextComponent(context);
+
+  if (details.error) {
+    text.setText(theme.fg("error", `wai ${name} error: ${String(details.error)}`));
+    return text;
+  }
+
+  if (details.inProgress || opts.isPartial) {
+    const stage =
+      typeof details.stage === "number" && typeof details.total === "number"
+        ? `[${details.stage}/${details.total}] `
+        : "";
+    const message = typeof details.progressMessage === "string" ? details.progressMessage : "is thinking…";
+    text.setText(theme.fg("dim", `wai ${name} ${stage}${message}`));
+    return text;
+  }
+
+  const lines: string[] = [];
+  const costLine = formatCostText(details.cost as UsageCost | undefined);
+  if (costLine) lines.push(theme.fg("dim", costLine));
+
+  if (name === "index") {
+    const topic = typeof details.topic === "string" ? details.topic : "all";
+    lines.push(theme.fg("accent", `wai index: ${topic}${details.indexUpdated ? " (updated)" : ""}`));
+  } else if (name === "explain") {
+    lines.push(theme.fg("accent", `wai explain${modelSuffix(details.model as StageProfile | undefined)}`));
+  } else if (Array.isArray(details.verify)) {
+    lines.push(theme.fg("green", `wai learn verify ✓ · ${details.verify.length} fact(s)`));
+  } else if (Array.isArray(details.learned)) {
+    lines.push(theme.fg("green", "wai learn ✓ recorded"));
+  } else {
+    lines.push(theme.fg("green", "wai learn ✓"));
+  }
+
+  const block = result.content?.find((c) => c.type === "text");
+  if (block && typeof block.text === "string" && block.text.length > 0) {
+    const contentLines = block.text.split("\n").filter((l) => l.trim().length > 0);
+    const preview = contentLines.slice(0, 8).map((l) => theme.fg("dim", `  ${l}`));
+    if (contentLines.length > 8) {
+      preview.push(`  ${theme.fg("dim", `… and ${contentLines.length - 8} more line(s)`)}`);
+    }
+    lines.push(...preview);
+  }
+
+  text.setText(lines.filter(Boolean).join("\n"));
+  return text;
 }
