@@ -19,7 +19,7 @@ export interface ReviewLevelSettings {
   instructions: string;
 }
 
-const LEVEL_DEFAULTS: Record<
+export const LEVEL_DEFAULTS: Record<
   ReviewLevel,
   {
     reviewStrategy: ReviewStrategy;

@@ -134,6 +134,76 @@ test("formatResultText omits the review level marker when absent", () => {
   assert.ok(!text.includes("(med)"), text);
 });
 
+test("formatResultText explains the min-level context cap on truncated reviews", () => {
+  const text = formatResultText({
+    action: "review",
+    level: "min",
+    review: {
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+      truncated: true,
+      contextLimited: true,
+      droppedFiles: ["src/a.ts"],
+    },
+  });
+  assert.ok(text.includes("Large change"), text);
+  assert.ok(text.includes("ran at level `min`"), text);
+  assert.ok(text.includes("reviewMaxDiffChars"), text);
+  assert.ok(text.includes("wai_review_med"), text);
+});
+
+test("formatResultText explains the generic cap for med-level truncated reviews", () => {
+  const text = formatResultText({
+    action: "review",
+    level: "med",
+    review: {
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+      truncated: true,
+    },
+  });
+  assert.ok(text.includes("Large change"), text);
+  assert.ok(text.includes("exceeded the configured review context limits"), text);
+  assert.ok(!text.includes("ran at level"), text);
+});
+
+test("formatResultText explains the high-level diff cap on truncated reviews", () => {
+  const text = formatResultText({
+    action: "review",
+    level: "high",
+    review: {
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+      truncated: true,
+    },
+  });
+  assert.ok(text.includes("ran at level `high`"), text);
+  assert.ok(text.includes("12,000 chars"), text);
+});
+
+test("formatResultText explains the generic cap for truncated judge results", () => {
+  const text = formatResultText({
+    action: "judge",
+    judge: {
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+      summary: "ok",
+      truncated: true,
+      contextLimited: true,
+    },
+  });
+  assert.ok(text.includes("Large change"), text);
+  assert.ok(text.includes("exceeded the configured context limits"), text);
+});
+
 test("formatResultText renders review fix plan", () => {
   const text = formatResultText({
     action: "review",
