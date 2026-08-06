@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { planAdvanceFromReview } from "./review.js";
-import { mergeReviewResults } from "./review-helpers.js";
-import type { ReviewResult } from "../types.js";
+import { mergeReviewResults, dedupeIssues } from "./review-helpers.js";
+import type { ReviewResult, ReviewIssue } from "../types.js";
 
 /** A valid ReviewResult with optional overrides (constructed directly, so
  *  consensus does NOT get re-derived like validateReviewResult would). */
@@ -71,5 +71,120 @@ describe("mergeReviewResults plan-tracker signals", () => {
     const merged = mergeReviewResults([]);
     assert.equal(merged.stepComplete, false);
     assert.equal(merged.planStale, false);
+  });
+});
+
+describe("dedupeIssues (parallel-review cross-batch dedup)", () => {
+  const issue = (overrides: Partial<ReviewIssue>): ReviewIssue => ({
+    severity: "medium",
+    file: "src/a.ts",
+    line: 5,
+    issue: "Bad name",
+    suggestion: "rename it",
+    ...overrides,
+  });
+
+  it("collapses exact repeats (same file, line, normalized text)", () => {
+    const kept = dedupeIssues([
+      issue({}),
+      issue({}),
+      issue({ issue: "  bad   NAME " }), // whitespace/case-insensitive repeat
+    ]);
+    assert.equal(kept.length, 1);
+  });
+
+  it("keeps two genuinely different issues on the same line", () => {
+    const kept = dedupeIssues([issue({ issue: "Bad name" }), issue({ issue: "Unused import" })]);
+    assert.equal(kept.length, 2);
+  });
+
+  it("keeps the same text on different files or lines", () => {
+    const kept = dedupeIssues([
+      issue({ file: "src/a.ts", line: 5 }),
+      issue({ file: "src/b.ts", line: 5 }),
+      issue({ file: "src/a.ts", line: 9 }),
+    ]);
+    assert.equal(kept.length, 3);
+  });
+
+  it("uses file-based keying with an empty line slot when line is missing", () => {
+    const kept = dedupeIssues([
+      issue({ file: "src/a.ts", line: undefined }),
+      issue({ file: "src/b.ts", line: undefined, issue: "General note" }),
+      issue({ file: "src/b.ts", line: undefined, issue: "General note" }),
+    ]);
+    assert.equal(kept.length, 2); // both texts survive once, the b.ts repeat collapses
+    assert.deepEqual(
+      kept.map((i) => i.issue),
+      ["Bad name", "General note"],
+    );
+  });
+
+  it("falls back to normalized text alone only when file is also missing", () => {
+    const kept = dedupeIssues([
+      issue({ file: undefined, line: undefined, issue: "General note" }),
+      issue({ file: undefined, line: undefined, issue: "General note" }),
+      issue({ file: undefined, line: undefined, issue: "Other note" }),
+    ]);
+    assert.equal(kept.length, 2); // the repeat collapses; the distinct text survives
+    assert.deepEqual(
+      kept.map((i) => i.issue),
+      ["General note", "Other note"],
+    );
+
+    // A file-less issue never collapses a file-anchored one with the same text.
+    const kept2 = dedupeIssues([
+      issue({ file: "src/a.ts", line: undefined, issue: "General note" }),
+      issue({ file: undefined, line: undefined, issue: "General note" }),
+    ]);
+    assert.equal(kept2.length, 2);
+  });
+
+  it("keeps the same text on different files when line is missing (file participates in the key)", () => {
+    const kept = dedupeIssues([
+      issue({ file: "src/a.ts", line: undefined, issue: "General note" }),
+      issue({ file: "src/b.ts", line: undefined, issue: "General note" }),
+      issue({ file: "src/a.ts", line: undefined, issue: "General note" }),
+    ]);
+    assert.equal(kept.length, 2); // a.ts and b.ts both survive; the a.ts repeat collapses
+  });
+
+  it("keeps the worst severity when a duplicate is reported at different severities", () => {
+    const kept = dedupeIssues([issue({ severity: "low" }), issue({ severity: "high" })]);
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0]?.severity, "high");
+
+    const kept2 = dedupeIssues([issue({ severity: "high" }), issue({ severity: "low" })]);
+    assert.equal(kept2[0]?.severity, "high"); // earlier high is kept, not downgraded
+  });
+
+  it("preserves encounter order", () => {
+    const kept = dedupeIssues([
+      issue({ file: "src/a.ts", issue: "first" }),
+      issue({ file: "src/b.ts", issue: "second" }),
+      issue({ file: "src/a.ts", issue: "first" }),
+    ]);
+    assert.deepEqual(
+      kept.map((i) => i.issue),
+      ["first", "second"],
+    );
+  });
+
+  it("mergeReviewResults dedupes issues across batches while keeping verdict semantics", () => {
+    const merged = mergeReviewResults([
+      review({ issues: [issue({})] }),
+      review({ issues: [issue({}), issue({ issue: "Unused import" })] }),
+    ]);
+    assert.equal(merged.issues.length, 2);
+    // Verdict comes from the batch verdict fields, not issue counts.
+    assert.equal(merged.verdict, "pass");
+    assert.equal(merged.consensus, false); // issues still block consensus
+
+    const failing = mergeReviewResults([
+      review({ issues: [issue({})] }),
+      review({ verdict: "needs-work", issues: [issue({})], consensus: false }),
+    ]);
+    assert.equal(failing.issues.length, 1);
+    assert.equal(failing.verdict, "needs-work"); // worst-of unaffected by dedup
   });
 });

@@ -9,7 +9,7 @@ import {
 import { estimateTokens, type ReviewBudget } from "../token-budget.js";
 import { type FileContentEntry } from "../file-loader.js";
 import type { ProgressReporter } from "../progress.js";
-import type { ReviewResult, ReviewVerdict, SecondaryModelConfig, UsageCost } from "../types.js";
+import type { ReviewIssue, ReviewResult, ReviewVerdict, SecondaryModelConfig, UsageCost } from "../types.js";
 import { STAGES, secondaryModelLabel, parseStructuredResult, createStreamProgressCallback } from "./shared.js";
 
 const MAX_SESSION_CONTEXT_CHARS = 4000;
@@ -91,6 +91,40 @@ export async function runWithConcurrencyLimit<T>(
   return results.map((r) => r ?? { ok: false, error: new Error("aborted") });
 }
 
+function normalizeIssueText(text: string): string {
+  return text.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+const SEVERITY_RANK: Record<ReviewIssue["severity"], number> = { high: 3, medium: 2, low: 1 };
+
+/** Cross-batch issue dedup for parallel reviews: with one model batch per
+ *  changed file, the same cross-file issue can be flagged from two files'
+ *  batches. Collapse only exact repeats — same file + line + normalized text
+ *  (file still participates when line is missing; normalized text alone only
+ *  when both are absent) — so two genuinely different findings on the same
+ *  line both survive. When a repeat carries a higher severity, the worse
+ *  occurrence replaces the kept one so severity is never masked. Mirrors the
+ *  Set dedup already applied to suggestions in the same merge. */
+export function dedupeIssues(issues: ReviewIssue[]): ReviewIssue[] {
+  const kept: ReviewIssue[] = [];
+  const index = new Map<string, number>();
+  for (const issue of issues) {
+    const text = normalizeIssueText(issue.issue);
+    const key = issue.file ? `${issue.file}:${issue.line ?? ""}:${text}` : `text:${text}`;
+    const existingIdx = index.get(key);
+    if (existingIdx === undefined) {
+      index.set(key, kept.length);
+      kept.push(issue);
+    } else {
+      const existing = kept[existingIdx];
+      if (existing && SEVERITY_RANK[issue.severity] > SEVERITY_RANK[existing.severity]) {
+        kept[existingIdx] = issue;
+      }
+    }
+  }
+  return kept;
+}
+
 export function mergeReviewResults(results: ReviewResult[]): ReviewResult {
   let verdict: ReviewVerdict = "pass";
   for (const r of results) {
@@ -102,7 +136,7 @@ export function mergeReviewResults(results: ReviewResult[]): ReviewResult {
       verdict = "needs-work";
     }
   }
-  const issues = results.flatMap((r) => r.issues);
+  const issues = dedupeIssues(results.flatMap((r) => r.issues));
   const suggestions = Array.from(new Set(results.flatMap((r) => r.suggestions)));
   const droppedFiles = Array.from(new Set(results.flatMap((r) => r.droppedFiles ?? [])));
   const truncated = results.some((r) => r.truncated);
