@@ -148,6 +148,9 @@ async function runSingleAttempt(
       const projectedCost = estimateCost(provider, model, estimatedInputTokens, estimatedOutputTokens);
       const sessionCost = getSessionCost(cwd).costUsd;
       if (sessionCost + projectedCost > budgetUsd) {
+        // The review.test.ts cost-budget probe asserts on the word "budget"
+        // to prove the model gate was passed without any backend call — keep
+        // the wording in sync when editing this message.
         throw new Error(
           `wai call would exceed cost budget: projected ${formatCost(sessionCost + projectedCost)} / ${formatCost(budgetUsd)}. ` +
             `Increase pi-yoowai.costBudgetUsd in settings or use /wai-clear to reset.`,

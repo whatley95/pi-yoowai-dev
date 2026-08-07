@@ -1,8 +1,15 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { planAdvanceFromReview } from "./review.js";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { REVIEW_NO_MODEL_ERROR, executeWaiReview, planAdvanceFromReview } from "./review.js";
 import { mergeReviewResults, dedupeIssues } from "./review-helpers.js";
-import type { ReviewResult, ReviewIssue } from "../types.js";
+import { resolveReviewTaskModel } from "../config.js";
+import { resolveReviewSettings } from "../review-level.js";
+import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ReviewResult, ReviewIssue, YoowaiConfig } from "../types.js";
 
 /** A valid ReviewResult with optional overrides (constructed directly, so
  *  consensus does NOT get re-derived like validateReviewResult would). */
@@ -15,6 +22,132 @@ function review(overrides: Partial<ReviewResult> = {}): ReviewResult {
     ...overrides,
   };
 }
+
+describe("executeWaiReview generic-path model resolution (cost-budget probe)", () => {
+  const tmpDirs: string[] = [];
+  const originalAgentDir = getAgentDir();
+  let emptyAgentDir: string;
+
+  before(() => {
+    // Isolate from the real ~/.pi/agent/settings.json so the user's global
+    // secondary/review task models cannot leak into this probe.
+    emptyAgentDir = mkdtempSync(join(tmpdir(), "review-model-agent-"));
+    setAgentDirForTests(() => emptyAgentDir);
+  });
+
+  after(() => {
+    setAgentDirForTests(() => originalAgentDir);
+    try {
+      rmSync(emptyAgentDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("generic wai review resolves the per-level model from the effective level", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "review-model-cwd-"));
+    tmpDirs.push(cwd);
+    const piDir = join(cwd, ".pi");
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(
+      join(piDir, "settings.json"),
+      JSON.stringify({
+        "pi-yoowai": {
+          reviewLevel: "med",
+          // Hard stop before any backend call: the probe asserts the review got
+          // PAST the model gate via the reviewMed override and stopped at the
+          // cost budget instead of calling a model.
+          costBudgetUsd: 0,
+          taskModels: {
+            reviewMed: {
+              provider: "openai",
+              id: "gpt-4o-mini",
+              backend: "http",
+              baseUrl: "http://127.0.0.1:9",
+            },
+          },
+          // Deliberately NO secondary and NO review task: the old caller
+          // (resolveReviewTaskModel(config, undefined)) would fall back to the
+          // empty review task and return the gate error before any work.
+        },
+      }),
+      "utf-8",
+    );
+
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const result = await executeWaiReview(cwd, "contract probe", ctx, {}, undefined, () => {});
+
+    assert.ok(result.error, "expected an error result");
+    assert.notEqual(
+      result.error,
+      REVIEW_NO_MODEL_ERROR,
+      "the review resolved no model at all — per-level resolution regressed",
+    );
+    assert.ok(
+      result.error.toLowerCase().includes("budget"),
+      `expected the cost-budget stop (proves the model gate was passed via reviewMed), got: ${result.error}`,
+    );
+  });
+});
+
+describe("executeWaiReview model resolution (effective level drives per-level model)", () => {
+  // Pins the caller contract in executeWaiReview: the generic `wai review`
+  // resolves the effective level first (config.reviewLevel ?? model-derived),
+  // then resolves the model from that level — so taskModels.reviewMed/reviewHigh
+  // are honored on the generic path, not just by the explicit tools.
+  const config: YoowaiConfig = {
+    secondary: { provider: "opencode-go", id: "glm-5.2" },
+    reviewLevel: "med",
+    taskModels: {
+      review: { provider: "kimi-coding", id: "k3-256k", thinking: "high" },
+      reviewMed: { provider: "kimi-coding", id: "k3-256k", thinking: "low" },
+      reviewHigh: { provider: "openai", id: "gpt-5", thinking: "max" },
+    },
+  };
+
+  it("generic review (no tool override) uses the per-level model matching the configured level", () => {
+    const level = resolveReviewSettings(config, undefined).level;
+    assert.equal(level, "med");
+    const model = resolveReviewTaskModel(config, level);
+    assert.equal(model.provider, "kimi-coding");
+    assert.equal(model.id, "k3-256k");
+    assert.equal(model.thinking, "low"); // reviewMed wins over the review task's high
+  });
+
+  it("an explicit tool override wins over the configured level when its entry exists", () => {
+    const level = resolveReviewSettings(config, "high").level;
+    const model = resolveReviewTaskModel(config, level);
+    assert.equal(model.provider, "openai"); // reviewHigh beats reviewMed + review task
+    assert.equal(model.id, "gpt-5");
+    assert.equal(model.thinking, "max");
+  });
+
+  it("explicit override falls back to the review task when the per-level entry is missing", () => {
+    const level = resolveReviewSettings(config, "min").level;
+    const model = resolveReviewTaskModel(config, level);
+    assert.equal(model.id, "k3-256k"); // no reviewMin entry → review task
+    assert.equal(model.thinking, "high");
+  });
+
+  it("configs without per-level entries are unchanged (fallback to the review task)", () => {
+    const plain: YoowaiConfig = {
+      secondary: { provider: "opencode-go", id: "glm-5.2" },
+      reviewLevel: "med",
+      taskModels: { review: { provider: "kimi-coding", id: "k3-256k", thinking: "high" } },
+    };
+    const level = resolveReviewSettings(plain, undefined).level;
+    const model = resolveReviewTaskModel(plain, level);
+    assert.equal(model.id, "k3-256k");
+    assert.equal(model.thinking, "high");
+  });
+});
 
 describe("planAdvanceFromReview (guarded auto-completion)", () => {
   it("consensus advances by the relative completedSteps count", () => {

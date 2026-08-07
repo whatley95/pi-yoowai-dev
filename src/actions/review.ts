@@ -48,6 +48,13 @@ import { resolveReviewSettings } from "../review-level.js";
 import type { ProgressReporter } from "../progress.js";
 import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../types.js";
 
+/** Error returned when no review model can be resolved — the effective level
+ *  drives the per-level task lookup (reviewMin/reviewMed/reviewHigh) with the
+ *  `review` task and finally `secondary` as fallbacks. Exported so callers and
+ *  tests can reference the exact message. */
+export const REVIEW_NO_MODEL_ERROR =
+  "No secondary model configured. Set pi-yoowai.secondary, taskModels.review, or taskModels.reviewMin/reviewMed/reviewHigh in settings.json.";
+
 /** Decide whether a passing review advances the plan tracker, and by how
  *  many steps. Guards the guarded auto-completion contract:
  *  - consensus (verdict "pass" with zero issues) advances by the model's
@@ -95,9 +102,15 @@ export async function executeWaiReview(
   const reviewSettings = resolveReviewSettings(config, options.level);
   const level = reviewSettings.level;
   const effectiveConfig = { ...config, ...reviewSettings };
-  const modelConfig = resolveReviewTaskModel(config, options.level);
+  // Resolve the model from the EFFECTIVE level, not the tool override: the
+  // generic `wai review` (and auto-review, /wai review) runs at the resolved
+  // level (config.reviewLevel ?? model-derived default), so it must honor the
+  // per-level reviewMin/reviewMed/reviewHigh task models the same way the
+  // explicit tools do. Configs without per-level entries fall back to the
+  // `review` task, so existing setups are unchanged.
+  const modelConfig = resolveReviewTaskModel(config, level);
   if (!modelConfig.provider || !modelConfig.id) {
-    return { action: "review", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
+    return { action: "review", error: REVIEW_NO_MODEL_ERROR };
   }
   const modelProfile = {
     provider: modelConfig.provider,
