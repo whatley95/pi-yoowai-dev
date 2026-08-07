@@ -321,6 +321,7 @@ export default async function (pi: ExtensionAPI) {
     level: ReviewLevel,
     params: unknown,
     signal: AbortSignal | undefined,
+    onUpdate: ((update: unknown) => void) | undefined,
     ctx: ExtensionContext,
   ): Promise<import("@earendil-works/pi-coding-agent").AgentToolResult<WaiToolResult> & { isError: boolean }> {
     const validation = validateWaiReviewToolParams(params);
@@ -336,7 +337,7 @@ export default async function (pi: ExtensionAPI) {
 
     setWaiToolExecuting(ctx.cwd, true);
     const start = Date.now();
-    const progress = createProgressReporter("review", ctx, undefined, level);
+    const progress = createProgressReporter("review", ctx, onUpdate, level);
     let result: WaiToolResult;
 
     try {
@@ -598,8 +599,8 @@ export default async function (pi: ExtensionAPI) {
     parameters: reviewToolSchema(),
     renderCall: (args, theme, context) => renderReviewToolCall("min", args as { description?: string }, theme, context),
     renderResult,
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return runWaiReviewTool("min", params, signal, ctx);
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      return runWaiReviewTool("min", params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
     },
   });
 
@@ -617,8 +618,8 @@ export default async function (pi: ExtensionAPI) {
     parameters: reviewToolSchema(),
     renderCall: (args, theme, context) => renderReviewToolCall("med", args as { description?: string }, theme, context),
     renderResult,
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return runWaiReviewTool("med", params, signal, ctx);
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      return runWaiReviewTool("med", params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
     },
   });
 
@@ -637,8 +638,8 @@ export default async function (pi: ExtensionAPI) {
     renderCall: (args, theme, context) =>
       renderReviewToolCall("high", args as { description?: string }, theme, context),
     renderResult,
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      return runWaiReviewTool("high", params, signal, ctx);
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      return runWaiReviewTool("high", params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
     },
   });
 

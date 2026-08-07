@@ -231,7 +231,7 @@ declare module "@earendil-works/pi-ai" {
     id: string;
     name: string;
     login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials | undefined>;
-    refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials | undefined>;
+    refreshToken(credentials: OAuthCredentials, signal?: AbortSignal): Promise<OAuthCredentials | undefined>;
     getApiKey(credentials: OAuthCredentials): string | undefined;
   }
 }
