@@ -165,6 +165,7 @@ export function buildReviewUserContext(args: {
   memoryContext?: string;
   relatedContext?: string;
   codemap?: string;
+  designRefText?: string;
   truncated?: boolean;
   droppedFiles?: string[];
   budgetNote?: string;
@@ -183,6 +184,7 @@ export function buildReviewUserContext(args: {
     memoryContext,
     relatedContext,
     codemap,
+    designRefText,
     truncated,
     droppedFiles,
     budgetNote,
@@ -199,6 +201,7 @@ export function buildReviewUserContext(args: {
   const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
   const relatedBlock = relatedContext ? `\n\n<related_files>\n${relatedContext}\n</related_files>` : "";
   const codemapBlock = codemap ? `\n\n<project_symbol_map>\n${codemap}\n</project_symbol_map>` : "";
+  const designRefBlock = designRefText ? `\n\n<design_rules>\n${designRefText}\n</design_rules>` : "";
 
   const fileContentsBlock =
     fileContents.length > 0
@@ -223,7 +226,7 @@ export function buildReviewUserContext(args: {
       ? `\n\n<focus_files>\nFiles edited as part of the current plan step (primary review target, but the full diff still matters for cross-file impact): ${focusFiles.join(", ")}\n</focus_files>`
       : "";
 
-  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${relatedBlock}${codemapBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
+  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${relatedBlock}${codemapBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
 }
 
 function buildAdaptiveReviewPromptImpl(
@@ -240,6 +243,7 @@ function buildAdaptiveReviewPromptImpl(
     memoryContext?: string;
     relatedContext?: string;
     codemap?: string;
+    designRefText?: string;
     truncated?: boolean;
     droppedFiles?: string[];
     budgetNote?: string;
@@ -258,6 +262,7 @@ function buildAdaptiveReviewPromptImpl(
     memoryContext,
     relatedContext,
     codemap,
+    designRefText,
     truncated,
     droppedFiles,
     budgetNote,
@@ -310,7 +315,7 @@ ${planRules}
 - Each issue must include a specific, actionable suggestion
 - "file" and "line" are optional but strongly preferred when you can identify the exact location
 - Respect the project conventions shown above; do NOT flag a pattern as wrong if it matches the conventions
-- Pay attention to pre-review command output (lint/test/typecheck). Failures there are real issues ONLY for files changed in this diff; ignore pre-existing warnings in unrelated files.
+${designRefText ? "- Apply the design rules shown above when reviewing UI code; do not flag a pattern that follows them.\n" : ""}- Pay attention to pre-review command output (lint/test/typecheck). Failures there are real issues ONLY for files changed in this diff; ignore pre-existing warnings in unrelated files.
 - Memory shows past issues in the same files. If a past issue appears again, flag it as regression.
 - CRITICAL: Only flag issues you can see evidence for. If a property, method, template, or style exists in the provided full file contents, do NOT flag it as missing. When unsure, prefer "pass" or "low" severity over guessing.
 ${diffScopeRules({
@@ -337,6 +342,7 @@ ${EVIDENCE_RULES}`,
       memoryContext,
       relatedContext,
       codemap,
+      designRefText,
       truncated,
       droppedFiles,
       budgetNote,
@@ -601,6 +607,7 @@ function buildJudgePromptImpl(
     preReviewOutput?: string;
     memoryContext?: string;
     codemap?: string;
+    designRefText?: string;
     diff?: string;
     fileContents?: FileContentContext[];
     truncated?: boolean;
@@ -617,6 +624,7 @@ function buildJudgePromptImpl(
     preReviewOutput,
     memoryContext,
     codemap,
+    designRefText,
     diff,
     fileContents,
     truncated,
@@ -641,6 +649,7 @@ function buildJudgePromptImpl(
   const preReviewBlock = preReviewOutput ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>` : "";
   const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
   const codemapBlock = codemap ? `\n\n<project_symbol_map>\n${codemap}\n</project_symbol_map>` : "";
+  const designRefBlock = designRefText ? `\n\n<design_rules>\n${designRefText}\n</design_rules>` : "";
 
   const diffBlock = diff ? `\n\n<diff>\n${diff}\n</diff>` : "";
   const fileContentsBlock =
@@ -703,9 +712,9 @@ Rules:
 - Unstarted or in-progress plan steps do not block a pass verdict. Only block if a completed step is unreviewed AND the code itself has issues.
 - You may note tracker gaps (unreviewed or unmarked steps) as a non-blocking observation, not as a blocking issue.
 - When the diff/file contents are truncated, do not treat missing context as a defect; judge only what is shown
-${EVIDENCE_RULES}`,
+${designRefText ? "- Apply the design rules shown above when reviewing UI code; do not flag a pattern that follows them.\n" : ""}${EVIDENCE_RULES}`,
 
-    user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}${historyBlock}${diffBlock}${fileContentsBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${codemapBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
+    user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}${historyBlock}${diffBlock}${fileContentsBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${codemapBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
   };
 }
 

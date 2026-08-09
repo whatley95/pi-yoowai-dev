@@ -18,6 +18,8 @@ npx pi-yoowai@latest setup --preset=openai
 
 Then make sure credentials for the chosen provider are available (`~/.pi/agent/auth.json`, an environment variable such as `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, or Pi's `/login`), restart Pi, and run `/wai-test` to verify connectivity. From a local clone, `npm run setup` runs the same installer (exposed as the `pi-yoowai` bin entry).
 
+After configuring the model, the interactive installer optionally asks "Install design reference skills into Pi? (y/n)". Answering `y` copies the 9 vendored design-reference topics (Emil Kowalski's skills, MIT) from the package's `design-refs/` into `~/.pi/agent/skills/` — only those topic directories are touched, and re-running setup after an upgrade refreshes them. Installed this way, Pi can auto-trigger them as **native Pi skills** during relevant UI work; independently, the built-in `wai_design_ref` tool always lets the main agent read the same guidance on demand (and distilled rules are injected automatically), so skipping this step loses nothing essential.
+
 ## Install
 
 ```bash
@@ -125,6 +127,7 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | `autoInjectContext`            | boolean                                 | Inject the active wai plan and conventions into the main agent's context before each LLM call (default: `true`)                   |
 | `contextInjectMaxTokens`       | number                                  | Token budget for the injected plan/conventions context (default: `800`)                                                             |
 | `codemapMaxTokens`             | number                                  | Token budget for the project symbol map injected into review/judge prompts (default: `1500`; `0` disables)                          |
+| `designRefMaxTokens`           | number                                  | Token budget for user-curated design rules injected into review/judge prompts when UI files change (default: `800`; `0` disables)   |
 | `entryRenderer`                | boolean                                 | Render wai audit entries with a custom TUI entry renderer (default: `true`)                                                         |
 | `shortcuts`                    | boolean                                 | Register keyboard shortcuts for common wai actions (default: `true`)                                                                |
 | `planWidget`                   | boolean                                 | Show a compact plan-progress widget above the editor, including a "blocked by step N" line when the current step's `dependsOn` steps are unmet (default: `true`)                                                              |
@@ -383,6 +386,18 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 
 `verify` + `deep` calls the secondary model for each fact, including the source file and project conventions in the prompt. It is more accurate but costs tokens per fact.
 
+### `wai_design_ref` tool
+
+Read curated UI/animation design guidance vendored from [Emil Kowalski's skills](https://github.com/emilkowalski/skills) (MIT licensed — attribution in `design-refs/README.md`, license in `design-refs/LICENSE`). No model call; it reads local markdown.
+
+| Call | What it does |
+| --- | --- |
+| `wai_design_ref({})` | Lists the 9 topics (animate, animation-vocabulary, apple-design, emil-design-eng, find-animation-opportunities, improve-animations, pick-ui-library, prototype, review-animations) |
+| `wai_design_ref({ topic: "animate" })` | Reads the topic's `SKILL.md` |
+| `wai_design_ref({ topic: "improve-animations", doc: "AUDIT.md" })` | Reads a specific doc of a topic |
+
+Call this when building, reviewing, or improving UI/animation code to get detailed design guidance beyond the distilled baseline rules that are injected automatically.
+
 ## Commands
 
 ### Core workflow
@@ -436,6 +451,7 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 | `/wai-audit [description] [review flags]`      | Run review, security, and test concurrently over the current diff; one combined report (slash command only, not a `wai` tool action) |
 | `/wai-reflect`                                 | Report recurring review-issue patterns per file with a suggested project convention    |
 | `/wai-reflect --learn`                         | Also save each suggestion as a learned fact (no model calls)                           |
+| `/wai-design-ref`                              | Manage UI design rules: `list`, `add <rule>`, `remove <n>`, `import <path>`, `docs [topic] [doc]`, `reset-defaults`, `clear`   |
 | `/wai-search-config <provider> [api-key]`      | Pick the web-search provider (DuckDuckGo or Brave) and optionally save a Brave API key |
 | `/wai-clear`                                   | Clear the current session's plan, state, cost, memory, and conventions                 |
 | `/wai-logs`                                    | Show recent error/event log entries for this project                                   |
@@ -624,6 +640,7 @@ This prevents the main agent from spinning in review-fix-review cycles.
 - **Project symbol index** — `wai scan --deep` parses TypeScript/JavaScript source files and stores exported functions, classes, interfaces, types, and more; surfaced by `wai_index`
 - **Project conventions** — scan results feed into plan, suggest, recommend, review, and judge prompts
 - **Codemap** — review and judge prompts include a compact project symbol map (one line per exported/top-level symbol, `file.ts:12 — function foo(a, b): void`) covering the changed files and their direct import neighbors, built from the TypeScript AST symbol index (with a related-file-outline fallback for non-TypeScript projects). The block is counted within the review input-token budget but yields to changed file contents; size is tuned with `codemapMaxTokens` (`0` disables)
+- **Design references** — user-curated UI/design rules are injected into review and judge prompts when the changed files include UI files (`.tsx`, `.jsx`, `.css`, `.scss`, `.sass`, `.less`, `.svelte`, `.vue`, `.html`), and surfaced to the main agent when unreviewed edits touch UI files; see [Design references](#design-references)
 - **Learned facts** — `wai_learn` persists project-specific facts across sessions; surfaced by `wai_index`
 - **Review memory** — previous issues per file are included so the model knows what was already fixed. When a review description is provided, issues are ranked by semantic similarity to the current change. Memory is reset for each new Pi session
 - **Pre-review commands** — configured lint/test/typecheck output is included in the review prompt
@@ -632,6 +649,26 @@ This prevents the main agent from spinning in review-fix-review cycles.
 - **One round-trip by default** — pure judgment; an optional `toolUseLoop` lets the model request `read_file`, `search_code` (regex search across project files with path scoping and context lines — locate callers/definitions, then `read_file` the hits), and allowlisted `run_command` calls. Model-generated commands are restricted to read-only subcommands (no `git push`/`reset`, `svn revert`, `npm publish`/`install`, etc.); user-configured `preReviewCommands` stay unrestricted
 - **Inconclusive reviews** — a non-pass verdict with zero issues (truncated response or a verdict contradicting its own findings) is marked **inconclusive**: not a pass, not a failed review round, and the result says to re-run rather than invent fixes
 - **Supports OpenAI-compatible and Anthropic APIs** — 26 providers pre-configured for direct HTTP, plus any custom endpoint via `baseUrl`
+
+## Design references
+
+Design references are UI/design rules stored per project in `.pi/yoowai/design-ref.json` (up to 100 rules, deduplicated case-insensitively). On first use the store is seeded with 22 rules distilled from [Emil Kowalski's design-engineering skills](https://github.com/emilkowalski/skills) — the skills are vendored under `design-refs/` (MIT licensed; attribution in `design-refs/README.md`, license in `design-refs/LICENSE`) — so UI reviews have a sane baseline out of the box. Seeding never touches a store that already has your own rules.
+
+When a review or judge run touches UI files (`.tsx`, `.jsx`, `.css`, `.scss`, `.sass`, `.less`, `.svelte`, `.vue`, `.html`), the rules are injected into the secondary-model prompt as a `<design_rules>` block, so UI code is judged against your design rules instead of generic taste. On the writer side, when the main agent has unreviewed edits touching UI files, the ~10 most load-bearing rules plus a pointer to the `wai_design_ref` tool are injected into its context. For depth beyond the distilled rules, the main agent can call the `wai_design_ref` tool to read the full vendored guidance per topic (see [the `wai_design_ref` tool](#wai_design_ref-tool)).
+
+```
+/wai-design-ref add Prefer spring-based motion for interactive elements
+/wai-design-ref import design/SKILL.md   # extract rules from your own markdown file
+/wai-design-ref list
+/wai-design-ref remove 2
+/wai-design-ref docs                     # list the vendored topics
+/wai-design-ref docs review-animations   # read a topic's SKILL.md in the terminal
+/wai-design-ref docs improve-animations AUDIT.md
+/wai-design-ref reset-defaults           # replace the store with the distilled defaults
+/wai-design-ref clear
+```
+
+`import` reads a project-relative markdown file and extracts bullet points, numbered items, and sentences under headings, skipping code fences, frontmatter, and checkbox markers. The prompt block is budgeted with `designRefMaxTokens` (default: `800`; `0` disables injection) and counted within the review input-token budget.
 
 ## Consensus protocol
 

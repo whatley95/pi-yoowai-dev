@@ -48,6 +48,17 @@ import {
   verifyLearnedFactsDeep,
   formatVerificationReport,
 } from "../wai-learn.js";
+import {
+  addDesignRule,
+  removeDesignRule,
+  clearDesignRules,
+  loadDesignRules,
+  importDesignRules,
+  listDesignRefDocs,
+  readDesignRefDoc,
+  DESIGN_REF_TOPIC_DESCRIPTIONS,
+} from "../design-ref.js";
+import { resetDesignRulesToDefaults } from "../design-ref-defaults.js";
 import { getVcsInfo } from "../diff-grabber.js";
 import { getPreset, describePreset, formatPresetList, formatPresetDetails, applyPreset } from "../presets.js";
 import { executeWaiAudit, formatAuditReport } from "../wai-audit.js";
@@ -1413,6 +1424,106 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     description:
       "Record or verify project facts. Usage: /wai-learn <fact> [--category <cat>] | /wai-learn --verify [--query <keyword>] [--deep]",
     handler: learnHandler,
+  });
+
+  const designRefUsage =
+    "Usage: /wai-design-ref [list] | add <rule> | remove <n> | import <path> | docs [topic] [doc] | reset-defaults | clear";
+  const designRefHandler = async (args: string, ctx: ExtensionCommandContext) => {
+    const trimmed = args.trim();
+    const [sub = "list", ...rest] = trimmed ? trimmed.split(/\s+/) : ["list"];
+    const payload = rest.join(" ");
+
+    const listRules = () => {
+      const rules = loadDesignRules(ctx.cwd);
+      if (rules.length === 0) {
+        ctx.ui.notify("No design rules recorded.", "info");
+        return;
+      }
+      const lines = rules.map((r, i) => `${i + 1}. ${r.rule}${r.source ? ` (source: ${r.source})` : ""}`);
+      ctx.ui.notify(lines.join("\n"), "info");
+    };
+
+    switch (sub) {
+      case "list":
+        listRules();
+        return;
+      case "add": {
+        if (!payload) {
+          ctx.ui.notify(designRefUsage, "warning");
+          return;
+        }
+        addDesignRule(ctx.cwd, payload);
+        ctx.ui.notify(`Recorded design rule (${loadDesignRules(ctx.cwd).length} total).`, "info");
+        return;
+      }
+      case "remove": {
+        const index = Number.parseInt(payload, 10);
+        const removed = removeDesignRule(ctx.cwd, index);
+        if (!removed) {
+          ctx.ui.notify(`No design rule at index ${payload || "?"}. ${designRefUsage}`, "warning");
+          return;
+        }
+        ctx.ui.notify(`Removed design rule: ${removed.rule} (${loadDesignRules(ctx.cwd).length} remaining).`, "info");
+        return;
+      }
+      case "import": {
+        if (!payload) {
+          ctx.ui.notify(designRefUsage, "warning");
+          return;
+        }
+        try {
+          const { imported, skipped } = importDesignRules(ctx.cwd, payload);
+          ctx.ui.notify(
+            `Imported ${imported} design rule(s), skipped ${skipped} duplicate(s) (${loadDesignRules(ctx.cwd).length} total).`,
+            "info",
+          );
+        } catch (err) {
+          ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      case "docs": {
+        const topics = listDesignRefDocs();
+        if (topics.length === 0) {
+          ctx.ui.notify("No design reference docs available (design-refs directory missing).", "warning");
+          return;
+        }
+        if (!payload) {
+          const lines = topics.map((t) => {
+            const desc = DESIGN_REF_TOPIC_DESCRIPTIONS[t.topic];
+            const docList = t.docs.length > 1 ? ` [docs: ${t.docs.join(", ")}]` : "";
+            return `- ${t.topic}${desc ? ` — ${desc}` : ""}${docList}`;
+          });
+          ctx.ui.notify(`Design reference topics:\n${lines.join("\n")}`, "info");
+          return;
+        }
+        const [topic, doc] = rest;
+        try {
+          const content = readDesignRefDoc(topic, doc, 6000);
+          ctx.ui.notify(content, "info");
+        } catch (err) {
+          ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      case "reset-defaults": {
+        const count = resetDesignRulesToDefaults(ctx.cwd);
+        ctx.ui.notify(`Design rules reset to the ${count} distilled defaults.`, "info");
+        return;
+      }
+      case "clear":
+        clearDesignRules(ctx.cwd);
+        ctx.ui.notify("Design rules cleared.", "info");
+        return;
+      default:
+        ctx.ui.notify(`Unknown subcommand "${sub}". ${designRefUsage}`, "warning");
+    }
+  };
+
+  pi.registerCommand("wai-design-ref", {
+    description:
+      "Manage UI design rules injected into reviews. Usage: /wai-design-ref [list] | add <rule> | remove <n> | import <path> | docs [topic] [doc] | reset-defaults | clear",
+    handler: designRefHandler,
   });
 
   const clearHandler = async (_args: string, ctx: ExtensionContext) => {

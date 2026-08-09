@@ -518,3 +518,52 @@ describe("loadYoowaiConfig codemapMaxTokens", () => {
     }
   });
 });
+
+describe("loadYoowaiConfig designRefMaxTokens", () => {
+  const tmpDirs: string[] = [];
+
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("defaults to 800 when unconfigured", () => {
+    const cwd = makeTempDir("config-designref-default-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.designRefMaxTokens, 800);
+  });
+
+  it("parses a positive integer and accepts 0 (disabled)", () => {
+    const cwd = makeTempDir("config-designref-parse-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" }, designRefMaxTokens: 400 });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.designRefMaxTokens, 400);
+
+    const cwd0 = makeTempDir("config-designref-zero-");
+    tmpDirs.push(cwd0);
+    writeProjectSettings(cwd0, { secondary: { provider: "openai", id: "gpt-4o" }, designRefMaxTokens: 0 });
+    assert.equal(loadYoowaiConfig(cwd0).designRefMaxTokens, 0);
+  });
+
+  it("falls back to the default for invalid values", () => {
+    for (const invalid of [-5, 1.5, "lots", NaN]) {
+      const cwd = makeTempDir("config-designref-invalid-");
+      tmpDirs.push(cwd);
+      writeProjectSettings(cwd, {
+        secondary: { provider: "openai", id: "gpt-4o" },
+        designRefMaxTokens: invalid,
+      });
+      assert.equal(loadYoowaiConfig(cwd).designRefMaxTokens, 800, `invalid value ${invalid} should fall back`);
+    }
+  });
+});

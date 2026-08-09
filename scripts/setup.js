@@ -3,10 +3,11 @@
 // Plain Node, no dependencies. Usage:
 //   npx pi-yoowai setup                 (interactive)
 //   npx pi-yoowai setup --preset=openai (non-interactive)
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
 const PRESETS = {
   "opencode-go-free": { provider: "opencode-go", id: "deepseek-v4-pro" },
@@ -19,6 +20,21 @@ const ENV_VAR_HINTS = {
   openai: "OPENAI_API_KEY (or Pi /login)",
   anthropic: "ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN (or Pi /login)",
 };
+
+// Vendored design reference topics (Emil Kowalski's skills, MIT) that can be
+// installed as native Pi skills. Only these directory names are ever touched
+// under ~/.pi/agent/skills/.
+const DESIGN_SKILL_TOPICS = [
+  "animate",
+  "animation-vocabulary",
+  "apple-design",
+  "emil-design-eng",
+  "find-animation-opportunities",
+  "improve-animations",
+  "pick-ui-library",
+  "prototype",
+  "review-animations",
+];
 
 function resolveSettingsPath() {
   const agentDir = process.env.PI_AGENT_DIR || join(homedir(), ".pi", "agent");
@@ -63,6 +79,40 @@ function printNextSteps(provider, settingsPath) {
 
 function question(rl, prompt) {
   return new Promise((resolve) => rl.question(prompt, (answer) => resolve(answer.trim())));
+}
+
+// Copy the vendored design reference topics into ~/.pi/agent/skills/ so Pi
+// can auto-trigger them as native skills. Refresh semantics: the known topic
+// directories are overwritten; nothing else under skills/ is touched.
+function installDesignSkills() {
+  const { agentDir } = resolveSettingsPath();
+  const skillsDir = join(agentDir, "skills");
+  const sourceRoot = fileURLToPath(new URL("../design-refs", import.meta.url));
+  if (!existsSync(sourceRoot)) {
+    console.log("Design references not found in this package; skipping design skills install.");
+    return;
+  }
+  if (!existsSync(skillsDir)) mkdirSync(skillsDir, { recursive: true });
+  for (const topic of DESIGN_SKILL_TOPICS) {
+    const source = join(sourceRoot, topic);
+    if (!existsSync(source)) continue;
+    cpSync(source, join(skillsDir, topic), { recursive: true });
+  }
+  const license = join(sourceRoot, "LICENSE");
+  if (existsSync(license)) {
+    cpSync(license, join(skillsDir, "design-refs-LICENSE"));
+  }
+  console.log(`Installed/refreshed ${DESIGN_SKILL_TOPICS.length} design skills in ${skillsDir}`);
+  console.log("Re-run `npx pi-yoowai setup` after upgrades to refresh them.");
+}
+
+async function maybeInstallDesignSkills(rl) {
+  const answer = await question(rl, "Install design reference skills into Pi? (y/n) ");
+  if (answer.toLowerCase() !== "y") {
+    console.log("Design skills skipped. To install them later, re-run `npx pi-yoowai setup` and answer y.");
+    return;
+  }
+  installDesignSkills();
 }
 
 async function main() {
@@ -113,6 +163,7 @@ async function main() {
     const settingsPath = writeSecondary(provider, id);
     console.log(`Configured pi-yoowai secondary model: ${provider}:${id}`);
     printNextSteps(provider, settingsPath);
+    await maybeInstallDesignSkills(rl);
   } finally {
     rl.close();
   }

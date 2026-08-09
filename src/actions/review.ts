@@ -6,6 +6,7 @@ import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js"
 import { loadFileContentsForReview, isReviewableFile, type FileContentEntry } from "../file-loader.js";
 import { buildRelatedContext } from "../context-retrieval.js";
 import { buildCodemap } from "../codemap.js";
+import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { buildAstContext } from "../ast-context.js";
 import { getPastIssuesForFiles, recordIssues } from "../review-memory.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
@@ -158,6 +159,9 @@ export async function executeWaiReview(
   const relatedContext =
     buildAstContext(cwd, changedFiles, { maxTokens: 1000 }) || buildRelatedContext(cwd, changedFiles).context;
   const codemap = buildCodemap(cwd, changedFiles, effectiveConfig.codemapMaxTokens ?? 1500);
+  const designRefText = changedFiles.some(isUiFile)
+    ? formatDesignRulesForPrompt(cwd, effectiveConfig.designRefMaxTokens ?? 800)
+    : "";
   const sessionContext = getSessionContext(ctx);
 
   progress(2, STAGES.review, "Loading project conventions…");
@@ -357,6 +361,7 @@ export async function executeWaiReview(
           memoryContext: fileMemoryContext,
           relatedContext,
           codemap,
+          designRefText,
           truncated,
           droppedFiles: droppedForBudget,
           budget: fileBudget,
@@ -509,6 +514,7 @@ export async function executeWaiReview(
         memoryContext: p.fileMemoryContext,
         relatedContext,
         codemap,
+        designRefText,
         truncated,
         droppedFiles: p.droppedForBudget,
         budget: p.fileBudget,
@@ -627,6 +633,7 @@ export async function executeWaiReview(
         memoryContext,
         relatedContext,
         codemap,
+        designRefText,
         truncated: finalDiffTruncated,
         droppedFiles: finalDroppedFiles,
         budget: budgetWithPreReview,

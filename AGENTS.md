@@ -18,7 +18,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 
 **Tool `wai`** — the main API used by the primary agent. Actions: `plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `planUpdate`.
 
-**Additional tools** — `wai_index`, `wai_explain`, and `wai_learn` (four `pi.registerTool` calls in `src/index.ts`).
+**Additional tools** — `wai_index`, `wai_explain`, `wai_learn`, and `wai_design_ref` (five `pi.registerTool` calls in `src/index.ts`).
 
 **Slash commands** registered in the Pi terminal:
 
@@ -46,6 +46,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 | `/wai-preset`          | List, preview (`show <name>`), or apply (`<name>`) a named model preset from `pi-yoowai.presets`; applying writes to the global `~/.pi/agent/settings.json`. |
 | `/wai-audit`           | Run review, security, and test concurrently over the same working-tree diff and render one combined report (a failing section does not fail the others). |
 | `/wai-reflect`         | Analyze review memory for recurring issue patterns and suggest project conventions; `--learn` saves each suggestion as a learned fact. No model calls. |
+| `/wai-design-ref`      | Manage user-curated UI/design rules injected into review/judge prompts for UI files: `list`, `add <rule>`, `remove <n>`, `import <path>`, `docs [topic] [doc]` (read the vendored design guidance), `reset-defaults`, `clear`. |
 
 ---
 
@@ -75,9 +76,10 @@ pi-yoowai/
 ├── eslint.config.js      # ESLint flat config
 ├── .prettierrc           # Prettier config (120 cols, double quotes)
 ├── README.md             # User-facing documentation
+├── design-refs/          # Vendored Emil Kowalski design skills (MIT; attribution in README.md + LICENSE there)
 ├── scripts/
 │   ├── bump-version.js   # Semver bump helper (patch/minor/major)
-│   └── setup.js          # Plain-Node setup installer (npx pi-yoowai setup / npm run setup)
+│   └── setup.js          # Plain-Node setup installer (npx pi-yoowai setup / npm run setup); optionally installs the vendored design-refs topics as native Pi skills
 └── src/
     ├── index.ts          # Extension entry: registers the wai tool + all /wai-* commands, orchestrates
     ├── types.ts          # Domain types/interfaces; re-exports backend types from types/secondary-model.ts
@@ -96,6 +98,8 @@ pi-yoowai/
     ├── token-budget.ts   # Calculate per-action review token budgets
     ├── model-registry.ts # Known secondary model context windows and output limits
     ├── conventions.ts    # Scan project conventions and persist them; also filters source files for indexing
+    ├── design-ref.ts     # User-curated UI/design rules (design-ref.json); injected into review/judge prompts for UI files; also serves the vendored design-refs docs and lazily seeds defaults
+    ├── design-ref-defaults.ts # Distilled default rules from the vendored Emil Kowalski skills (MIT), seeding/reset, and compact writer-side guidance
     ├── project-index.ts  # Build a TypeScript AST symbol index of the project (SymbolInfo)
     ├── project-snapshot.ts # Assemble a token-bounded project snapshot for plan/context prompts
     ├── plan-store.ts     # Persist plan/session state to disk
@@ -179,7 +183,7 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 
 ### Module responsibilities
 
-- **`index.ts`** — Extension entry and main wiring. Wires the Pi session lifecycle (`session_start`/`session_shutdown`/`tool_execution_start`), registers the `wai` tool and the additional `wai_index`/`wai_explain`/`wai_learn` tools, registers the context injector (`registerContextInjector`) and lifecycle handlers (`registerLifecycleHandlers`), and delegates all `/wai-*` slash-command registration to `registerWaiCommands` (see `commands/register.ts`). Holds the per-`cwd` loop-detection state.
+- **`index.ts`** — Extension entry and main wiring. Wires the Pi session lifecycle (`session_start`/`session_shutdown`/`tool_execution_start`), registers the `wai` tool and the additional `wai_index`/`wai_explain`/`wai_learn`/`wai_design_ref` tools, registers the context injector (`registerContextInjector`) and lifecycle handlers (`registerLifecycleHandlers`), and delegates all `/wai-*` slash-command registration to `registerWaiCommands` (see `commands/register.ts`). Holds the per-`cwd` loop-detection state.
 - **`integration/context-injector.ts`** — Registers a Pi `context` event handler that prepends the active plan summary, current step, and scanned conventions to the main agent's context when `autoInjectContext` is enabled. Uses `setWaiToolExecuting` to skip injection while a `wai` tool is running and includes a workflow reminder when unreviewed edits exceed `reviewReminderEdits`.
 - **`integration/lifecycle.ts`** — Registers Pi lifecycle handlers: counts successful `write`/`edit` tool results, sends workflow-review steers at `turn_end` (escalating to a stop directive after `steerEscalationThreshold` consecutive turns with review pending, tracked via the `unreviewedTurns` session counter), triggers `wai.review` on `agent_settled` when `autoReviewOnSettle` is enabled and edits are pending (`triggerAutoReview`, before any auto-judge, guarded by a per-cwd in-flight set and `setWaiToolExecuting`), triggers `wai.judge` on `agent_settled` when `autoJudge` is enabled and the plan is complete, clears the prompt cache on `model_select`, injects plan progress into `session_before_compact` custom instructions, and flushes volatile counters to disk on `session_before_switch` / `session_before_fork` / `session_compact` / `session_shutdown` (`flushSessionStateWithAudit`, which also appends a session audit entry when edits are still unreviewed at flush time).
 - **`integration/status.ts`** — Updates the Pi footer/status bar with the active plan progress, current step, session cost, and pending-review edit count via `ctx.ui.setStatus`.
@@ -206,6 +210,8 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 - **`file-loader.ts`** — Loads changed file contents within the token budget.
 - **`token-budget.ts` / `model-registry.ts`** — Model context/output limits and per-action review token budgets.
 - **`conventions.ts`** — Static heuristics over the tracked file list plus an LLM pass; stores conventions in `.pi/yoowai/conventions.json`. Also provides `filterSourceFiles` / `listTrackedFiles` reused by indexing.
+- **`design-ref.ts`** — Stores UI/design rules in `.pi/yoowai/design-ref.json` (max 100, deduped). `loadDesignRules` lazily seeds the distilled defaults when the store is missing/empty (`peekDesignRules` reads the raw store without seeding). `formatDesignRulesForPrompt` renders a token-budgeted bullet list injected into review/judge prompts when the changed files include a UI file (`isUiFile`). `importDesignRules` extracts rules from a project-relative markdown file (bullets, numbered items, heading content; skips code fences and frontmatter). Also serves the vendored `design-refs/` docs: `listDesignRefDocs` (topics with SKILL.md first) and `readDesignRefDoc` (token-budgeted, traversal-guarded read of a topic's markdown).
+- **`design-ref-defaults.ts`** — `DEFAULT_DESIGN_RULES` (22 reviewer rules distilled from the vendored Emil Kowalski skills, MIT, `source: "emilkowalski/skills (MIT)"`), `seedDefaultDesignRules` (seeds only a missing/zero-rule store), `resetDesignRulesToDefaults` (explicit replace), and `formatWriterDesignGuidance` (the ~10 load-bearing rules plus a `wai_design_ref` pointer, injected into the main agent's context by `context-injector.ts` when unreviewed edits touch UI files).
 - **`project-index.ts`** — Builds a TypeScript AST symbol index of the project (`SymbolInfo`); persisted to `.pi/yoowai/index.json` (incremental reuse of unchanged files) and used by explain/suggest/recommend.
 - **`project-snapshot.ts`** — Assembles a token-bounded project snapshot (tracked files, package.json, doc samples, index symbols) for plan/context prompts.
 - **`plan-store.ts` / `session-state.ts`** — Persist plan/session state to disk and keep an in-memory per-`cwd` state map (completed steps, review rounds, last reviewed commit, unreviewed-edit metrics: `unreviewedTurns`, `unreviewedEditsTotal`, `unreviewedEditsFlushed`). `flushSessionState` folds edits still pending review into the cumulative `unreviewedEditsTotal` without double counting across repeated flushes.
@@ -375,6 +381,7 @@ Core keys:
 - `autoInjectContext` — prepend the active plan summary, current step, and scanned conventions to the main agent's context before every LLM call (default: `true`).
 - `contextInjectMaxTokens` — token budget for the injected context (default: `800`).
 - `codemapMaxTokens` — token budget for the project symbol map injected into review/judge prompts (default: `1500`; `0` disables codemap injection).
+- `designRefMaxTokens` — token budget for the design rules injected into review/judge prompts when UI files change (default: `800`; `0` disables design-rule injection).
 - `entryRenderer` — render wai audit entries with a custom TUI entry renderer (default: `true`).
 - `shortcuts` — register keyboard shortcuts for common wai actions (default: `true`).
 - `planWidget` — show a compact plan-progress widget above the editor (default: `true`).
@@ -405,6 +412,7 @@ The extension stores per-project runtime data under `.pi/yoowai/`:
 
 - `plan.json` — active plan, completed steps, review-round counter, and which completed steps were reviewed vs. manually marked done.
 - `conventions.json` — cached project conventions.
+- `design-ref.json` — user-curated UI/design rules (see `design-ref.ts`).
 - `cost.json` — estimated spend for the current Pi session.
 - `memory.json` — recent issues per file.
 - `index.json` — project symbol index (incremental reuse of unchanged files).
@@ -449,7 +457,7 @@ The extension stores per-project runtime data under `.pi/yoowai/`:
 ## Deployment / distribution
 
 - The package is consumed by Pi, not by end-users directly. Pi resolves it as an extension via `"pi": { "extensions": ["./src/index.ts"] }` in `package.json`.
-- The `files` array publishes `src/`, `scripts/`, and `README.md`. The `bin` entry exposes `scripts/setup.js` as `pi-yoowai` so `npx pi-yoowai setup` works; `npm run setup` runs it locally.
+- The `files` array publishes `src/`, `scripts/`, `design-refs/`, and `README.md`. The `bin` entry exposes `scripts/setup.js` as `pi-yoowai` so `npx pi-yoowai setup` works; `npm run setup` runs it locally.
 - Version bumps are done with `npm run bump:patch|minor|major`, which edits `package.json` in place.
 - CI runs in `.github/workflows/ci.yml`: on every push to `main` and every PR, it runs `npm ci`, typecheck, lint, `format:check`, and tests on `ubuntu-latest` and `windows-latest` (Node 22 only; the test glob requires Node ≥ 22). `npm publish` is additionally gated by the local `prepublishOnly` script. `.gitattributes` pins LF line endings so prettier and diffs behave the same on every platform.
 - There are no Docker files or deployment scripts in this repository.

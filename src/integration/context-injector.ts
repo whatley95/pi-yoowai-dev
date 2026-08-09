@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ContextEvent } from "@earendil-works/pi-coding-agent";
 import { loadYoowaiConfig } from "../config.js";
 import { loadConventions } from "../conventions.js";
+import { isUiFile } from "../design-ref.js";
+import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
 import { estimateTokens, truncateToTokenBudget } from "../token-budget.js";
 
@@ -59,6 +61,12 @@ function buildContextBlock(cwd: string): string {
   const parts: string[] = [];
   if (planSummary) parts.push(planSummary);
   if (conventionsText) parts.push(`<project_conventions>\n${conventionsText}\n</project_conventions>`);
+  // Surface the load-bearing design rules when unreviewed edits touch UI
+  // files so the main agent writes UI code against them before review.
+  if (editState.editedFiles.some(isUiFile)) {
+    const designRules = formatWriterDesignGuidance(cwd, 300);
+    if (designRules) parts.push(`<design_rules>\n${designRules}\n</design_rules>`);
+  }
   if (editState.editsSinceLastReview >= reviewThreshold) {
     const state = getState(cwd);
     const planNudge =
@@ -99,12 +107,16 @@ function buildContextBlock(cwd: string): string {
 function truncateBlock(block: string, maxTokens: number): string {
   if (estimateTokens(block) <= maxTokens) return block;
 
-  // Try removing conventions first while preserving plan + reminder.
-  const conventionsMatch = block.match(/<project_conventions>[\s\S]*?<\/project_conventions>/);
-  if (conventionsMatch) {
-    const withoutConventions = block.replace(conventionsMatch[0], "").replace(/\n\n+/g, "\n\n");
-    if (estimateTokens(withoutConventions) <= maxTokens) {
-      return withoutConventions;
+  // Drop the least critical sections first: design rules, then conventions,
+  // while preserving plan + reminder.
+  for (const tag of ["design_rules", "project_conventions"]) {
+    const match = block.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`));
+    if (match) {
+      const without = block.replace(match[0], "").replace(/\n\n+/g, "\n\n");
+      if (estimateTokens(without) <= maxTokens) {
+        return without;
+      }
+      block = without;
     }
   }
 

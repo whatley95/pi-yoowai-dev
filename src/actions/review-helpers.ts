@@ -169,6 +169,7 @@ export interface ReviewBatchInput {
   memoryContext: string;
   relatedContext?: string;
   codemap?: string;
+  designRefText?: string;
   truncated: boolean;
   droppedFiles: string[];
   budget: ReviewBudget;
@@ -206,6 +207,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
     memoryContext,
     relatedContext,
     codemap,
+    designRefText,
     truncated,
     droppedFiles,
     budget,
@@ -221,14 +223,16 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
   } = input;
 
   const systemPromptEstimate = 1000;
-  // The codemap is counted within the input budget but yields to file
-  // contents: it is deducted from what remains for the diff, after files.
+  // The codemap and design rules are counted within the input budget but
+  // yield to file contents: they are deducted from what remains for the
+  // diff, after files.
   const remainingForDiff = Math.max(
     0,
     budget.availableInputTokens -
       files.reduce((sum, f) => sum + f.tokenEstimate, 0) -
       systemPromptEstimate -
-      estimateTokens(codemap ?? ""),
+      estimateTokens(codemap ?? "") -
+      estimateTokens(designRefText ?? ""),
   );
   const diffTokens = estimateTokens(diff);
   const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
@@ -248,6 +252,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       memoryContext,
       relatedContext,
       codemap,
+      designRefText,
       truncated: diffTruncated,
       droppedFiles,
       budgetNote: `Context window: ${budget.contextWindow.toLocaleString()} tokens. Reserved output: ${budget.reservedOutputTokens.toLocaleString()}. Available for context: ${budget.availableInputTokens.toLocaleString()}.`,

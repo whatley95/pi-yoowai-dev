@@ -140,6 +140,7 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     autoInjectContext: true,
     contextInjectMaxTokens: 800,
     codemapMaxTokens: 1500,
+    designRefMaxTokens: 800,
     entryRenderer: true,
     shortcuts: true,
     planWidget: true,
@@ -222,6 +223,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   "autoInjectContext",
   "contextInjectMaxTokens",
   "codemapMaxTokens",
+  "designRefMaxTokens",
   "maxContinuations",
   "entryRenderer",
   "shortcuts",
@@ -493,6 +495,13 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
       o.codemapMaxTokens >= 0
         ? o.codemapMaxTokens
         : (base.codemapMaxTokens ?? 1500),
+    designRefMaxTokens:
+      typeof o.designRefMaxTokens === "number" &&
+      Number.isInteger(o.designRefMaxTokens) &&
+      Number.isFinite(o.designRefMaxTokens) &&
+      o.designRefMaxTokens >= 0
+        ? o.designRefMaxTokens
+        : (base.designRefMaxTokens ?? 800),
     entryRenderer: typeof o.entryRenderer === "boolean" ? o.entryRenderer : base.entryRenderer,
     shortcuts: typeof o.shortcuts === "boolean" ? o.shortcuts : base.shortcuts,
     planWidget: typeof o.planWidget === "boolean" ? o.planWidget : base.planWidget,

@@ -12,6 +12,7 @@ import {
   renderIndexCall,
   renderExplainCall,
   renderLearnCall,
+  renderDesignRefCall,
   renderAuxResult,
 } from "./render.js";
 import { resetCost } from "./cost-tracker.js";
@@ -33,6 +34,7 @@ import {
   verifyLearnedFactsDeep,
   formatVerificationReport,
 } from "./wai-learn.js";
+import { listDesignRefDocs, readDesignRefDoc, DESIGN_REF_TOPIC_DESCRIPTIONS } from "./design-ref.js";
 import { dropSessionState, resetEditsSinceDone, resetEditsSinceReview } from "./session-state.js";
 import { secondaryModelLabel } from "./actions/shared.js";
 import { executeWaiPlan } from "./actions/plan.js";
@@ -930,6 +932,97 @@ export default async function (pi: ExtensionAPI) {
     renderResult: (result, opts, theme, context) => renderAuxResult("learn", result, opts, theme, context),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       return runWaiLearnTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
+    },
+  });
+
+  async function runWaiDesignRefTool(
+    params: unknown,
+  ): Promise<
+    import("@earendil-works/pi-coding-agent").AgentToolResult<Record<string, unknown>> & { isError: boolean }
+  > {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+      return {
+        content: [{ type: "text", text: "wai_design_ref: Invalid parameters." }],
+        details: { error: "Invalid parameters." },
+        isError: true,
+      };
+    }
+    const r = params as Record<string, unknown>;
+    const topic = typeof r.topic === "string" && r.topic.trim() ? r.topic.trim() : undefined;
+    const doc = typeof r.doc === "string" && r.doc.trim() ? r.doc.trim() : undefined;
+
+    if (!topic) {
+      const topics = listDesignRefDocs();
+      if (topics.length === 0) {
+        return {
+          content: [{ type: "text", text: "No design reference docs are available (design-refs directory missing)." }],
+          details: { error: "design-refs directory missing" },
+          isError: true,
+        };
+      }
+      const lines = topics.map((t) => {
+        const desc = DESIGN_REF_TOPIC_DESCRIPTIONS[t.topic];
+        const docList = t.docs.length > 1 ? ` [docs: ${t.docs.join(", ")}]` : "";
+        return `- ${t.topic}${desc ? ` — ${desc}` : ""}${docList}`;
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Design reference topics (call wai_design_ref with a topic to read its guidance):\n${lines.join("\n")}`,
+          },
+        ],
+        details: { topic: "list", topics: topics.map((t) => t.topic) },
+        isError: false,
+      };
+    }
+
+    try {
+      const content = readDesignRefDoc(topic, doc);
+      return {
+        content: [{ type: "text", text: content }],
+        details: { topic, doc: doc ?? "SKILL.md" },
+        isError: false,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text", text: `wai_design_ref: ${message}` }],
+        details: { error: message },
+        isError: true,
+      };
+    }
+  }
+
+  pi.registerTool({
+    name: "wai_design_ref",
+    label: "Wai Design Ref — UI Design Guidance",
+    description:
+      "Read curated UI/animation design guidance (vendored from Emil Kowalski's skills, MIT). Call this when building, reviewing, or improving UI/animation code to get detailed design guidance.",
+    promptSnippet: "wai_design_ref: read detailed UI/animation design guidance for a topic",
+    promptGuidelines: [
+      "Call wai_design_ref when building, reviewing, or improving UI/animation code to get detailed design guidance.",
+      "Call without a topic to list the available topics and their docs.",
+      "Pass a topic (e.g. 'animate', 'review-animations', 'apple-design') to read its SKILL.md guidance.",
+      "Pass doc to read a specific document of a topic (e.g. topic 'improve-animations', doc 'AUDIT.md').",
+      "The distilled baseline rules are already injected automatically for UI files; use this tool for depth.",
+    ],
+    parameters: Type.Object({
+      topic: Type.Optional(
+        Type.String({
+          description: "Design reference topic to read. Omit to list all topics.",
+        }),
+      ),
+      doc: Type.Optional(
+        Type.String({
+          description: "Specific markdown doc within the topic (default: SKILL.md).",
+        }),
+      ),
+    }),
+    renderCall: (args, theme, context) => renderDesignRefCall(args as { topic?: string; doc?: string }, theme, context),
+    renderResult: (result, opts, theme, context) => renderAuxResult("design-ref", result, opts, theme, context),
+    async execute(_toolCallId, params) {
+      return runWaiDesignRefTool(params);
     },
   });
 

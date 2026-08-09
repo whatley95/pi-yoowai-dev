@@ -3,6 +3,7 @@ import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { getDiff } from "../diff-grabber.js";
 import { buildCodemap } from "../codemap.js";
+import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
@@ -79,6 +80,9 @@ export async function executeWaiJudge(
   const conventionsText = conventions ? formatConventions(conventions) : "";
   const memoryContext = getPastIssuesForFiles(cwd, changedFiles);
   const codemap = buildCodemap(cwd, changedFiles, config.codemapMaxTokens ?? 1500);
+  const designRefText = changedFiles.some(isUiFile)
+    ? formatDesignRulesForPrompt(cwd, config.designRefMaxTokens ?? 800)
+    : "";
 
   progress(2, STAGES.judge, "Calculating token budget…");
   let preReviewOutput = "";
@@ -140,11 +144,16 @@ export async function executeWaiJudge(
         });
 
   const systemPromptEstimate = 1000;
-  // The codemap is counted within the input budget but yields to file
-  // contents: it is deducted from what remains for the diff, after files.
+  // The codemap and design rules are counted within the input budget but
+  // yield to file contents: they are deducted from what remains for the
+  // diff, after files.
   const remainingForDiff = Math.max(
     0,
-    budgetWithPreReview.availableInputTokens - fileResult.totalTokens - systemPromptEstimate - estimateTokens(codemap),
+    budgetWithPreReview.availableInputTokens -
+      fileResult.totalTokens -
+      systemPromptEstimate -
+      estimateTokens(codemap) -
+      estimateTokens(designRefText),
   );
   const diffTokens = estimateTokens(diff);
   const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
@@ -159,6 +168,7 @@ export async function executeWaiJudge(
     preReviewOutput,
     memoryContext,
     codemap,
+    designRefText,
     diff: finalDiff,
     fileContents: fileResult.entries.map((f) => ({ file: f.file, content: f.content, mode: f.mode })),
     truncated: finalDiffTruncated,

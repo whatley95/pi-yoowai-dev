@@ -15,6 +15,7 @@
   "files": [
     "src",
     "scripts",
+    "design-refs",
     "README.md"
   ],
   "pi": {

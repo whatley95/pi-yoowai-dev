@@ -183,6 +183,19 @@ export function renderLearnCall(
   return text;
 }
 
+/** Render a call to the wai_design_ref tool. */
+export function renderDesignRefCall(
+  args: { topic?: string; doc?: string },
+  theme: Theme,
+  context?: ToolRenderContext,
+): Text {
+  const topic = typeof args.topic === "string" && args.topic ? args.topic : "topics";
+  const doc = typeof args.doc === "string" && args.doc ? ` ${args.doc}` : "";
+  const text = getTextComponent(context);
+  text.setText(theme.fg("accent", `wai design-ref: ${topic}${doc}`));
+  return text;
+}
+
 export function renderResult(
   result: AgentToolResult<WaiToolResult>,
   opts: ToolRenderResultOptions,
@@ -336,7 +349,7 @@ function truncate(text: string, maxLen: number): string {
  *  text content. The row name is the registered tool name, so learn shows
  *  "wai learn" even when the progress reporter ran under the explain action. */
 export function renderAuxResult(
-  name: "index" | "explain" | "learn",
+  name: "index" | "explain" | "learn" | "design-ref",
   result: AgentToolResult<unknown>,
   opts: ToolRenderResultOptions,
   theme: Theme,
@@ -369,6 +382,9 @@ export function renderAuxResult(
     lines.push(theme.fg("accent", `wai index: ${topic}${details.indexUpdated ? " (updated)" : ""}`));
   } else if (name === "explain") {
     lines.push(theme.fg("accent", `wai explain${modelSuffix(details.model as StageProfile | undefined)}`));
+  } else if (name === "design-ref") {
+    const topic = typeof details.topic === "string" ? details.topic : "topics";
+    lines.push(theme.fg("accent", `wai design-ref: ${topic}`));
   } else if (Array.isArray(details.verify)) {
     lines.push(theme.fg("green", `wai learn verify ✓ · ${details.verify.length} fact(s)`));
   } else if (Array.isArray(details.learned)) {
