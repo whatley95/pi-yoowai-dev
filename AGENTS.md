@@ -58,7 +58,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 - **Runtime:** Node.js (CI runs Node 22; the test glob requires Node ≥ 22).
 - **Host platform:** Pi coding agent (`@earendil-works/pi-coding-agent`).
 - **Validation schemas:** `@sinclair/typebox` (used only for tool parameter shapes).
-- **Runtime dependencies:** `typescript` (used lazily by `ast-context.ts` / `project-index.ts` via the compiler API) and `duck-duck-scrape` (lazy-loaded for DuckDuckGo web search in `doc-fetcher.ts`). Everything else is a peer/dev dependency of the Pi host.
+- **Runtime dependencies:** `typescript` (used lazily by `ast-context.ts` / `project-index.ts` via the compiler API), `duck-duck-scrape` (lazy-loaded for DuckDuckGo web search in `doc-fetcher.ts`), and `mupdf` (pure-WASM PDF text extraction and page rendering, lazy-loaded by `wai-vision.ts`). Everything else is a peer/dev dependency of the Pi host.
 - **TUI components:** `@earendil-works/pi-tui` (peer dependency; used in `src/render.ts` for tool call/result rendering).
 - **Linting:** ESLint 10 with `@eslint/js` and `typescript-eslint` recommended configs.
 - **Formatting:** Prettier (printWidth 120, double quotes, semicolons, trailing commas).
@@ -242,7 +242,7 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
   - `verify.ts` — Secondary-model self-verification loop for structured results.
   - `shared.ts` — Cross-action helpers: `STAGES`, cost recording, JSON parsing, usage merging.
 - **`wai-explain.ts`** — Handles `/wai-explain`: explains code/error/file with the secondary model (optional doc context).
-- **`wai-vision.ts`** — Backs the `wai_vision` tool and `/wai-vision`: validates the image path (`path-security`), maps extension → mime type (png/jpg/jpeg/webp/gif, 5 MB cap), base64-encodes the image, and calls the secondary model with the image attached (`CallSecondaryModelOptions.images`). Images ride only the SDK backend (pi-ai `ImageContent`) and the model must declare image input in Pi's catalog; the `taskModels.vision` override (settable via `/wai-model`) picks a vision-capable model when the base model is text-only.
+- **`wai-vision.ts`** — Backs the `wai_vision` tool and `/wai-vision`: validates the input path (`path-security`), and loads either an image (png/jpg/jpeg/webp/gif, 5 MB cap, base64-encoded) or a PDF (20 MB cap). PDFs with a text layer go through `mupdf` text extraction (first 10 pages, 100k chars) as a plain text call that any model can answer; scanned PDFs are rendered to PNG (up to 3 pages at 2× scale) and take the image path. Images ride only the SDK backend (pi-ai `ImageContent`) and the model must declare image input in Pi's catalog or runtime registry; the `taskModels.vision` override (settable via `/wai-model`) picks a vision-capable model when the base model is text-only.
 - **`wai-index.ts`** — Handles `/wai-index`: reads stored project context (plan, memory, conventions, cost, logs, index, learned).
 - **`wai-learn.ts`** — Handles `/wai-learn`: records/verifies project facts for future sessions.
 - **`wai-search.ts`** — Handles `/wai-search`: validates the query, checks `pi-yoowai.docs.webSearch.enabled`, runs web search via `doc-fetcher.ts`, and formats raw results.

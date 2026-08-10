@@ -4,6 +4,7 @@ export {
   buildPlanPrompt,
   buildExplainPrompt,
   buildVisionPrompt,
+  buildPdfAnalysisPrompt,
   buildStepVerificationPrompt,
   buildAdaptiveReviewPrompt,
   buildScanPrompt,

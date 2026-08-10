@@ -442,15 +442,18 @@ Call this when building, reviewing, or improving UI/animation code to get detail
 
 ### `wai_vision` tool
 
-Analyze an image file (screenshot, UI mockup, diagram, error capture) with a vision-capable secondary model.
+Analyze an image file (screenshot, UI mockup, diagram, error capture) or a PDF document with the secondary model.
 
 | Call                                                                                               | What it does                               |
 | -------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | `wai_vision({ path: "docs/settings.png" })`                                                        | Full analysis of the image                 |
 | `wai_vision({ path: "docs/settings.png", question: "does this match the design rules?" })`         | Answers a focused question about the image |
 | `wai_vision({ path: "tmp/error.png", question: "what caused this?", context: "after npm start" })` | Analyzes with extra background context     |
+| `wai_vision({ path: "docs/invoice.pdf", question: "what is the total?" })`                         | Analyzes a PDF document                    |
 
-The path must be project-relative; supported types are png/jpg/jpeg/webp/gif up to 5 MB. Vision requires the **sdk backend** and a model that accepts image input — if your base `secondary` model is text-only, assign a vision-capable model to the vision task via `/wai-model` (writes `taskModels.vision`).
+The path must be project-relative; images are png/jpg/jpeg/webp/gif up to 5 MB, PDFs up to 20 MB. PDFs are handled two ways: when the document has a **text layer**, the text is extracted (via `mupdf`, pure WASM) and analyzed as a plain text call — cheaper, exact, and works with **any** text model. Scanned/image-only PDFs are rendered to PNG (up to 3 pages) and go through the image path below.
+
+Image analysis (including scanned PDFs) requires the **sdk backend** and a model that accepts image input — if your base `secondary` model is text-only, assign a vision-capable model to the vision task via `/wai-model` (writes `taskModels.vision`).
 
 ## Commands
 

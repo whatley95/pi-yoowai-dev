@@ -4,8 +4,17 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
-import { imageMimeType, loadVisionImage, validateWaiVisionParams, VISION_MAX_IMAGE_BYTES } from "./wai-vision.js";
-import { buildVisionPrompt } from "./prompts.js";
+import {
+  executeWaiVision,
+  imageMimeType,
+  isSupportedVisionPath,
+  loadVisionImage,
+  loadVisionInput,
+  loadVisionPdf,
+  validateWaiVisionParams,
+  VISION_MAX_IMAGE_BYTES,
+} from "./wai-vision.js";
+import { buildPdfAnalysisPrompt, buildVisionPrompt } from "./prompts.js";
 import { callSecondaryModel, setSdkGetModelOverride, setSdkStreamSimpleOverride } from "./secondary-model.js";
 
 const tmpDirs: string[] = [];
@@ -68,6 +77,38 @@ function fakeSdkStream(message: AssistantMessage): import("@earendil-works/pi-ai
       yield { type: "done", reason: "stop", message };
     },
   } as unknown as import("@earendil-works/pi-ai").AssistantMessageEventStream;
+}
+
+/** Minimal one-page PDF with a Helvetica text layer (mupdf repairs the missing xref). */
+function textPdf(text: string): Buffer {
+  return Buffer.from(
+    [
+      "%PDF-1.4",
+      "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+      "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+      "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj",
+      "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+      "5 0 obj << /Length 40 >> stream",
+      `BT /F1 24 Tf 72 720 Td (${text}) Tj ET`,
+      "endstream endobj",
+      "trailer << /Root 1 0 R >>",
+      "%%EOF",
+    ].join("\n"),
+  );
+}
+
+/** Minimal one-page PDF with no content stream (no text layer). */
+function blankPdf(): Buffer {
+  return Buffer.from(
+    [
+      "%PDF-1.4",
+      "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+      "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+      "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >> endobj",
+      "trailer << /Root 1 0 R >>",
+      "%%EOF",
+    ].join("\n"),
+  );
 }
 
 after(() => {
@@ -164,6 +205,90 @@ describe("wai-vision image loading", () => {
   });
 });
 
+describe("wai-vision pdf loading", () => {
+  it("accepts .pdf as a supported path", () => {
+    assert.equal(isSupportedVisionPath("doc.pdf"), true);
+    assert.equal(isSupportedVisionPath("doc.PDF"), true);
+    assert.equal(isSupportedVisionPath("doc.png"), true);
+    assert.equal(isSupportedVisionPath("doc.txt"), false);
+  });
+
+  it("extracts the text layer from a text PDF", async () => {
+    const cwd = makeTempDir("wai-vision-pdf-text-");
+    writeFileSync(join(cwd, "invoice.pdf"), textPdf("INVOICE-6VXU7PB7-0001 Total: 42.00 due 2026-08-31"));
+    const result = await loadVisionPdf(cwd, "invoice.pdf");
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.input.kind, "text");
+      if (result.input.kind === "text") {
+        assert.match(result.input.text, /INVOICE-6VXU7PB7-0001/);
+        assert.equal(result.input.pages, 1);
+      }
+    }
+  });
+
+  it("renders pages to PNG when the PDF has no text layer", async () => {
+    const cwd = makeTempDir("wai-vision-pdf-blank-");
+    writeFileSync(join(cwd, "scanned.pdf"), blankPdf());
+    const result = await loadVisionPdf(cwd, "scanned.pdf");
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.input.kind, "image");
+      if (result.input.kind === "image") {
+        assert.equal(result.input.mimeType, "application/pdf");
+        assert.equal(result.input.images.length, 1);
+        const png = Buffer.from(result.input.images[0].data, "base64");
+        assert.deepEqual([...png.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+      }
+    }
+  });
+
+  it("rejects missing and out-of-project PDFs", async () => {
+    const cwd = makeTempDir("wai-vision-pdf-missing-");
+    assert.equal((await loadVisionPdf(cwd, "nope.pdf")).ok, false);
+    assert.equal((await loadVisionPdf(cwd, "../secret.pdf")).ok, false);
+  });
+
+  it("rejects corrupt PDFs with a parse error", async () => {
+    const cwd = makeTempDir("wai-vision-pdf-corrupt-");
+    writeFileSync(join(cwd, "broken.pdf"), Buffer.from("not a pdf at all"));
+    const result = await loadVisionPdf(cwd, "broken.pdf");
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.error, /Cannot parse PDF/);
+  });
+
+  it("dispatches .pdf through loadVisionInput", async () => {
+    const cwd = makeTempDir("wai-vision-pdf-dispatch-");
+    writeFileSync(join(cwd, "doc.pdf"), textPdf("DISPATCH-TEST-1234 some more text here to pass the threshold"));
+    const result = await loadVisionInput(cwd, "doc.pdf");
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.input.kind, "text");
+  });
+});
+
+describe("wai-vision pdf prompt", () => {
+  it("includes extracted text, question, and context", () => {
+    const { system, user } = buildPdfAnalysisPrompt(
+      "docs/invoice.pdf",
+      "Total: 42.00",
+      1,
+      "what is the total?",
+      "billing",
+    );
+    assert.match(system, /PDF document text/i);
+    assert.match(user, /docs\/invoice\.pdf \(1 page\)/);
+    assert.match(user, /what is the total\?/);
+    assert.match(user, /billing/);
+    assert.match(user, /<pdf_text>\nTotal: 42\.00\n<\/pdf_text>/);
+  });
+
+  it("falls back to a default analysis question", () => {
+    const { user } = buildPdfAnalysisPrompt("doc.pdf", "text", 3);
+    assert.match(user, /\(3 pages\)/);
+    assert.match(user, /Analyze this document/);
+  });
+});
+
 describe("wai-vision prompt", () => {
   it("includes the question and context when given", () => {
     const { system, user } = buildVisionPrompt("docs/ui.png", "does this match?", "settings dialog");
@@ -239,5 +364,36 @@ describe("wai-vision model call", () => {
       { type: "text", text: "usr" },
       { type: "image", data: "aGk=", mimeType: "image/png" },
     ]);
+  });
+
+  it("sends text-layer PDFs as a plain text call, no vision model required", async () => {
+    const cwd = makeTempDir("wai-vision-pdf-call-");
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", apiKey: "sk-test" });
+    writeFileSync(join(cwd, "invoice.pdf"), textPdf("INVOICE-PDF-CALL-7 Total: 99.00 due 2026-08-31"));
+    // A text-only model would throw if images were attached.
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId, ["text"]));
+    let capturedContent: unknown;
+    setSdkStreamSimpleOverride(((_model: unknown, context: { messages: { content: unknown }[] }) => {
+      capturedContent = context.messages[0].content;
+      return fakeSdkStream(fakeSdkAssistantMessage("pdf analysis ok"));
+    }) as never);
+
+    const result = await executeWaiVision(
+      cwd,
+      { path: "invoice.pdf", question: "what is the total?" },
+      undefined,
+      () => {},
+    );
+    assert.ok("result" in result, JSON.stringify(result));
+    if ("result" in result) {
+      assert.equal(result.result.details, "pdf analysis ok");
+      assert.equal(result.result.mimeType, "application/pdf");
+    }
+
+    const blocks = capturedContent as { type: string; text?: string }[];
+    assert.equal(blocks.length, 1, "text-layer PDFs attach no image blocks");
+    assert.equal(blocks[0].type, "text");
+    assert.match(blocks[0].text ?? "", /INVOICE-PDF-CALL-7/);
+    assert.match(blocks[0].text ?? "", /what is the total\?/);
   });
 });

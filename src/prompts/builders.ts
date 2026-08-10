@@ -865,6 +865,35 @@ Rules:
   };
 }
 
+function buildPdfAnalysisPromptImpl(
+  pdfPath: string,
+  extractedText: string,
+  pages: number,
+  question?: string,
+  context?: string,
+): { system: string; user: string } {
+  const questionBlock = question
+    ? `Question about the document:\n${question}`
+    : "Analyze this document. Summarize what it is, extract the key facts (parties, dates, amounts, identifiers, requirements), and note anything unusual.";
+  const contextBlock = context ? `\n\n<context>\n${context}\n</context>` : "";
+
+  return {
+    system: `${COMMON_SYSTEM_PREFIX}
+
+Analyze the provided PDF document text for the developer. Be concise but complete. Assume they are a senior engineer who wants the facts, not a generic summary.
+
+Rules:
+- Answer the question directly first, then add supporting detail
+- Extract concrete facts exactly as written: names, dates, amounts, invoice/order numbers, emails, addresses
+- If the document is a spec or RFC, restate the requirements precisely
+- If the text looks garbled or truncated (extraction artifacts), say so instead of guessing
+- Do NOT invent content that is not in the extracted text
+- Do NOT include commentary outside the analysis`,
+
+    user: `PDF file: ${pdfPath} (${pages} page${pages === 1 ? "" : "s"})\n\n${questionBlock}${contextBlock}\n\n<pdf_text>\n${extractedText}\n</pdf_text>`,
+  };
+}
+
 function buildStepVerificationPromptImpl(stepDescription: string, diff: string): { system: string; user: string } {
   return {
     system: `${COMMON_SYSTEM_PREFIX}
@@ -890,6 +919,7 @@ Rules:
 export const buildPlanPrompt = memoizePromptBuilder(buildPlanPromptImpl);
 export const buildExplainPrompt = memoizePromptBuilder(buildExplainPromptImpl);
 export const buildVisionPrompt = memoizePromptBuilder(buildVisionPromptImpl);
+export const buildPdfAnalysisPrompt = memoizePromptBuilder(buildPdfAnalysisPromptImpl);
 export const buildStepVerificationPrompt = buildStepVerificationPromptImpl;
 // Review prompts include large, highly-dynamic diffs and file contents, so caching them
 // adds memory pressure and key-serialization cost for near-zero hit rates.
