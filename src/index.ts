@@ -844,9 +844,10 @@ export default async function (pi: ExtensionAPI) {
     label: "Wai Vision — Image Analysis",
     description:
       "Analyze an image file (screenshot, diagram, error capture) or PDF document with a vision-capable secondary model. " +
-      "The path must be project-relative. PDFs use their text layer when present (any text model works) and are " +
-      "rendered to images when scanned. Image analysis requires the sdk backend and a model that accepts image " +
-      "input (configure one via /wai-model for the vision task if the base model is text-only).",
+      "The path may be project-relative or absolute (e.g. a file in Downloads). PDFs use their text layer when " +
+      "present (any text model works) and are rendered to images when scanned. Image analysis requires the sdk " +
+      "backend and a model that accepts image input (configure one via /wai-model for the vision task if the base " +
+      "model is text-only).",
     promptSnippet: "wai_vision: analyze this image or PDF before acting on it",
     promptGuidelines: [
       "Call wai_vision when the user references a screenshot, UI mockup, diagram, error capture, or PDF document in the project.",
@@ -856,7 +857,7 @@ export default async function (pi: ExtensionAPI) {
     parameters: Type.Object({
       path: Type.String({
         description:
-          "Project-relative path to the image (png, jpg, jpeg, webp, gif; max 5 MB) or PDF (max 20 MB). Required.",
+          "Path to the image (png, jpg, jpeg, webp, gif; max 5 MB) or PDF (max 20 MB). Project-relative or absolute. Required.",
       }),
       question: Type.Optional(
         Type.String({

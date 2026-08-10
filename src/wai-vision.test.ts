@@ -169,6 +169,25 @@ describe("wai-vision image loading", () => {
     assert.equal(result.ok, false);
   });
 
+  it("accepts absolute paths outside the project for media files", () => {
+    const cwd = makeTempDir("wai-vision-abs-cwd-");
+    const outside = makeTempDir("wai-vision-abs-outside-");
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const absPath = join(outside, "invoice-shot.png");
+    writeFileSync(absPath, bytes);
+    const result = loadVisionImage(cwd, absPath);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.mimeType, "image/png");
+      assert.equal(Buffer.from(result.data, "base64").equals(bytes), true);
+    }
+  });
+
+  it("rejects NUL bytes in paths", () => {
+    const cwd = makeTempDir("wai-vision-nul-");
+    assert.equal(loadVisionImage(cwd, "a\0.png").ok, false);
+  });
+
   it("rejects unsupported extensions", () => {
     const cwd = makeTempDir("wai-vision-ext-");
     writeFileSync(join(cwd, "notes.txt"), "hello");
@@ -247,6 +266,19 @@ describe("wai-vision pdf loading", () => {
     const cwd = makeTempDir("wai-vision-pdf-missing-");
     assert.equal((await loadVisionPdf(cwd, "nope.pdf")).ok, false);
     assert.equal((await loadVisionPdf(cwd, "../secret.pdf")).ok, false);
+  });
+
+  it("accepts absolute PDF paths outside the project", async () => {
+    const cwd = makeTempDir("wai-vision-pdf-abs-cwd-");
+    const outside = makeTempDir("wai-vision-pdf-abs-outside-");
+    const absPath = join(outside, "invoice.pdf");
+    writeFileSync(absPath, textPdf("ABSOLUTE-PDF-9 Total: 7.00 due 2026-09-30 paid in full"));
+    const result = await loadVisionPdf(cwd, absPath);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.input.kind, "text");
+      if (result.input.kind === "text") assert.match(result.input.text, /ABSOLUTE-PDF-9/);
+    }
   });
 
   it("rejects corrupt PDFs with a parse error", async () => {

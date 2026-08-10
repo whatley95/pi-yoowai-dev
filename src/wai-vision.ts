@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { extname } from "node:path";
+import { extname, isAbsolute, normalize } from "node:path";
 import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { callSecondaryModel } from "./secondary-model.js";
 import { recordCost } from "./cost-tracker.js";
@@ -67,14 +67,27 @@ export function validateWaiVisionParams(
   return { ok: true, params };
 }
 
-/** Resolve and validate the image file: project-relative path, supported type, size cap. */
+/** Resolve a vision input path. Relative paths must stay inside the project
+ *  (path-traversal guard); absolute paths are allowed because the extension
+ *  whitelist (images + .pdf), size caps, and the caller's explicit intent bound
+ *  what can leave the machine — reading Downloads/Desktop media directly beats
+ *  copying files into the project tree (which would pollute git status/diffs). */
+export function resolveVisionPath(cwd: string, path: string): string | null {
+  if (!path || path.includes("\0")) return null;
+  if (isAbsolute(path)) {
+    return normalize(path);
+  }
+  return resolveProjectPath(cwd, path);
+}
+
+/** Resolve and validate the image file: supported type, size cap. */
 export function loadVisionImage(
   cwd: string,
   path: string,
 ): { ok: false; error: string } | { ok: true; data: string; mimeType: string } {
-  const safePath = resolveProjectPath(cwd, path);
+  const safePath = resolveVisionPath(cwd, path);
   if (!safePath) {
-    return { ok: false, error: `Invalid image path "${path}": must be a project-relative path inside the project.` };
+    return { ok: false, error: `Invalid image path "${path}": use a project-relative or absolute path to an image.` };
   }
   const mimeType = imageMimeType(safePath);
   if (!mimeType) {
@@ -145,9 +158,9 @@ export async function loadVisionPdf(
   cwd: string,
   path: string,
 ): Promise<{ ok: false; error: string } | { ok: true; input: VisionInput }> {
-  const safePath = resolveProjectPath(cwd, path);
+  const safePath = resolveVisionPath(cwd, path);
   if (!safePath) {
-    return { ok: false, error: `Invalid PDF path "${path}": must be a project-relative path inside the project.` };
+    return { ok: false, error: `Invalid PDF path "${path}": use a project-relative or absolute path to a PDF.` };
   }
   if (!existsSync(safePath)) {
     return { ok: false, error: `PDF not found: ${path}` };
