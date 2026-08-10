@@ -137,6 +137,15 @@ async function runSingleAttempt(
     config?.modelInfo,
   );
 
+  // Images can only be carried by the SDK backend (pi-ai ImageContent); the pi
+  // CLI and the direct HTTP payloads have no image path here.
+  if (options.images && options.images.length > 0 && backend !== "sdk") {
+    throw new Error(
+      `Image analysis requires the sdk backend, but "${provider}:${model}" resolves to "${backend}". ` +
+        `Remove secondary.baseUrl/backend overrides for the vision task, or pick a different model via /wai-model.`,
+    );
+  }
+
   const thinkingEnabledForBudget = Boolean(thinking) && thinking?.toLowerCase() !== "off";
   const modelInfoForBudget = cwd ? resolveModelInfo(provider, model, sdkModelInfo ?? modelInfoOverride) : undefined;
 
@@ -186,6 +195,7 @@ async function runSingleAttempt(
           sdkModelInfo,
           structuredOutput: opts.structuredOutput,
           onStreamProgress: opts.onStreamProgress,
+          images: opts.images,
         });
       }
 
@@ -218,7 +228,9 @@ async function runSingleAttempt(
         opts.structuredOutput,
       );
     } catch (err) {
-      if (backend === "sdk" && (isRetryableBackendError(err) || isMissingApiKeyError(err))) {
+      // Never fall back to the pi backend with images attached — it cannot carry
+      // them, so the model would answer about an image it cannot see.
+      if (backend === "sdk" && !opts.images?.length && (isRetryableBackendError(err) || isMissingApiKeyError(err))) {
         if (cwd) {
           logEvent(cwd, "warn", "SDK backend failed; falling back to pi backend", {
             provider,

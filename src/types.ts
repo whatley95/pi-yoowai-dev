@@ -19,7 +19,8 @@ export type WaiModelTask =
   | "test"
   | "security"
   | "done"
-  | "explain";
+  | "explain"
+  | "vision";
 
 /** Review depth preset. Higher levels spend more tokens and catch deeper issues. */
 export type ReviewLevel = "min" | "med" | "high";
@@ -367,6 +368,15 @@ export interface CallSecondaryModelOptions {
   enableToolLoop?: boolean;
   /** Maximum tool-use iterations when enableToolLoop is true. Defaults to 3. */
   maxToolIterations?: number;
+  /** Images to attach to the user message (base64). SDK backend only; the model
+   *  must declare image input support in Pi's catalog. */
+  images?: VisionImage[];
+}
+
+/** A base64-encoded image attached to a secondary-model call. */
+export interface VisionImage {
+  data: string;
+  mimeType: string;
 }
 
 export interface MemoryEntry {
@@ -406,6 +416,13 @@ export interface ExplainResult {
   summary: string;
   details: string;
   relatedFiles?: string[];
+}
+
+export interface VisionResult {
+  summary: string;
+  details: string;
+  imagePath: string;
+  mimeType: string;
 }
 
 export interface DoneResult {

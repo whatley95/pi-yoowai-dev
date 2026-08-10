@@ -111,57 +111,57 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 
 ### Options
 
-| Option                         | Type                                    | Description                                                                                                                         |
-| ------------------------------ | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `secondary`                    | object                                  | `{ provider, id, thinking? }` for the base secondary model                                                                          |
-| `taskModels`                   | object                                  | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `explain`) |
-| `judgeCouncil`                 | array                                   | Council of models that judge in parallel — entry shape in [Configuration](#configuration), behavior in [Judge council](#judge-council) (default: `[]`, single-model judge) |
-| `presets`                      | object                                  | Named model presets (`{ secondary?, taskModels? }`) applied to the global settings file with `/wai-preset <name>`; preview with `/wai-preset show <name>` |
-| `autoJudge`                    | boolean                                 | Run `wai.judge` automatically when the last plan step passes review, is marked done via `/wai-done`, or when the agent settles after all steps are complete |
-| `autoReviewOnSettle`           | boolean                                 | Run `wai.review` automatically when the agent settles with unreviewed edits pending, before any auto-judge (default: `true`)                           |
-| `requireReviewBeforeDone`      | boolean                                 | Block `wai.done` / `/wai-done` from marking steps complete while unreviewed edits are pending; override with `force: true` / `--force` (default: `true`) |
-| `steerEscalationThreshold`     | number                                  | Consecutive turns ending with unreviewed edits pending before the workflow reminder escalates to a stop directive (default: `3`)                        |
-| `verifyDoneClaims`             | boolean                                 | Verify `wai.done` step-completion claims against the diff with the secondary model (default: `true`)                                                   |
-| `reviewReminderEdits`          | number                                  | Unreviewed edit count that triggers the workflow reminder and the footer "review pending" notice (default: `3`)                                        |
-| `maxContinuations`             | number                                  | Follow-up calls used to complete a length-truncated secondary-model response (default: `3`)                                                            |
-| `autoInjectContext`            | boolean                                 | Inject the active wai plan and conventions into the main agent's context before each LLM call (default: `true`)                   |
-| `contextInjectMaxTokens`       | number                                  | Token budget for the injected plan/conventions context (default: `800`)                                                             |
-| `codemapMaxTokens`             | number                                  | Token budget for the project symbol map injected into review/judge prompts (default: `1500`; `0` disables)                          |
-| `designRefMaxTokens`           | number                                  | Token budget for user-curated design rules injected into review/judge prompts when UI files change (default: `800`; `0` disables)   |
-| `entryRenderer`                | boolean                                 | Render wai audit entries with a custom TUI entry renderer (default: `true`)                                                         |
-| `shortcuts`                    | boolean                                 | Register keyboard shortcuts for common wai actions (default: `true`)                                                                |
-| `planWidget`                   | boolean                                 | Show a compact plan-progress widget above the editor, including a "blocked by step N" line when the current step's `dependsOn` steps are unmet (default: `true`)                                                              |
-| `registerProvider`             | boolean                                 | Register the configured secondary model as a Pi provider named `wai` (default: `false`)                                             |
-| `preReviewCommands`            | string[]                                | Commands to run before each review; output is included in the review prompt                                                         |
-| `testCommand`                  | string                                  | Command to run for `/wai test` analysis (e.g. `npm test`). Auto-detected from `package.json` if omitted                             |
-| `costBudgetUsd`                | number                                  | Maximum estimated session spend before wai stops with an error. Negative values are treated as unset; `0` means no spend is allowed |
-| `reviewMaxDiffChars`           | number                                  | Legacy cap on diff characters; prefer `reviewMaxInputTokens`                                                                        |
-| `reviewFullFileThresholdLines` | number                                  | Include full content for changed files under this line count (default: 300)                                                         |
-| `reviewMaxInputTokens`         | number                                  | Hard cap on review input tokens                                                                                                     |
-| `reviewMaxConventionsTokens`   | number                                  | Max tokens of project conventions included in review prompts (default: 1000)                                                        |
-| `reviewMaxMemoryTokens`        | number                                  | Max tokens of past review issues included in review prompts (default: 800)                                                          |
-| `reviewStrategy`               | `"auto" \| "diff-only" \| "full-files"` | How to include changed file contents (default: `"auto"`)                                                                            |
-| `verifyByDefault`              | boolean                                 | If true, every wai result asks the main agent to confirm the finding with evidence                                                  |
-| `selfVerify`                   | boolean                                 | Run a second verification pass on `wai.review` and `wai.judge` results (costs extra tokens)                                         |
-| `toolUseLoop`                  | boolean \| number                       | Let the secondary model use `read_file`, `search_code`, and allowlisted `run_command` in a loop; number sets the max iterations (default: 5). `read_file` supports optional `startLine`/`endLine` paging, truncated files report their line count, `search_code` finds regex matches (optional path scope, 0-5 context lines), and long command output keeps head + tail. Model-generated commands are restricted to read-only subcommands for `git`/`svn`/package managers |
-| `parallelReview`               | boolean \| number                       | Review multiple changed files in parallel; number sets concurrency (default: 3 when enabled)                                        |
-| `deepScan`                     | boolean \| number                       | Include code samples and build a symbol index during `wai.scan`; number caps sample files                                           |
-| `secondary.contextWindow`      | number                                  | Override the model's context window                                                                                                 |
-| `secondary.maxOutputTokens`    | number                                  | Override the model's max output tokens                                                                                              |
-| `secondary.backend`            | `"sdk" \| "pi" \| "http"`              | Backend for model calls. `"sdk"` uses Pi's `pi-ai` provider layer (default); `"pi"` spawns the Pi CLI; `"http"` uses direct provider HTTP |
-| `secondary.cacheRetention`     | `"none" \| "short" \| "long"`          | SDK cache retention hint (SDK backend only, default: `"short"` to match the main Pi agent)                                         |
-| `secondary.transport`          | `"sse" \| "websocket" \| "websocket-cached" \| "auto"` | SDK HTTP transport hint (SDK backend only)                                                                            |
-| `secondary.maxRetries`         | number                                  | Maximum SDK request retries (SDK backend only, default: 3)                                                                          |
-| `secondary.maxRetryDelayMs`    | number                                  | Maximum delay between SDK retries in ms (SDK backend only, default: 60000)                                                          |
-| `secondary.timeoutMs`          | number                                  | SDK request timeout in ms (SDK backend only, default: 300000 = 5 min)                                                               |
-| `secondary.apiKey`             | string                                  | Inline API key (prefer `auth.json` or env vars)                                                                                     |
-| `secondary.style`              | `"openai-compatible" \| "anthropic"`    | API style when using `baseUrl` (default: `"openai-compatible"`)                                                                     |
-| `secondary.authHeader`         | `string \| boolean`                     | Custom auth header name when using `baseUrl`; set to `false` to omit the auth header when registering the provider with Pi          |
-| `secondary.authPrefix`         | string                                  | Custom auth prefix when using `baseUrl`                                                                                             |
-| `modelInfo`                    | object                                  | Per-model token budget overrides, keyed by model id                                                                                 |
-| `processTimeoutMs`             | number                                  | Timeout in ms for child pi process calls (default: 300000 = 5 min)                                                                  |
-| `testTimeoutMs`                | number                                  | Timeout in ms per model in `/wai test` (default: 120000 = 2 min)                                                                   |
-| `docs`                         | object                                  | Documentation sources and web-search settings — see [Documentation sources and web search](#documentation-sources-and-web-search) |
+| Option                         | Type                                                   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------ | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `secondary`                    | object                                                 | `{ provider, id, thinking? }` for the base secondary model                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `taskModels`                   | object                                                 | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `explain`, `vision`)                                                                                                                                                                                                                                                                                                                       |
+| `judgeCouncil`                 | array                                                  | Council of models that judge in parallel — entry shape in [Configuration](#configuration), behavior in [Judge council](#judge-council) (default: `[]`, single-model judge)                                                                                                                                                                                                                                                                                                  |
+| `presets`                      | object                                                 | Named model presets (`{ secondary?, taskModels? }`) applied to the global settings file with `/wai-preset <name>`; preview with `/wai-preset show <name>`                                                                                                                                                                                                                                                                                                                   |
+| `autoJudge`                    | boolean                                                | Run `wai.judge` automatically when the last plan step passes review, is marked done via `/wai-done`, or when the agent settles after all steps are complete                                                                                                                                                                                                                                                                                                                 |
+| `autoReviewOnSettle`           | boolean                                                | Run `wai.review` automatically when the agent settles with unreviewed edits pending, before any auto-judge (default: `true`)                                                                                                                                                                                                                                                                                                                                                |
+| `requireReviewBeforeDone`      | boolean                                                | Block `wai.done` / `/wai-done` from marking steps complete while unreviewed edits are pending; override with `force: true` / `--force` (default: `true`)                                                                                                                                                                                                                                                                                                                    |
+| `steerEscalationThreshold`     | number                                                 | Consecutive turns ending with unreviewed edits pending before the workflow reminder escalates to a stop directive (default: `3`)                                                                                                                                                                                                                                                                                                                                            |
+| `verifyDoneClaims`             | boolean                                                | Verify `wai.done` step-completion claims against the diff with the secondary model (default: `true`)                                                                                                                                                                                                                                                                                                                                                                        |
+| `reviewReminderEdits`          | number                                                 | Unreviewed edit count that triggers the workflow reminder and the footer "review pending" notice (default: `3`)                                                                                                                                                                                                                                                                                                                                                             |
+| `maxContinuations`             | number                                                 | Follow-up calls used to complete a length-truncated secondary-model response (default: `3`)                                                                                                                                                                                                                                                                                                                                                                                 |
+| `autoInjectContext`            | boolean                                                | Inject the active wai plan and conventions into the main agent's context before each LLM call (default: `true`)                                                                                                                                                                                                                                                                                                                                                             |
+| `contextInjectMaxTokens`       | number                                                 | Token budget for the injected plan/conventions context (default: `800`)                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `codemapMaxTokens`             | number                                                 | Token budget for the project symbol map injected into review/judge prompts (default: `1500`; `0` disables)                                                                                                                                                                                                                                                                                                                                                                  |
+| `designRefMaxTokens`           | number                                                 | Token budget for user-curated design rules injected into review/judge prompts when UI files change (default: `800`; `0` disables)                                                                                                                                                                                                                                                                                                                                           |
+| `entryRenderer`                | boolean                                                | Render wai audit entries with a custom TUI entry renderer (default: `true`)                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `shortcuts`                    | boolean                                                | Register keyboard shortcuts for common wai actions (default: `true`)                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `planWidget`                   | boolean                                                | Show a compact plan-progress widget above the editor, including a "blocked by step N" line when the current step's `dependsOn` steps are unmet (default: `true`)                                                                                                                                                                                                                                                                                                            |
+| `registerProvider`             | boolean                                                | Register the configured secondary model as a Pi provider named `wai` (default: `false`)                                                                                                                                                                                                                                                                                                                                                                                     |
+| `preReviewCommands`            | string[]                                               | Commands to run before each review; output is included in the review prompt                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `testCommand`                  | string                                                 | Command to run for `/wai test` analysis (e.g. `npm test`). Auto-detected from `package.json` if omitted                                                                                                                                                                                                                                                                                                                                                                     |
+| `costBudgetUsd`                | number                                                 | Maximum estimated session spend before wai stops with an error. Negative values are treated as unset; `0` means no spend is allowed                                                                                                                                                                                                                                                                                                                                         |
+| `reviewMaxDiffChars`           | number                                                 | Legacy cap on diff characters; prefer `reviewMaxInputTokens`                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `reviewFullFileThresholdLines` | number                                                 | Include full content for changed files under this line count (default: 300)                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `reviewMaxInputTokens`         | number                                                 | Hard cap on review input tokens                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `reviewMaxConventionsTokens`   | number                                                 | Max tokens of project conventions included in review prompts (default: 1000)                                                                                                                                                                                                                                                                                                                                                                                                |
+| `reviewMaxMemoryTokens`        | number                                                 | Max tokens of past review issues included in review prompts (default: 800)                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `reviewStrategy`               | `"auto" \| "diff-only" \| "full-files"`                | How to include changed file contents (default: `"auto"`)                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `verifyByDefault`              | boolean                                                | If true, every wai result asks the main agent to confirm the finding with evidence                                                                                                                                                                                                                                                                                                                                                                                          |
+| `selfVerify`                   | boolean                                                | Run a second verification pass on `wai.review` and `wai.judge` results (costs extra tokens)                                                                                                                                                                                                                                                                                                                                                                                 |
+| `toolUseLoop`                  | boolean \| number                                      | Let the secondary model use `read_file`, `search_code`, and allowlisted `run_command` in a loop; number sets the max iterations (default: 5). `read_file` supports optional `startLine`/`endLine` paging, truncated files report their line count, `search_code` finds regex matches (optional path scope, 0-5 context lines), and long command output keeps head + tail. Model-generated commands are restricted to read-only subcommands for `git`/`svn`/package managers |
+| `parallelReview`               | boolean \| number                                      | Review multiple changed files in parallel; number sets concurrency (default: 3 when enabled)                                                                                                                                                                                                                                                                                                                                                                                |
+| `deepScan`                     | boolean \| number                                      | Include code samples and build a symbol index during `wai.scan`; number caps sample files                                                                                                                                                                                                                                                                                                                                                                                   |
+| `secondary.contextWindow`      | number                                                 | Override the model's context window                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `secondary.maxOutputTokens`    | number                                                 | Override the model's max output tokens                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `secondary.backend`            | `"sdk" \| "pi" \| "http"`                              | Backend for model calls. `"sdk"` uses Pi's `pi-ai` provider layer (default); `"pi"` spawns the Pi CLI; `"http"` uses direct provider HTTP                                                                                                                                                                                                                                                                                                                                   |
+| `secondary.cacheRetention`     | `"none" \| "short" \| "long"`                          | SDK cache retention hint (SDK backend only, default: `"short"` to match the main Pi agent)                                                                                                                                                                                                                                                                                                                                                                                  |
+| `secondary.transport`          | `"sse" \| "websocket" \| "websocket-cached" \| "auto"` | SDK HTTP transport hint (SDK backend only)                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `secondary.maxRetries`         | number                                                 | Maximum SDK request retries (SDK backend only, default: 3)                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `secondary.maxRetryDelayMs`    | number                                                 | Maximum delay between SDK retries in ms (SDK backend only, default: 60000)                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `secondary.timeoutMs`          | number                                                 | SDK request timeout in ms (SDK backend only, default: 300000 = 5 min)                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `secondary.apiKey`             | string                                                 | Inline API key (prefer `auth.json` or env vars)                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `secondary.style`              | `"openai-compatible" \| "anthropic"`                   | API style when using `baseUrl` (default: `"openai-compatible"`)                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `secondary.authHeader`         | `string \| boolean`                                    | Custom auth header name when using `baseUrl`; set to `false` to omit the auth header when registering the provider with Pi                                                                                                                                                                                                                                                                                                                                                  |
+| `secondary.authPrefix`         | string                                                 | Custom auth prefix when using `baseUrl`                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `modelInfo`                    | object                                                 | Per-model token budget overrides, keyed by model id                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `processTimeoutMs`             | number                                                 | Timeout in ms for child pi process calls (default: 300000 = 5 min)                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `testTimeoutMs`                | number                                                 | Timeout in ms per model in `/wai test` (default: 120000 = 2 min)                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `docs`                         | object                                                 | Documentation sources and web-search settings — see [Documentation sources and web search](#documentation-sources-and-web-search)                                                                                                                                                                                                                                                                                                                                           |
 
 When `registerProvider` is enabled, `/wai-config`, `/wai-model`, and `/wai-backend` automatically refresh the `wai` provider registration in Pi so settings changes take effect without a manual `/reload`.
 
@@ -169,27 +169,27 @@ When `registerProvider` is enabled, `/wai-config`, `/wai-model`, and `/wai-backe
 
 Starting points for `taskModels` and `judgeCouncil`, from a setup using three subscriptions: **Moonshot** (Kimi), **opencode-go**, and **OpenAI** (ChatGPT). These are **suggestions, not requirements** — model lineups change fast, so treat this table as a snapshot (last updated: July 2026, after the Kimi K3 release) and check what your `/wai-model` picker actually lists. After assigning, run `/wai-test <tool>` to verify the model responds with clean output.
 
-| Tool | Option 1 (recommended) | Option 2 | Option 3 |
-| --- | --- | --- | --- |
-| **plan** | deepseek-v4-pro | kimi-k3 | gpt-5.6-sol |
-| **review** | kimi-k3 | gpt-5.3-codex | deepseek-v4-pro |
-| **judge** (synthesizer) | gpt-5.6-sol | deepseek-v4-pro | kimi-k3 |
-| **security** | deepseek-v4-pro | kimi-k3 | gpt-5.6-sol |
-| **test** | kimi-k3 | qwen3.7-plus | gpt-5-mini |
-| **scan** | deepseek-v4-flash | gpt-5-mini | mimo-v2.5 |
-| **suggest** | kimi-k3 | glm-5.2 | gpt-5-mini |
-| **recommend** | glm-5.2 | kimi-k3 | qwen3.7-plus |
-| **done** | _(uses plan model — leave unset)_ | deepseek-v4-flash | gpt-5-mini |
-| **explain** | kimi-k3 | deepseek-v4-flash | gpt-5-mini |
+| Tool                    | Option 1 (recommended)            | Option 2          | Option 3        |
+| ----------------------- | --------------------------------- | ----------------- | --------------- |
+| **plan**                | deepseek-v4-pro                   | kimi-k3           | gpt-5.6-sol     |
+| **review**              | kimi-k3                           | gpt-5.3-codex     | deepseek-v4-pro |
+| **judge** (synthesizer) | gpt-5.6-sol                       | deepseek-v4-pro   | kimi-k3         |
+| **security**            | deepseek-v4-pro                   | kimi-k3           | gpt-5.6-sol     |
+| **test**                | kimi-k3                           | qwen3.7-plus      | gpt-5-mini      |
+| **scan**                | deepseek-v4-flash                 | gpt-5-mini        | mimo-v2.5       |
+| **suggest**             | kimi-k3                           | glm-5.2           | gpt-5-mini      |
+| **recommend**           | glm-5.2                           | kimi-k3           | qwen3.7-plus    |
+| **done**                | _(uses plan model — leave unset)_ | deepseek-v4-flash | gpt-5-mini      |
+| **explain**             | kimi-k3                           | deepseek-v4-flash | gpt-5-mini      |
 
 **Main agent rule:** the reviewer and judge must not share a model family with the main agent, or the "independent second opinion" becomes self-grading. Non-verdict lanes (test, suggest, explain) are diagnostics rather than judgments — sharing the writer's family there is fine and saves quota. Three combinations depending on what writes your code (only the verdict lanes change; plan and bulk lanes stay the same):
 
-| Lane | A — main: kimi-k3 | B — main: deepseek-v4-pro | C — main: qwen3.7-plus |
-| --- | --- | --- | --- |
-| **review** | gpt-5.3-codex | kimi-k3 | kimi-k3 |
-| **security** | deepseek-v4-pro | gpt-5.6-sol | deepseek-v4-pro |
-| **judge** | gpt-5.6-sol | gpt-5.6-sol | gpt-5.6-sol |
-| **council** | kimi-k3 + deepseek-v4-pro + gpt-5.6-sol | gpt-5.6-sol + kimi-k3 + glm-5.2 | gpt-5.6-sol + kimi-k3 + deepseek-v4-pro |
+| Lane         | A — main: kimi-k3                       | B — main: deepseek-v4-pro       | C — main: qwen3.7-plus                  |
+| ------------ | --------------------------------------- | ------------------------------- | --------------------------------------- |
+| **review**   | gpt-5.3-codex                           | kimi-k3                         | kimi-k3                                 |
+| **security** | deepseek-v4-pro                         | gpt-5.6-sol                     | deepseek-v4-pro                         |
+| **judge**    | gpt-5.6-sol                             | gpt-5.6-sol                     | gpt-5.6-sol                             |
+| **council**  | kimi-k3 + deepseek-v4-pro + gpt-5.6-sol | gpt-5.6-sol + kimi-k3 + glm-5.2 | gpt-5.6-sol + kimi-k3 + deepseek-v4-pro |
 
 Combo A gives the best token economics (flat Moonshot sub absorbs the heaviest load). Combo B keeps a deepseek main and moves K3 into the high-volume review seat — note glm-5.2 takes the council's third seat, since a deepseek councillor would share the writer's family. Combo C is the budget option: weakest writer of the three, but K3 review plus a three-family council compensates.
 
@@ -262,15 +262,15 @@ You can give `wai.suggest`, `wai.recommend`, and `wai_explain` access to configu
 }
 ```
 
-| Option                             | Type                    | Description                                                                 |
-| ---------------------------------- | ----------------------- | --------------------------------------------------------------------------- |
-| `docs.sources`                     | object                  | Named URL map. Only URLs listed here can be fetched.                        |
-| `docs.maxCharsPerSource`           | number                  | Characters of each source page to include in the prompt (default: 8000)     |
-| `docs.webSearch.enabled`           | boolean                 | Whether `/wai-search` is allowed (default: false)                           |
+| Option                             | Type                      | Description                                                                               |
+| ---------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------- |
+| `docs.sources`                     | object                    | Named URL map. Only URLs listed here can be fetched.                                      |
+| `docs.maxCharsPerSource`           | number                    | Characters of each source page to include in the prompt (default: 8000)                   |
+| `docs.webSearch.enabled`           | boolean                   | Whether `/wai-search` is allowed (default: false)                                         |
 | `docs.webSearch.provider`          | `"duckduckgo" \| "brave"` | Search provider. Defaults to "brave" when a Brave API key is available, else "duckduckgo" |
-| `docs.webSearch.apiKey`            | string                  | Inline Brave API key (prefer auth.json or `BRAVE_API_KEY` env var)          |
-| `docs.webSearch.maxResults`        | number                  | Search results to include (default: 3)                                      |
-| `docs.webSearch.maxCharsPerResult` | number                  | Characters of each search snippet to include (default: 3000)                |
+| `docs.webSearch.apiKey`            | string                    | Inline Brave API key (prefer auth.json or `BRAVE_API_KEY` env var)                        |
+| `docs.webSearch.maxResults`        | number                    | Search results to include (default: 3)                                                    |
+| `docs.webSearch.maxCharsPerResult` | number                    | Characters of each search snippet to include (default: 3000)                              |
 
 Use it from the `wai` tool:
 
@@ -306,26 +306,26 @@ Fetched source pages and search results are cached in `.pi/yoowai/docs/` for 24 
 
 The `wai` tool is called by the main agent during development:
 
-| Action                                                                | When                           | What it does                                                        |
-| --------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------- |
-| `wai({ plan: "refactor auth" })`                                      | Before starting                | Creates structured todo + acceptance criteria                       |
-| `wai({ review: "wrote middleware" })`                                 | After each step                | Reviews git diff, returns verdict + issues                          |
-| `wai({ review: "wrote middleware", files: ["src/auth.ts"] })`         | After each step                | Reviews only the listed files                                       |
-| `wai({ review: "wrote middleware", exclude: ["package-lock.json"] })` | After each step                | Reviews diff excluding listed files                                 |
-| `wai({ review: "wrote middleware", revision: "HEAD~1" })`             | After each step                | Reviews changes against a specific revision                         |
-| `wai({ review: "wrote middleware", untracked: true })`                | After each step                | Includes untracked (new) files in the review                        |
-| `wai({ suggest: "how to..." })`                                       | When stuck or asked a question | Returns alternative approaches with pros/cons                       |
-| `wai({ suggest: "...", docs: ["react"] })`                            | When stuck or asked a question | Includes configured docs in the suggestion prompt                   |
-| `wai({ recommend: "what next" })`                                     | When unsure                    | Recommends next concrete step                                       |
-| `wai({ recommend: "...", docs: ["pi"] })`                             | When unsure                    | Includes configured docs in the recommendation prompt               |
-| `wai({ judge: "all done" })`                                          | Final review                   | Holistic review against original plan                               |
-| `wai({ scan: true })`                                                 | Once per project               | Learns project conventions and architecture                         |
-| `wai({ scan: true, scanDeep: true })`                                 | First scan of a project        | Also samples source files and builds the project symbol index       |
-| `wai({ test: "added payment service" })`                              | After code changes             | Checks for failing tests, missing tests, and test-quality issues    |
-| `wai({ security: "auth changes" })`                                   | Security-sensitive changes     | Audits diff for secrets, injection, auth, and other vulnerabilities |
+| Action                                                                | When                           | What it does                                                                        |
+| --------------------------------------------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------- |
+| `wai({ plan: "refactor auth" })`                                      | Before starting                | Creates structured todo + acceptance criteria                                       |
+| `wai({ review: "wrote middleware" })`                                 | After each step                | Reviews git diff, returns verdict + issues                                          |
+| `wai({ review: "wrote middleware", files: ["src/auth.ts"] })`         | After each step                | Reviews only the listed files                                                       |
+| `wai({ review: "wrote middleware", exclude: ["package-lock.json"] })` | After each step                | Reviews diff excluding listed files                                                 |
+| `wai({ review: "wrote middleware", revision: "HEAD~1" })`             | After each step                | Reviews changes against a specific revision                                         |
+| `wai({ review: "wrote middleware", untracked: true })`                | After each step                | Includes untracked (new) files in the review                                        |
+| `wai({ suggest: "how to..." })`                                       | When stuck or asked a question | Returns alternative approaches with pros/cons                                       |
+| `wai({ suggest: "...", docs: ["react"] })`                            | When stuck or asked a question | Includes configured docs in the suggestion prompt                                   |
+| `wai({ recommend: "what next" })`                                     | When unsure                    | Recommends next concrete step                                                       |
+| `wai({ recommend: "...", docs: ["pi"] })`                             | When unsure                    | Includes configured docs in the recommendation prompt                               |
+| `wai({ judge: "all done" })`                                          | Final review                   | Holistic review against original plan                                               |
+| `wai({ scan: true })`                                                 | Once per project               | Learns project conventions and architecture                                         |
+| `wai({ scan: true, scanDeep: true })`                                 | First scan of a project        | Also samples source files and builds the project symbol index                       |
+| `wai({ test: "added payment service" })`                              | After code changes             | Checks for failing tests, missing tests, and test-quality issues                    |
+| `wai({ security: "auth changes" })`                                   | Security-sensitive changes     | Audits diff for secrets, injection, auth, and other vulnerabilities                 |
 | `wai({ done: true })`                                                 | After completing a step        | Mark the current plan step complete; use a number or `"all"` to mark multiple steps |
-| `wai({ planUpdate: "new task description" })`                         | When plan becomes stale        | Regenerate the active plan; already-completed progress is preserved |
-| `wai({ review: "...", verify: true })`                                | Any high-stakes result         | Asks the main agent to confirm or refute the finding with evidence  |
+| `wai({ planUpdate: "new task description" })`                         | When plan becomes stale        | Regenerate the active plan; already-completed progress is preserved                 |
+| `wai({ review: "...", verify: true })`                                | Any high-stakes result         | Asks the main agent to confirm or refute the finding with evidence                  |
 
 > **Diff scope:** by default `review`, `judge`, and `done` diff against `HEAD` and include untracked files, so they see staged, unstaged, and new files without you running `git add` first. Pass `revision`/`since` to scope to a commit range, or `untracked: false` to limit to tracked changes.
 
@@ -337,19 +337,19 @@ Plan steps can include `priority` (`high`, `medium`, `low`) and `dependsOn` (1-b
 
 The `wai_index` tool is a fast, read-only lookup for stored wai context. It does not call a model.
 
-| Call | What it returns |
-| --- | --- |
-| `wai_index({})` or `wai_index({ topic: "all" })` | Conventions, active plan, review memory, cost, and recent logs |
-| `wai_index({ topic: "conventions" })` | Project conventions from `wai scan` |
-| `wai_index({ topic: "plan" })` | Active todo list and progress |
-| `wai_index({ topic: "memory" })` | Past review issues for all files |
-| `wai_index({ topic: "memory", files: ["src/auth.ts"] })` | Past review issues for specific files |
-| `wai_index({ topic: "memory", query: "race condition" })` | Memory entries matching a keyword |
-| `wai_index({ topic: "cost" })` | Estimated session spend |
-| `wai_index({ topic: "logs" })` | Recent wai log entries |
-| `wai_index({ topic: "index" })` | Project symbol index (built by `wai scan --deep` or `wai_index({ update: true })`) |
-| `wai_index({ topic: "learned" })` | Facts recorded with `wai_learn` |
-| `wai_index({ update: true })` | Rebuild the symbol index before returning results |
+| Call                                                      | What it returns                                                                    |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `wai_index({})` or `wai_index({ topic: "all" })`          | Conventions, active plan, review memory, cost, and recent logs                     |
+| `wai_index({ topic: "conventions" })`                     | Project conventions from `wai scan`                                                |
+| `wai_index({ topic: "plan" })`                            | Active todo list and progress                                                      |
+| `wai_index({ topic: "memory" })`                          | Past review issues for all files                                                   |
+| `wai_index({ topic: "memory", files: ["src/auth.ts"] })`  | Past review issues for specific files                                              |
+| `wai_index({ topic: "memory", query: "race condition" })` | Memory entries matching a keyword                                                  |
+| `wai_index({ topic: "cost" })`                            | Estimated session spend                                                            |
+| `wai_index({ topic: "logs" })`                            | Recent wai log entries                                                             |
+| `wai_index({ topic: "index" })`                           | Project symbol index (built by `wai scan --deep` or `wai_index({ update: true })`) |
+| `wai_index({ topic: "learned" })`                         | Facts recorded with `wai_learn`                                                    |
+| `wai_index({ update: true })`                             | Rebuild the symbol index before returning results                                  |
 
 Use `wai_index` before editing to quickly learn the project's rules, current task, known issues, symbols, and recorded facts.
 
@@ -357,13 +357,13 @@ Use `wai_index` before editing to quickly learn the project's rules, current tas
 
 Explain a code snippet, error message, diff, or file with the secondary model.
 
-| Call | What it does |
-| --- | --- |
-| `wai_explain({ target: "TypeError: Cannot read..." })` | Explains an error and the likely fix |
-| `wai_explain({ target: "src/auth.ts" })` | Explains the purpose and structure of a file |
+| Call                                                                        | What it does                                        |
+| --------------------------------------------------------------------------- | --------------------------------------------------- |
+| `wai_explain({ target: "TypeError: Cannot read..." })`                      | Explains an error and the likely fix                |
+| `wai_explain({ target: "src/auth.ts" })`                                    | Explains the purpose and structure of a file        |
 | `wai_explain({ target: "function verifySession", files: ["src/auth.ts"] })` | Explains a specific function with full file context |
-| `wai_explain({ target: "what is MCP", docs: ["pi"] })` | Explains a concept using configured docs |
-| `wai_explain({ target: "MCP", docs: ["pi"] })` | Explains a concept using configured docs |
+| `wai_explain({ target: "what is MCP", docs: ["pi"] })`                      | Explains a concept using configured docs            |
+| `wai_explain({ target: "MCP", docs: ["pi"] })`                              | Explains a concept using configured docs            |
 
 `wai_explain` is read-only — it does not edit files. If you pass a merge conflict, it explains the conflicting versions and suggests resolutions, but it does not claim the files are resolved.
 
@@ -371,14 +371,14 @@ Explain a code snippet, error message, diff, or file with the secondary model.
 
 Record a persistent project fact that wai will remember across sessions.
 
-| Call | What it does |
-| --- | --- |
-| `wai_learn({ fact: "Auth is handled by Clerk" })` | Stores a fact |
-| `wai_learn({ fact: "Use camelCase for functions", category: "conventions" })` | Stores a categorized fact |
-| `wai_learn({ verify: true })` | Check all stored facts against the current codebase (heuristic, no model call) |
-| `wai_learn({ verify: true, query: "auth" })` | Verify only facts matching a keyword |
-| `wai_learn({ verify: true, deep: true })` | Verify facts with the secondary model for higher accuracy |
-| `wai_learn({ verify: true, deep: true, query: "auth" })` | Deep verify only facts matching a keyword |
+| Call                                                                          | What it does                                                                   |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `wai_learn({ fact: "Auth is handled by Clerk" })`                             | Stores a fact                                                                  |
+| `wai_learn({ fact: "Use camelCase for functions", category: "conventions" })` | Stores a categorized fact                                                      |
+| `wai_learn({ verify: true })`                                                 | Check all stored facts against the current codebase (heuristic, no model call) |
+| `wai_learn({ verify: true, query: "auth" })`                                  | Verify only facts matching a keyword                                           |
+| `wai_learn({ verify: true, deep: true })`                                     | Verify facts with the secondary model for higher accuracy                      |
+| `wai_learn({ verify: true, deep: true, query: "auth" })`                      | Deep verify only facts matching a keyword                                      |
 
 Recorded facts appear in `wai_index({ topic: "learned" })`.
 
@@ -390,72 +390,85 @@ Recorded facts appear in `wai_index({ topic: "learned" })`.
 
 Read curated UI/animation design guidance vendored from [Emil Kowalski's skills](https://github.com/emilkowalski/skills) (MIT licensed — attribution in `design-refs/README.md`, license in `design-refs/LICENSE`). No model call; it reads local markdown.
 
-| Call | What it does |
-| --- | --- |
-| `wai_design_ref({})` | Lists the 9 topics (animate, animation-vocabulary, apple-design, emil-design-eng, find-animation-opportunities, improve-animations, pick-ui-library, prototype, review-animations) |
-| `wai_design_ref({ topic: "animate" })` | Reads the topic's `SKILL.md` |
-| `wai_design_ref({ topic: "improve-animations", doc: "AUDIT.md" })` | Reads a specific doc of a topic |
+| Call                                                               | What it does                                                                                                                                                                       |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wai_design_ref({})`                                               | Lists the 9 topics (animate, animation-vocabulary, apple-design, emil-design-eng, find-animation-opportunities, improve-animations, pick-ui-library, prototype, review-animations) |
+| `wai_design_ref({ topic: "animate" })`                             | Reads the topic's `SKILL.md`                                                                                                                                                       |
+| `wai_design_ref({ topic: "improve-animations", doc: "AUDIT.md" })` | Reads a specific doc of a topic                                                                                                                                                    |
 
 Call this when building, reviewing, or improving UI/animation code to get detailed design guidance beyond the distilled baseline rules that are injected automatically.
+
+### `wai_vision` tool
+
+Analyze an image file (screenshot, UI mockup, diagram, error capture) with a vision-capable secondary model.
+
+| Call                                                                                               | What it does                               |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `wai_vision({ path: "docs/settings.png" })`                                                        | Full analysis of the image                 |
+| `wai_vision({ path: "docs/settings.png", question: "does this match the design rules?" })`         | Answers a focused question about the image |
+| `wai_vision({ path: "tmp/error.png", question: "what caused this?", context: "after npm start" })` | Analyzes with extra background context     |
+
+The path must be project-relative; supported types are png/jpg/jpeg/webp/gif up to 5 MB. Vision requires the **sdk backend** and a model that accepts image input — if your base `secondary` model is text-only, assign a vision-capable model to the vision task via `/wai-model` (writes `taskModels.vision`).
 
 ## Commands
 
 ### Core workflow
 
-| Command                                       | What it does                                                              |
-| --------------------------------------------- | ------------------------------------------------------------------------- |
-| `/wai`                                        | Compact status card: version, model, plan, VCS, cost, conventions         |
-| `/wai plan refactor auth middleware`          | Create a plan from the terminal                                           |
-| `/wai review "wrote verifySession"`           | Review current changes                                                    |
-| `/wai suggest "redis vs in-memory sessions?"` | Get alternative approaches with pros/cons                                 |
-| `/wai recommend`                              | Get one concrete next step based on your current situation/plan           |
-| `/wai judge "auth refactor complete"`         | Final holistic review                                                     |
-| `/wai scan`                                   | Scan project conventions                                                  |
-| `/wai scan --deep`                            | Deep scan with code samples and symbol index build                        |
-| `/wai-scan-deep`                              | Alias for `/wai scan --deep`                                              |
-| `/wai-next`                                   | Recommend the next step based on the active plan                          |
-| `/wai-done [description]`                     | Mark the current plan step complete and recommend the next step           |
-| `/wai-done 3`                                 | Mark steps 1–3 complete (lower number regresses the tracker, `0` resets)  |
-| `/wai-done all`                               | Mark all steps complete                                                   |
+| Command                                       | What it does                                                                                        |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `/wai`                                        | Compact status card: version, model, plan, VCS, cost, conventions                                   |
+| `/wai plan refactor auth middleware`          | Create a plan from the terminal                                                                     |
+| `/wai review "wrote verifySession"`           | Review current changes                                                                              |
+| `/wai suggest "redis vs in-memory sessions?"` | Get alternative approaches with pros/cons                                                           |
+| `/wai recommend`                              | Get one concrete next step based on your current situation/plan                                     |
+| `/wai judge "auth refactor complete"`         | Final holistic review                                                                               |
+| `/wai scan`                                   | Scan project conventions                                                                            |
+| `/wai scan --deep`                            | Deep scan with code samples and symbol index build                                                  |
+| `/wai-scan-deep`                              | Alias for `/wai scan --deep`                                                                        |
+| `/wai-next`                                   | Recommend the next step based on the active plan                                                    |
+| `/wai-done [description]`                     | Mark the current plan step complete and recommend the next step                                     |
+| `/wai-done 3`                                 | Mark steps 1–3 complete (lower number regresses the tracker, `0` resets)                            |
+| `/wai-done all`                               | Mark all steps complete                                                                             |
 | `/wai-done --force`                           | Override the `requireReviewBeforeDone` gate; the step is recorded as manually marked (not reviewed) |
-| `/wai-plan-update <new task description>`     | Regenerate the active plan; already-completed progress is preserved       |
+| `/wai-plan-update <new task description>`     | Regenerate the active plan; already-completed progress is preserved                                 |
 
 **`/wai-model` selection flow.** Recent model choices are shown first so you can re-select a model in one click. For providers with a huge catalog (e.g. OpenRouter), `/wai-model` opens a real-time searchable picker with fuzzy matching (the same matcher as Pi's own search — `dsr1` finds `deepseek-r1`): type to narrow the list as you type, use ↑↓ to navigate, and press Enter to select — no Enter-to-submit query needed. If you cancel the search or it matches nothing, it falls back to a family-grouped menu. In environments without interactive terminal input (e.g. RPC/print mode), it falls back to a text prompt + list. The final selection is saved to a recent-models list scoped to the project.
 
 ### Utilities and diagnostics
 
-| Command                                        | What it does                                                                           |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `/wai test [description] [--command <cmd>]`    | Analyze test coverage and failures for current changes                                 |
-| `/wai security [description] [--full-project]` | Security audit of current diff or sampled project files                                |
-| `/wai-status`                                  | Detailed diagnostics: base + per-tool models, config, plan, VCS, conventions, cost     |
-| `/wai-index [topic] [--update]`                | Read stored wai context (plan, memory, conventions, cost, logs, index, learned)        |
-| `/wai-explain <target> [--files ...]`          | Explain code, error, or file with the secondary model                                  |
-| `/wai-search <query>`                          | Search the web via DuckDuckGo or Brave (requires `docs.webSearch.enabled`)               |
-| `/wai-learn <fact> [--category <cat>]`         | Record a persistent project fact                                                       |
-| `/wai-learn --verify [--query <keyword>]`      | Check stored facts against the current codebase                                        |
-| `/wai-learn --verify --deep [--query <keyword>]` | Check stored facts with the secondary model                                          |
-| `/wai-model`                                   | Interactively pick the base or per-tool model — see the selection flow above             |
-| `/wai-model <provider> [filter]`               | Pre-select provider and optionally filter the model list                               |
-| `/wai-model reset [base\|<task>]`               | Clear the base secondary model or a per-tool override (e.g. `reset review`)            |
-| `/wai-council`                                 | Interactively manage the judge council: add/remove members with the `/wai-model` pickers (models already in the council are marked ✓ current, and each member gets a thinking-level pick); fewer than 2 members means single-model judge |
-| `/wai-config`                                  | Show current `pi-yoowai` settings                                                      |
-| `/wai-config get <key>`                        | Read a dotted setting (e.g. `/wai-config get secondary.thinking`)                      |
-| `/wai-config set <key> <value>`                | Write a dotted setting (e.g. `/wai-config set taskModels.review.id claude-sonnet-4-5`) |
-| `/wai-config <provider.model>`                 | Set the base secondary model directly (e.g. `/wai-config openai.gpt-4o`)               |
-| `/wai-test`                                    | Test connectivity (includes judge council members); prints a per-model summary with latency, tokens, cost, and totals |
-| `/wai-backend <sdk\|pi\|http>`                 | Switch secondary model backend (default: `sdk`)                                        |
-| `/wai-preset`                                  | List named model presets defined in `pi-yoowai.presets`                                |
-| `/wai-preset show <name>`                      | Preview what a preset would write                                                      |
-| `/wai-preset <name>`                           | Apply a preset: merge its `secondary`/`taskModels` into `~/.pi/agent/settings.json`    |
-| `/wai-audit [description] [review flags]`      | Run review, security, and test concurrently over the current diff; one combined report (slash command only, not a `wai` tool action) |
-| `/wai-reflect`                                 | Report recurring review-issue patterns per file with a suggested project convention    |
-| `/wai-reflect --learn`                         | Also save each suggestion as a learned fact (no model calls)                           |
-| `/wai-design-ref`                              | Manage UI design rules: `list`, `add <rule>`, `remove <n>`, `import <path>`, `docs [topic] [doc]`, `reset-defaults`, `clear`   |
-| `/wai-search-config <provider> [api-key]`      | Pick the web-search provider (DuckDuckGo or Brave) and optionally save a Brave API key |
-| `/wai-clear`                                   | Clear the current session's plan, state, cost, memory, and conventions                 |
-| `/wai-logs`                                    | Show recent error/event log entries for this project                                   |
-| `/wai-clear-logs`                              | Clear the wai error/event log for this project                                         |
+| Command                                          | What it does                                                                                                                                                                                                                             |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/wai test [description] [--command <cmd>]`      | Analyze test coverage and failures for current changes                                                                                                                                                                                   |
+| `/wai security [description] [--full-project]`   | Security audit of current diff or sampled project files                                                                                                                                                                                  |
+| `/wai-status`                                    | Detailed diagnostics: base + per-tool models, config, plan, VCS, conventions, cost                                                                                                                                                       |
+| `/wai-index [topic] [--update]`                  | Read stored wai context (plan, memory, conventions, cost, logs, index, learned)                                                                                                                                                          |
+| `/wai-explain <target> [--files ...]`            | Explain code, error, or file with the secondary model                                                                                                                                                                                    |
+| `/wai-vision <path> [question...]`               | Analyze an image (screenshot, diagram, error capture) with a vision-capable model                                                                                                                                                        |
+| `/wai-search <query>`                            | Search the web via DuckDuckGo or Brave (requires `docs.webSearch.enabled`)                                                                                                                                                               |
+| `/wai-learn <fact> [--category <cat>]`           | Record a persistent project fact                                                                                                                                                                                                         |
+| `/wai-learn --verify [--query <keyword>]`        | Check stored facts against the current codebase                                                                                                                                                                                          |
+| `/wai-learn --verify --deep [--query <keyword>]` | Check stored facts with the secondary model                                                                                                                                                                                              |
+| `/wai-model`                                     | Interactively pick the base or per-tool model — see the selection flow above                                                                                                                                                             |
+| `/wai-model <provider> [filter]`                 | Pre-select provider and optionally filter the model list                                                                                                                                                                                 |
+| `/wai-model reset [base\|<task>]`                | Clear the base secondary model or a per-tool override (e.g. `reset review`)                                                                                                                                                              |
+| `/wai-council`                                   | Interactively manage the judge council: add/remove members with the `/wai-model` pickers (models already in the council are marked ✓ current, and each member gets a thinking-level pick); fewer than 2 members means single-model judge |
+| `/wai-config`                                    | Show current `pi-yoowai` settings                                                                                                                                                                                                        |
+| `/wai-config get <key>`                          | Read a dotted setting (e.g. `/wai-config get secondary.thinking`)                                                                                                                                                                        |
+| `/wai-config set <key> <value>`                  | Write a dotted setting (e.g. `/wai-config set taskModels.review.id claude-sonnet-4-5`)                                                                                                                                                   |
+| `/wai-config <provider.model>`                   | Set the base secondary model directly (e.g. `/wai-config openai.gpt-4o`)                                                                                                                                                                 |
+| `/wai-test`                                      | Test connectivity (includes judge council members); prints a per-model summary with latency, tokens, cost, and totals                                                                                                                    |
+| `/wai-backend <sdk\|pi\|http>`                   | Switch secondary model backend (default: `sdk`)                                                                                                                                                                                          |
+| `/wai-preset`                                    | List named model presets defined in `pi-yoowai.presets`                                                                                                                                                                                  |
+| `/wai-preset show <name>`                        | Preview what a preset would write                                                                                                                                                                                                        |
+| `/wai-preset <name>`                             | Apply a preset: merge its `secondary`/`taskModels` into `~/.pi/agent/settings.json`                                                                                                                                                      |
+| `/wai-audit [description] [review flags]`        | Run review, security, and test concurrently over the current diff; one combined report (slash command only, not a `wai` tool action)                                                                                                     |
+| `/wai-reflect`                                   | Report recurring review-issue patterns per file with a suggested project convention                                                                                                                                                      |
+| `/wai-reflect --learn`                           | Also save each suggestion as a learned fact (no model calls)                                                                                                                                                                             |
+| `/wai-design-ref`                                | Manage UI design rules: `list`, `add <rule>`, `remove <n>`, `import <path>`, `docs [topic] [doc]`, `reset-defaults`, `clear`                                                                                                             |
+| `/wai-search-config <provider> [api-key]`        | Pick the web-search provider (DuckDuckGo or Brave) and optionally save a Brave API key                                                                                                                                                   |
+| `/wai-clear`                                     | Clear the current session's plan, state, cost, memory, and conventions                                                                                                                                                                   |
+| `/wai-logs`                                      | Show recent error/event log entries for this project                                                                                                                                                                                     |
+| `/wai-clear-logs`                                | Clear the wai error/event log for this project                                                                                                                                                                                           |
 
 ### Review command options
 
@@ -484,12 +497,12 @@ Call this when building, reviewing, or improving UI/animation code to get detail
 
 pi-yoowai uses several caches to avoid redundant work and cost:
 
-| Cache | File | Purpose |
-| ----- | ---- | ------- |
-| Review result cache | `.pi/yoowai/review-cache.json` | Skip duplicate `wai.review` calls for the same diff (1-hour TTL) |
-| OAuth API-key cache | `.pi/yoowai/oauth-cache.json` | Avoid re-authenticating OAuth providers across Pi sessions (55-min TTL) |
-| Project symbol index | `.pi/yoowai/index.json` | Reuses unchanged files on incremental updates |
-| Review memory | `.pi/yoowai/memory.json` | Deduplicated, capped at 20 issues per file / 100 files, 7-day TTL |
+| Cache                | File                           | Purpose                                                                 |
+| -------------------- | ------------------------------ | ----------------------------------------------------------------------- |
+| Review result cache  | `.pi/yoowai/review-cache.json` | Skip duplicate `wai.review` calls for the same diff (1-hour TTL)        |
+| OAuth API-key cache  | `.pi/yoowai/oauth-cache.json`  | Avoid re-authenticating OAuth providers across Pi sessions (55-min TTL) |
+| Project symbol index | `.pi/yoowai/index.json`        | Reuses unchanged files on incremental updates                           |
+| Review memory        | `.pi/yoowai/memory.json`       | Deduplicated, capped at 20 issues per file / 100 files, 7-day TTL       |
 
 Context compression is applied automatically in reviews: conventions and past issues are truncated to their configured token budgets (`reviewMaxConventionsTokens`, `reviewMaxMemoryTokens`).
 
@@ -718,22 +731,22 @@ When the user asks a technical or architectural question, call `wai.suggest` or 
 
 **Direct HTTP (26 providers)** — used when `secondary.backend` is `"http"` or `secondary.baseUrl` is set; fast, no child process overhead:
 
-| Provider                                                                        | API style         |
-| ------------------------------------------------------------------------------- | ----------------- |
-| anthropic                                                                       | Anthropic native  |
-| openai, deepseek, openrouter, groq, mistral, xai, together, fireworks, cerebras | OpenAI-compatible |
+| Provider                                                                        | API style                                  |
+| ------------------------------------------------------------------------------- | ------------------------------------------ |
+| anthropic                                                                       | Anthropic native                           |
+| openai, deepseek, openrouter, groq, mistral, xai, together, fireworks, cerebras | OpenAI-compatible                          |
 | google                                                                          | Google Gemini (OpenAI-compatible endpoint) |
-| ant-ling, nvidia, huggingface, moonshotai, moonshotai-cn                        | OpenAI-compatible |
-| xiaomi, xiaomi-token-plan-ams/cn/sgp, zai, zai-coding-cn                        | OpenAI-compatible |
-| kimi-coding, minimax, minimax-cn, vercel-ai-gateway                             | Anthropic native  |
+| ant-ling, nvidia, huggingface, moonshotai, moonshotai-cn                        | OpenAI-compatible                          |
+| xiaomi, xiaomi-token-plan-ams/cn/sgp, zai, zai-coding-cn                        | OpenAI-compatible                          |
+| kimi-coding, minimax, minimax-cn, vercel-ai-gateway                             | Anthropic native                           |
 
 **SDK backend (default)** — all providers default to the `sdk` backend, which uses Pi's `pi-ai` provider layer and catalog metadata for token budgets, caching, retries, and thinking-level mapping. This is the same provider layer the main Pi agent uses, so new models added to Pi are automatically supported. Set `secondary.backend` to `"pi"` or `"http"` to override:
 
-| Provider       | Reason                                                                                     |
-| -------------- | ------------------------------------------------------------------------------------------ |
-| opencode-go    | Mixed API styles + complex thinking formats per model                                      |
+| Provider       | Reason                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------- |
+| opencode-go    | Mixed API styles + complex thinking formats per model                                       |
 | opencode       | Same — mixed openai-completions, anthropic-messages, google-generative-ai, openai-responses |
-| deepseek, etc. | Use the SDK for built-in retry/cache behavior and future-proof model support               |
+| deepseek, etc. | Use the SDK for built-in retry/cache behavior and future-proof model support                |
 
 SDK backend defaults mirror the main Pi agent: `cacheRetention: "short"`, `maxRetries: 3`, and `timeoutMs: 300000`. For `opencode`/`opencode-go` calls, pi-yoowai also sends the `x-opencode-session` and `x-opencode-client: pi` attribution headers when a session id is available.
 

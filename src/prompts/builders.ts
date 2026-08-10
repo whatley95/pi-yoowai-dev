@@ -837,6 +837,34 @@ Rules:
   };
 }
 
+function buildVisionPromptImpl(
+  imagePath: string,
+  question?: string,
+  context?: string,
+): { system: string; user: string } {
+  const questionBlock = question
+    ? `Question about the image:\n${question}`
+    : "Analyze this image. Describe what it shows, focusing on anything relevant to the project (UI layout, error messages, diagrams, code).";
+  const contextBlock = context ? `\n\n<context>\n${context}\n</context>` : "";
+
+  return {
+    system: `${COMMON_SYSTEM_PREFIX}
+
+Analyze the attached image for the developer. Be concise but complete. Assume they are a senior engineer who wants actionable observations, not a generic caption.
+
+Rules:
+- Answer the question directly first, then add supporting detail
+- If the image shows a UI, comment on layout, hierarchy, and anything that looks broken or inconsistent
+- If the image shows an error or stack trace, explain the root cause and how to fix it
+- If the image shows a diagram, restate the structure precisely (components and relationships)
+- If the image shows code, transcribe the relevant parts exactly before analyzing
+- Do NOT describe things that are not visible in the image
+- Do NOT include commentary outside the analysis`,
+
+    user: `Image file: ${imagePath}\n\n${questionBlock}${contextBlock}`,
+  };
+}
+
 function buildStepVerificationPromptImpl(stepDescription: string, diff: string): { system: string; user: string } {
   return {
     system: `${COMMON_SYSTEM_PREFIX}
@@ -861,6 +889,7 @@ Rules:
 
 export const buildPlanPrompt = memoizePromptBuilder(buildPlanPromptImpl);
 export const buildExplainPrompt = memoizePromptBuilder(buildExplainPromptImpl);
+export const buildVisionPrompt = memoizePromptBuilder(buildVisionPromptImpl);
 export const buildStepVerificationPrompt = buildStepVerificationPromptImpl;
 // Review prompts include large, highly-dynamic diffs and file contents, so caching them
 // adds memory pressure and key-serialization cost for near-zero hit rates.

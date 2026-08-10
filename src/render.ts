@@ -165,6 +165,20 @@ export function renderExplainCall(args: { target?: string }, theme: Theme, conte
   return text;
 }
 
+/** Render a call to the wai_vision tool. */
+export function renderVisionCall(
+  args: { path?: string; question?: string },
+  theme: Theme,
+  context?: ToolRenderContext,
+): Text {
+  const path = typeof args.path === "string" ? args.path : "";
+  const question = typeof args.question === "string" && args.question ? ` — ${truncate(args.question, 60)}` : "";
+  const label = `wai vision: ${truncate(path, 60) || "…"}${question}`;
+  const text = getTextComponent(context);
+  text.setText(theme.fg("accent", label));
+  return text;
+}
+
 /** Render a call to the wai_learn tool (record or verify). */
 export function renderLearnCall(
   args: { fact?: string; verify?: boolean; deep?: boolean; query?: string },
@@ -344,12 +358,12 @@ function truncate(text: string, maxLen: number): string {
   return text.length <= maxLen ? text : text.slice(0, maxLen - 3) + "...";
 }
 
-/** Render the result of an auxiliary tool (wai_index / wai_explain / wai_learn):
+/** Render the result of an auxiliary tool (wai_index / wai_explain / wai_learn / wai_vision):
  *  error line, in-progress line, then title + cost + a preview of the returned
  *  text content. The row name is the registered tool name, so learn shows
  *  "wai learn" even when the progress reporter ran under the explain action. */
 export function renderAuxResult(
-  name: "index" | "explain" | "learn" | "design-ref",
+  name: "index" | "explain" | "learn" | "design-ref" | "vision",
   result: AgentToolResult<unknown>,
   opts: ToolRenderResultOptions,
   theme: Theme,

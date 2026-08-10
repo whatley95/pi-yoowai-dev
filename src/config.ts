@@ -320,6 +320,7 @@ const VALID_WAI_MODEL_TASKS = new Set<string>([
   "security",
   "done",
   "explain",
+  "vision",
 ]);
 
 function mergeTaskModels(base: YoowaiConfig["taskModels"], override: unknown): YoowaiConfig["taskModels"] {

@@ -11,6 +11,7 @@ import {
   renderReviewToolCall,
   renderIndexCall,
   renderExplainCall,
+  renderVisionCall,
   renderLearnCall,
   renderDesignRefCall,
   renderAuxResult,
@@ -49,6 +50,7 @@ import { executeWaiDone } from "./actions/done.js";
 import { executeWaiPlanUpdate } from "./actions/plan-update.js";
 import { executeWaiIndex, formatIndexResult, validateWaiIndexParams } from "./wai-index.js";
 import { executeWaiExplain, validateWaiExplainParams } from "./wai-explain.js";
+import { executeWaiVision, validateWaiVisionParams } from "./wai-vision.js";
 import { registerWaiCommands } from "./commands/register.js";
 import { formatResultText } from "./format.js";
 import { registerContextInjector, setWaiToolExecuting } from "./integration/context-injector.js";
@@ -800,6 +802,76 @@ export default async function (pi: ExtensionAPI) {
     renderResult: (result, opts, theme, context) => renderAuxResult("explain", result, opts, theme, context),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       return runWaiExplainTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
+    },
+  });
+
+  async function runWaiVisionTool(
+    params: unknown,
+    signal: AbortSignal | undefined,
+    onUpdate: ((update: unknown) => void) | undefined,
+    ctx: ExtensionContext,
+  ): Promise<
+    import("@earendil-works/pi-coding-agent").AgentToolResult<Record<string, unknown>> & { isError: boolean }
+  > {
+    const validation = validateWaiVisionParams(params);
+    if (!validation.ok) {
+      return {
+        content: [{ type: "text", text: `wai_vision: ${validation.error}` }],
+        details: { error: validation.error },
+        isError: true,
+      };
+    }
+
+    const progress = createProgressReporter("vision", ctx, onUpdate);
+    const result = await executeWaiVision(ctx.cwd, validation.params, signal, progress, ctx.sessionManager);
+    if ("error" in result) {
+      return {
+        content: [{ type: "text", text: `wai_vision error: ${result.error}` }],
+        details: { error: result.error },
+        isError: true,
+      };
+    }
+
+    return {
+      content: [{ type: "text", text: result.result.details }],
+      details: { action: "vision", vision: result.result, cost: result.cost, model: result.model },
+      isError: false,
+    };
+  }
+
+  pi.registerTool({
+    name: "wai_vision",
+    label: "Wai Vision — Image Analysis",
+    description:
+      "Analyze an image file (screenshot, diagram, error capture) with a vision-capable secondary model. " +
+      "The image path must be project-relative. Requires the sdk backend and a model that accepts image input " +
+      "(configure one via /wai-model for the vision task if the base model is text-only).",
+    promptSnippet: "wai_vision: analyze this image before acting on it",
+    promptGuidelines: [
+      "Call wai_vision when the user references a screenshot, UI mockup, diagram, or error capture in the project.",
+      "Pass a focused question (e.g. 'does this UI match the design rules?') to get actionable analysis instead of a generic caption.",
+      "Use context to add background (e.g. 'this is the settings dialog after my change').",
+    ],
+    parameters: Type.Object({
+      path: Type.String({
+        description: "Project-relative path to the image file (png, jpg, jpeg, webp, gif; max 5 MB). Required.",
+      }),
+      question: Type.Optional(
+        Type.String({
+          description: "What to analyze or answer about the image. Defaults to a full analysis.",
+        }),
+      ),
+      context: Type.Optional(
+        Type.String({
+          description: "Optional background context to guide the analysis.",
+        }),
+      ),
+    }),
+    renderCall: (args, theme, context) =>
+      renderVisionCall(args as { path?: string; question?: string }, theme, context),
+    renderResult: (result, opts, theme, context) => renderAuxResult("vision", result, opts, theme, context),
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      return runWaiVisionTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
     },
   });
 

@@ -3,6 +3,7 @@ export {
   buildReviewUserContext,
   buildPlanPrompt,
   buildExplainPrompt,
+  buildVisionPrompt,
   buildStepVerificationPrompt,
   buildAdaptiveReviewPrompt,
   buildScanPrompt,

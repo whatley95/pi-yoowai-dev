@@ -18,35 +18,36 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 
 **Tool `wai`** — the main API used by the primary agent. Actions: `plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `planUpdate`.
 
-**Additional tools** — `wai_index`, `wai_explain`, `wai_learn`, and `wai_design_ref` (five `pi.registerTool` calls in `src/index.ts`).
+**Additional tools** — `wai_review_min`/`wai_review_med`/`wai_review_high` (explicit review-depth tools), `wai_index`, `wai_explain`, `wai_vision`, `wai_learn`, and `wai_design_ref` (`pi.registerTool` calls in `src/index.ts`).
 
 **Slash commands** registered in the Pi terminal:
 
-| Command                | Purpose                                                                                              |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| `/wai`                 | Run an action or show status: `/wai <plan|review|suggest|recommend|judge|scan|test|security|status> [args]`; `scan` accepts `--deep`. |
-| `/wai-scan-deep`       | Alias for `/wai scan --deep` (deep scan with source-file sampling and symbol index build).            |
-| `/wai-status`          | Detailed diagnostics (config, plan, VCS, conventions, cost).                                         |
-| `/wai-model`           | Interactively pick the secondary model (optionally per tool) and write it to `~/.pi/agent/settings.json`. `/wai-model reset [base\|<task>]` clears the base or a task override. |
-| `/wai-council`         | Interactively manage the judge council (add/remove members with the `/wai-model` pickers, with ✓ markers for existing members and a thinking-level pick per member); writes `judgeCouncil` to `~/.pi/agent/settings.json`. |
-| `/wai-config`          | View/edit pi-yoowai settings: `/wai-config <get|set|list> [key] [value]` or shorthand `/wai-config <provider.model>`. |
-| `/wai-clear`           | Clear the active plan, state, cost, memory, conventions, learned facts, loop history, and inherited session. |
-| `/wai-clear-logs`      | Clear the per-project wai error/event log.                                                           |
-| `/wai-index`           | Read stored wai project context (`all`, `plan`, `memory`, `conventions`, `cost`, `logs`, `index`, `learned`; `--update` rebuilds the index). |
-| `/wai-explain`         | Explain code, an error, or a file via the secondary model.                                           |
-| `/wai-learn`           | Record or verify project facts for future sessions (`/wai-learn <fact>` or `--verify`).              |
-| `/wai-search`          | Web search via the configured provider (DuckDuckGo/Brave).                                           |
-| `/wai-search-config`   | Configure the web search provider and save the Brave API key to `auth.json`.                         |
-| `/wai-next`            | Recommend the next step based on the active plan.                                                    |
-| `/wai-done`            | Mark the current plan step complete and recommend the next step. `/wai-done N` sets progress to step N (lower N regresses, `0` resets); `all` completes everything; `--force` overrides the `requireReviewBeforeDone` gate. |
-| `/wai-plan-update`     | Update the active plan (add/modify/remove steps) via the plan model.                                 |
-| `/wai-logs`            | Show recent wai error/event log entries for this project.                                            |
-| `/wai-test`            | Test connectivity to the configured secondary model(s) and judge council members; an optional task name scopes the check (`judge` includes the council). |
-| `/wai-backend`         | Switch the secondary model backend: `sdk` (default), `pi`, or `http`.                                |
-| `/wai-preset`          | List, preview (`show <name>`), or apply (`<name>`) a named model preset from `pi-yoowai.presets`; applying writes to the global `~/.pi/agent/settings.json`. |
-| `/wai-audit`           | Run review, security, and test concurrently over the same working-tree diff and render one combined report (a failing section does not fail the others). |
-| `/wai-reflect`         | Analyze review memory for recurring issue patterns and suggest project conventions; `--learn` saves each suggestion as a learned fact. No model calls. |
-| `/wai-design-ref`      | Manage user-curated UI/design rules injected into review/judge prompts for UI files: `list`, `add <rule>`, `remove <n>`, `import <path>`, `docs [topic] [doc]` (read the vendored design guidance), `reset-defaults`, `clear`. |
+| Command              | Purpose                                                                                                                                                                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/wai`               | Run an action or show status: `/wai <plan                                                                                                                                                                                      | review | suggest                                                         | recommend | judge | scan | test | security | status> [args]`; `scan`accepts`--deep`. |
+| `/wai-scan-deep`     | Alias for `/wai scan --deep` (deep scan with source-file sampling and symbol index build).                                                                                                                                     |
+| `/wai-status`        | Detailed diagnostics (config, plan, VCS, conventions, cost).                                                                                                                                                                   |
+| `/wai-model`         | Interactively pick the secondary model (optionally per tool) and write it to `~/.pi/agent/settings.json`. `/wai-model reset [base\|<task>]` clears the base or a task override.                                                |
+| `/wai-council`       | Interactively manage the judge council (add/remove members with the `/wai-model` pickers, with ✓ markers for existing members and a thinking-level pick per member); writes `judgeCouncil` to `~/.pi/agent/settings.json`.     |
+| `/wai-config`        | View/edit pi-yoowai settings: `/wai-config <get                                                                                                                                                                                | set    | list> [key] [value]`or shorthand`/wai-config <provider.model>`. |
+| `/wai-clear`         | Clear the active plan, state, cost, memory, conventions, learned facts, loop history, and inherited session.                                                                                                                   |
+| `/wai-clear-logs`    | Clear the per-project wai error/event log.                                                                                                                                                                                     |
+| `/wai-index`         | Read stored wai project context (`all`, `plan`, `memory`, `conventions`, `cost`, `logs`, `index`, `learned`; `--update` rebuilds the index).                                                                                   |
+| `/wai-explain`       | Explain code, an error, or a file via the secondary model.                                                                                                                                                                     |
+| `/wai-vision`        | Analyze an image (screenshot, diagram, error capture) via a vision-capable secondary model: `/wai-vision <path> [question...]`.                                                                                                |
+| `/wai-learn`         | Record or verify project facts for future sessions (`/wai-learn <fact>` or `--verify`).                                                                                                                                        |
+| `/wai-search`        | Web search via the configured provider (DuckDuckGo/Brave).                                                                                                                                                                     |
+| `/wai-search-config` | Configure the web search provider and save the Brave API key to `auth.json`.                                                                                                                                                   |
+| `/wai-next`          | Recommend the next step based on the active plan.                                                                                                                                                                              |
+| `/wai-done`          | Mark the current plan step complete and recommend the next step. `/wai-done N` sets progress to step N (lower N regresses, `0` resets); `all` completes everything; `--force` overrides the `requireReviewBeforeDone` gate.    |
+| `/wai-plan-update`   | Update the active plan (add/modify/remove steps) via the plan model.                                                                                                                                                           |
+| `/wai-logs`          | Show recent wai error/event log entries for this project.                                                                                                                                                                      |
+| `/wai-test`          | Test connectivity to the configured secondary model(s) and judge council members; an optional task name scopes the check (`judge` includes the council).                                                                       |
+| `/wai-backend`       | Switch the secondary model backend: `sdk` (default), `pi`, or `http`.                                                                                                                                                          |
+| `/wai-preset`        | List, preview (`show <name>`), or apply (`<name>`) a named model preset from `pi-yoowai.presets`; applying writes to the global `~/.pi/agent/settings.json`.                                                                   |
+| `/wai-audit`         | Run review, security, and test concurrently over the same working-tree diff and render one combined report (a failing section does not fail the others).                                                                       |
+| `/wai-reflect`       | Analyze review memory for recurring issue patterns and suggest project conventions; `--learn` saves each suggestion as a learned fact. No model calls.                                                                         |
+| `/wai-design-ref`    | Manage user-curated UI/design rules injected into review/judge prompts for UI files: `list`, `add <rule>`, `remove <n>`, `import <path>`, `docs [topic] [doc]` (read the vendored design guidance), `reset-defaults`, `clear`. |
 
 ---
 
@@ -121,6 +122,7 @@ pi-yoowai/
     ├── format.ts         # Format wai tool results into markdown text for the Pi TUI
     ├── wai-tool-params.ts# Validation for the main wai tool parameters
     ├── wai-explain.ts    # /wai-explain terminal command handler
+    ├── wai-vision.ts     # wai_vision tool + /wai-vision handler: image loading/validation + vision model call
     ├── wai-index.ts      # /wai-index terminal command handler
     ├── wai-learn.ts      # /wai-learn terminal command handler
     ├── wai-search.ts     # /wai-search terminal command handler
@@ -240,6 +242,7 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
   - `verify.ts` — Secondary-model self-verification loop for structured results.
   - `shared.ts` — Cross-action helpers: `STAGES`, cost recording, JSON parsing, usage merging.
 - **`wai-explain.ts`** — Handles `/wai-explain`: explains code/error/file with the secondary model (optional doc context).
+- **`wai-vision.ts`** — Backs the `wai_vision` tool and `/wai-vision`: validates the image path (`path-security`), maps extension → mime type (png/jpg/jpeg/webp/gif, 5 MB cap), base64-encodes the image, and calls the secondary model with the image attached (`CallSecondaryModelOptions.images`). Images ride only the SDK backend (pi-ai `ImageContent`) and the model must declare image input in Pi's catalog; the `taskModels.vision` override (settable via `/wai-model`) picks a vision-capable model when the base model is text-only.
 - **`wai-index.ts`** — Handles `/wai-index`: reads stored project context (plan, memory, conventions, cost, logs, index, learned).
 - **`wai-learn.ts`** — Handles `/wai-learn`: records/verifies project facts for future sessions.
 - **`wai-search.ts`** — Handles `/wai-search`: validates the query, checks `pi-yoowai.docs.webSearch.enabled`, runs web search via `doc-fetcher.ts`, and formats raw results.
@@ -260,19 +263,19 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 
 All commands run from the repository root.
 
-| Command                  | What it does                                         |
-| ------------------------ | ---------------------------------------------------- |
-| `npm install`            | Install dev dependencies and resolve peer deps.      |
-| `npm run typecheck`      | Run `tsc --noEmit` against `src/`.                   |
-| `npm run lint`           | Run ESLint against `src/`.                           |
-| `npm test`               | Run the Node test runner against `src/**/*.test.ts`. |
-| `npm run format`         | Run Prettier to format `src/`.                       |
-| `npm run format:check`   | Check Prettier formatting without writing.           |
-| `npm run prepublishOnly` | Runs typecheck + lint + tests automatically before `npm publish`. |
-| `npm run bump`           | Bump patch version in `package.json`.                |
-| `npm run bump:patch`     | Same as `npm run bump`.                              |
-| `npm run bump:minor`     | Bump minor version.                                  |
-| `npm run bump:major`     | Bump major version.                                  |
+| Command                  | What it does                                                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `npm install`            | Install dev dependencies and resolve peer deps.                                                                   |
+| `npm run typecheck`      | Run `tsc --noEmit` against `src/`.                                                                                |
+| `npm run lint`           | Run ESLint against `src/`.                                                                                        |
+| `npm test`               | Run the Node test runner against `src/**/*.test.ts`.                                                              |
+| `npm run format`         | Run Prettier to format `src/`.                                                                                    |
+| `npm run format:check`   | Check Prettier formatting without writing.                                                                        |
+| `npm run prepublishOnly` | Runs typecheck + lint + tests automatically before `npm publish`.                                                 |
+| `npm run bump`           | Bump patch version in `package.json`.                                                                             |
+| `npm run bump:patch`     | Same as `npm run bump`.                                                                                           |
+| `npm run bump:minor`     | Bump minor version.                                                                                               |
+| `npm run bump:major`     | Bump major version.                                                                                               |
 | `npm run setup`          | Run the interactive setup installer (`scripts/setup.js`; also the package `bin`, so `npx pi-yoowai setup` works). |
 
 There is **no `build`, `start`, or `dev` script**. Pi loads `src/index.ts` directly, and TypeScript is checked but not emitted (`tsconfig.json` has `"noEmit": true`).
@@ -370,7 +373,7 @@ Core keys:
 - API keys are resolved by pi-yoowai (`secondary.apiKey` → `~/.pi/agent/auth.json` → env vars → `!command`), then by the `pi-ai` SDK's own credential/env lookup if no explicit key is found.
 - If the SDK backend hits a retryable provider error (5xx, rate limit, network timeout, missing API key, or a model missing from the SDK catalog), pi-yoowai falls back to the `pi` backend once.
 - `modelInfo` — optional per-model token budget overrides, keyed by model id, so unknown models don't require code changes.
-- `taskModels` — optional per-tool model overrides (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `planUpdate`, `explain`), each a partial secondary config (`provider`, `id`, `thinking`, ...).
+- `taskModels` — optional per-tool model overrides (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `planUpdate`, `explain`, `vision`), each a partial secondary config (`provider`, `id`, `thinking`, ...).
 - `judgeCouncil` — optional council of judge models: an array of `"provider/model-id"` strings (split on the first `/`; a bare string is treated as an id inheriting `secondary.provider`) or partial secondary config objects, each resolved over `secondary` like a `taskModels` override. With ≥ 2 valid members `wai.judge` fans out to all members in parallel and synthesizes their verdicts with the configured judge model; fewer than 2 valid members (or malformed entries, which are dropped during validation) keeps the single-model judge. Members should be different model families. Default: empty.
 - `reviewStrategy` — `auto` (default), `diff-only`, or `full-files`; controls how much source is sent with reviews.
 - `reviewFullFileThresholdLines` / `reviewMaxInputTokens` / `reviewMaxConventionsTokens` / `reviewMaxMemoryTokens` — tuning for full-file inclusion, the hard cap on review input tokens, and the conventions/memory token budgets in review prompts.

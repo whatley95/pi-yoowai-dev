@@ -454,12 +454,23 @@ export async function callSdkBackend(
     );
   }
 
+  const images = options.images;
+  if (images && images.length > 0 && !builtinModel.input?.includes("image")) {
+    throw new Error(
+      `Model "${provider}:${model}" does not accept image input. ` +
+        `Pick a vision-capable model for the vision task via /wai-model (taskModels.vision).`,
+    );
+  }
+
   const context: Context = {
     systemPrompt,
     messages: [
       {
         role: "user",
-        content: [{ type: "text", text: userPrompt }],
+        content: [
+          { type: "text", text: userPrompt },
+          ...(images ?? []).map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType })),
+        ],
         timestamp: Date.now(),
       },
     ],

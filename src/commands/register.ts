@@ -28,6 +28,7 @@ import { executeWaiSecurity } from "../actions/security.js";
 import { executeWaiScan } from "../actions/scan.js";
 import { executeWaiIndex, formatIndexResult } from "../wai-index.js";
 import { executeWaiExplain } from "../wai-explain.js";
+import { executeWaiVision } from "../wai-vision.js";
 import { handleWaiSearchCommand } from "../wai-search.js";
 import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
 import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
@@ -1337,6 +1338,36 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   pi.registerCommand("wai-explain", {
     description: "Explain code, an error, or a file. Usage: /wai-explain <target> [--files file1,file2,...]",
     handler: explainHandler,
+  });
+
+  const visionHandler = async (args: string, ctx: ExtensionCommandContext) => {
+    const trimmed = args.trim();
+    if (!trimmed) {
+      ctx.ui.notify(
+        "Provide an image path, e.g. /wai-vision docs/screenshot.png does this match the design?",
+        "warning",
+      );
+      return;
+    }
+    // First token is the image path; the rest is an optional question.
+    const spaceIndex = trimmed.search(/\s/);
+    const path = spaceIndex === -1 ? trimmed : trimmed.slice(0, spaceIndex);
+    const question = spaceIndex === -1 ? undefined : trimmed.slice(spaceIndex + 1).trim() || undefined;
+
+    const signal = undefined;
+    const progress = createProgressReporter("vision", ctx);
+    const result = await executeWaiVision(ctx.cwd, { path, question }, signal, progress, ctx.sessionManager);
+    clearWaiStatus(ctx);
+    if ("error" in result) {
+      ctx.ui.notify(`wai-vision error: ${result.error}`, "error");
+      return;
+    }
+    await ctx.ui.select("wai vision", result.result.details.split("\n").filter(Boolean));
+  };
+
+  pi.registerCommand("wai-vision", {
+    description: "Analyze an image with a vision-capable model. Usage: /wai-vision <path> [question...]",
+    handler: visionHandler,
   });
 
   const searchHandler = async (args: string, ctx: ExtensionCommandContext) => {

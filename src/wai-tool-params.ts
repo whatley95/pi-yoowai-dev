@@ -26,6 +26,7 @@ export const WAI_MODEL_TASKS: WaiModelTask[] = [
   "security",
   "done",
   "explain",
+  "vision",
 ];
 
 interface ValidatedParams {
