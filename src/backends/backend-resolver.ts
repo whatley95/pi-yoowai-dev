@@ -1,7 +1,7 @@
 import type { ModelInfo } from "../model-registry.js";
 import type { BackendType, ProviderApiInfo, SecondaryModelConfig } from "../types/secondary-model.js";
 import { resolveProviderApiInfo } from "./provider-api.js";
-import { getPiAiCompat } from "./sdk-backend.js";
+import { getPiAiCompat, resolveRuntimeModel } from "./sdk-backend.js";
 
 export function buildModelInfoOverride(
   secondary: SecondaryModelConfig | undefined,
@@ -31,7 +31,9 @@ export async function resolveSdkModelInfo(
 ): Promise<Partial<ModelInfo> | undefined> {
   try {
     const piAi = await getPiAiCompat();
-    const builtinModel = piAi.getModel(provider, model);
+    // The builtin catalog is static; extension providers (e.g. pi-crof) and
+    // custom models.json entries only exist in Pi's runtime registry.
+    const builtinModel = piAi.getModel(provider, model) ?? (await resolveRuntimeModel(provider, model));
     if (!builtinModel) return undefined;
     const info: Partial<ModelInfo> = {};
     if (typeof builtinModel.contextWindow === "number" && builtinModel.contextWindow > 0) {
@@ -46,7 +48,9 @@ export async function resolveSdkModelInfo(
     if (typeof modelInfoOverride?.maxOutputTokens === "number" && Number.isFinite(modelInfoOverride.maxOutputTokens)) {
       info.maxOutputTokens = modelInfoOverride.maxOutputTokens;
     }
-    return Object.keys(info).length > 0 ? info : undefined;
+    // A known model with no numeric metadata still counts as resolvable ({})
+    // so resolveBackend doesn't needlessly drop to the pi CLI fallback.
+    return info;
   } catch {
     return undefined;
   }
@@ -85,9 +89,9 @@ export async function resolveBackend(
   const modelInfoOverride = buildModelInfoOverride(secondary, modelInfo, model);
   let sdkModelInfo = backend === "sdk" ? await resolveSdkModelInfo(provider, model, modelInfoOverride) : undefined;
 
-  // If the backend was auto-selected and the model is not in Pi's built-in SDK
-  // catalog, fall back to the pi backend so extension-registered providers
-  // (e.g. pi-cursor-provider) can still be used.
+  // If the backend was auto-selected and the model is in neither Pi's built-in
+  // SDK catalog nor the runtime registry (resolveSdkModelInfo checked both),
+  // fall back to the pi backend so Pi CLI-resolvable providers can still be used.
   let effectiveBackend: BackendType = backend;
   if (backend === "sdk" && autoSelectedSdk && !sdkModelInfo) {
     effectiveBackend = "pi";

@@ -165,6 +165,48 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 
 When `registerProvider` is enabled, `/wai-config`, `/wai-model`, and `/wai-backend` automatically refresh the `wai` provider registration in Pi so settings changes take effect without a manual `/reload`.
 
+### Custom providers via `models.json`
+
+Providers that are not in Pi's built-in catalog (e.g. [CrofAI](https://crof.ai/docs)) can still be used as the wai secondary model — on the default `sdk` backend, with streaming, caching, and `wai_vision` support. Register the provider in `~/.pi/agent/models.json` (or install a provider extension such as [`pi-crof`](https://pi.dev/packages/pi-crof?name=crof)); pi-yoowai resolves models through Pi's runtime registry when the static catalog doesn't know them. Reference configuration:
+
+```json
+{
+  "providers": {
+    "crof": {
+      "name": "CrofAI",
+      "baseUrl": "https://crof.ai/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "deepseek-v4-pro",
+          "name": "CrofAI: deepseek-v4-pro",
+          "reasoning": true,
+          "input": ["text"],
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "cost": { "input": 0.28, "output": 0.38, "cacheRead": 0, "cacheWrite": 0 }
+        },
+        {
+          "id": "kimi-k2.5",
+          "name": "CrofAI: kimi-k2.5 (vision)",
+          "reasoning": false,
+          "input": ["text", "image"],
+          "contextWindow": 262144,
+          "maxTokens": 262144
+        }
+      ]
+    }
+  }
+}
+```
+
+Notes:
+
+- The API key goes in `~/.pi/agent/auth.json` under the same provider id: `"crof": { "type": "api_key", "key": "nahcrof_..." }` (env-var fallback only exists for built-in providers).
+- `"input": ["text", "image"]` is what lets `wai_vision` use the model — set it on every vision-capable entry.
+- `api` must be a wire format Pi implements (`openai-completions`, `anthropic-messages`, `openai-responses`, `google-generative-ai`, ...); most hosted providers are OpenAI- or Anthropic-compatible.
+- Once registered, the models appear in the `/wai-model` picker and work for `secondary`, `taskModels`, and `judgeCouncil` like any built-in provider.
+
 ### Model suggestions
 
 Starting points for `taskModels` and `judgeCouncil`, from a setup using three subscriptions: **Moonshot** (Kimi), **opencode-go**, and **OpenAI** (ChatGPT). These are **suggestions, not requirements** — model lineups change fast, so treat this table as a snapshot (last updated: July 2026, after the Kimi K3 release) and check what your `/wai-model` picker actually lists. After assigning, run `/wai-test <tool>` to verify the model responds with clean output.

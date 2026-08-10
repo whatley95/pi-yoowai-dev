@@ -1,4 +1,4 @@
-import type { AssistantMessageEvent, Context, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessageEvent, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { readRawAuthEntry, resolveApiKey } from "../auth-reader.js";
 import { getAgentDir } from "../config.js";
 import { logEvent } from "../logger.js";
@@ -40,6 +40,7 @@ async function getModelRuntime(): Promise<PiModelRuntime | undefined> {
 const sdkOverrides: {
   streamSimple?: PiAiCompatModule["streamSimple"];
   getModel?: PiAiCompatModule["getModel"];
+  runtimeGetModel?: (provider: string, model: string) => Model<Api> | undefined;
 } = {};
 
 let oauthResolverOverride:
@@ -57,6 +58,29 @@ export function setSdkStreamSimpleOverride(fn: PiAiCompatModule["streamSimple"] 
 /** Test hook: override getModel resolution in the sdk backend. */
 export function setSdkGetModelOverride(fn: PiAiCompatModule["getModel"] | null): void {
   sdkOverrides.getModel = fn ?? undefined;
+}
+
+/** Test hook: override the Pi runtime-registry model lookup. */
+export function setSdkRuntimeGetModelOverride(
+  fn: ((provider: string, model: string) => Model<Api> | undefined) | null,
+): void {
+  sdkOverrides.runtimeGetModel = fn ?? undefined;
+}
+
+/** Resolve a model from Pi's runtime registry — extension-registered providers
+ *  (e.g. pi-crof) and custom `~/.pi/agent/models.json` entries — when the static
+ *  builtin catalog doesn't know it. Returns undefined when the runtime is
+ *  unavailable or doesn't know the model either. */
+export async function resolveRuntimeModel(provider: string, model: string): Promise<Model<Api> | undefined> {
+  if (sdkOverrides.runtimeGetModel) {
+    return sdkOverrides.runtimeGetModel(provider, model);
+  }
+  try {
+    const runtime = await getModelRuntime();
+    return runtime?.getModel(provider, model) as Model<Api> | undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Test hook: clear the OAuth API-key cache. */
@@ -446,10 +470,10 @@ export async function callSdkBackend(
   }
 
   const piAi = await getPiAiCompat();
-  const builtinModel = piAi.getModel(provider, model);
+  const builtinModel = piAi.getModel(provider, model) ?? (await resolveRuntimeModel(provider, model));
   if (!builtinModel) {
     throw new Error(
-      `Model "${model}" is not in Pi's built-in catalog for provider "${provider}". ` +
+      `Model "${model}" is not in Pi's built-in catalog for provider "${provider}" and no extension or models.json entry provides it. ` +
         `Use backend: "pi" to call it through the Pi CLI, or configure a custom baseUrl with backend: "http".`,
     );
   }

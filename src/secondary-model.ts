@@ -19,6 +19,7 @@ import {
   setPiSessionId,
   setPiSpawnResolver,
   setSdkGetModelOverride,
+  setSdkRuntimeGetModelOverride,
   setSdkStreamSimpleOverride,
 } from "./backends/index.js";
 import type { CallSecondaryModelOptions, UsageCost } from "./types.js";
@@ -34,6 +35,7 @@ export {
   setPiSpawnResolver,
   setSdkStreamSimpleOverride,
   setSdkGetModelOverride,
+  setSdkRuntimeGetModelOverride,
 };
 
 function isRetryableBackendError(err: unknown): boolean {

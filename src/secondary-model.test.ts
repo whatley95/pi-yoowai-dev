@@ -12,6 +12,7 @@ import {
   clearPiSessionId,
   getProviderApiInfo,
   setSdkGetModelOverride,
+  setSdkRuntimeGetModelOverride,
   setSdkStreamSimpleOverride,
   stripLeadingOverlap,
 } from "./secondary-model.js";
@@ -833,9 +834,82 @@ describe("sdk backend", () => {
 
   afterEach(() => {
     setSdkGetModelOverride(null);
+    setSdkRuntimeGetModelOverride(null);
     setSdkStreamSimpleOverride(null);
     setSdkOAuthResolverOverride(null);
+    setPiSpawnResolver(null);
     setAgentDirForTests(() => originalAgentDir);
+  });
+
+  it("resolves runtime-registry providers (extension/models.json) on the sdk backend", async () => {
+    const cwd = makeTempDir("wai-sdk-runtime-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "crof", id: "kimi-k2.5", apiKey: "crof-test" });
+
+    // The static builtin catalog doesn't know crof; Pi's runtime registry does.
+    setSdkGetModelOverride(() => undefined);
+    setSdkRuntimeGetModelOverride((provider, modelId) =>
+      provider === "crof"
+        ? ({ ...fakeSdkModel(provider, modelId), input: ["text", "image"] } as Model<Api>)
+        : undefined,
+    );
+    let sdkCalled = false;
+    setSdkStreamSimpleOverride(() => {
+      sdkCalled = true;
+      return fakeSdkStream(fakeSdkAssistantMessage("runtime model ok"));
+    });
+
+    const { content } = await callSecondaryModel("crof", "kimi-k2.5", "system", "user", { cwd });
+    assert.equal(content, "runtime model ok");
+    assert.ok(sdkCalled, "Should have used the sdk backend via the runtime registry, not the pi fallback");
+  });
+
+  it("accepts images for runtime-registry models that declare image input", async () => {
+    const cwd = makeTempDir("wai-sdk-runtime-vision-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "crof", id: "kimi-k2.5", apiKey: "crof-test" });
+
+    setSdkGetModelOverride(() => undefined);
+    setSdkRuntimeGetModelOverride((provider, modelId) =>
+      provider === "crof"
+        ? ({ ...fakeSdkModel(provider, modelId), input: ["text", "image"] } as Model<Api>)
+        : undefined,
+    );
+    let capturedContext: unknown;
+    setSdkStreamSimpleOverride(((_model: unknown, context: unknown) => {
+      capturedContext = context;
+      return fakeSdkStream(fakeSdkAssistantMessage("crof vision ok"));
+    }) as never);
+
+    const { content } = await callSecondaryModel("crof", "kimi-k2.5", "system", "user", {
+      cwd,
+      images: [{ data: "aGk=", mimeType: "image/png" }],
+    });
+    assert.equal(content, "crof vision ok");
+    const ctx = capturedContext as { messages: { content: unknown[] }[] };
+    assert.deepEqual(ctx.messages[0].content, [
+      { type: "text", text: "user" },
+      { type: "image", data: "aGk=", mimeType: "image/png" },
+    ]);
+  });
+
+  it("still falls back to the pi backend when neither catalog nor runtime knows the model", async () => {
+    const cwd = makeTempDir("wai-sdk-runtime-miss-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "cursor", id: "composer-2.5" });
+
+    setSdkGetModelOverride(() => undefined);
+    setSdkRuntimeGetModelOverride(() => undefined);
+    const script = join(cwd, "fake-pi-runtime-miss.js");
+    writeFileSync(
+      script,
+      `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"pi fallback ok"}],usage:{input:10,output:5,cost:0.0001}}}));`,
+      "utf-8",
+    );
+    setPiSpawnResolver(() => ({ command: process.execPath, prefixArgs: [script] }));
+
+    const { content } = await callSecondaryModel("cursor", "composer-2.5", "system", "user", { cwd });
+    assert.equal(content, "pi fallback ok");
   });
 
   after(() => {
