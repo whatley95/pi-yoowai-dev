@@ -171,7 +171,7 @@ test("formatResultText explains the generic cap for med-level truncated reviews"
   assert.ok(!text.includes("ran at level"), text);
 });
 
-test("formatResultText explains the high-level diff cap on truncated reviews", () => {
+test("formatResultText explains the high-level truncation without level caps", () => {
   const text = formatResultText({
     action: "review",
     level: "high",
@@ -184,7 +184,9 @@ test("formatResultText explains the high-level diff cap on truncated reviews", (
     },
   });
   assert.ok(text.includes("ran at level `high`"), text);
-  assert.ok(text.includes("12,000 chars"), text);
+  assert.ok(text.includes("without diff caps"), text);
+  assert.ok(text.includes("wai_review_med"), text);
+  assert.ok(!text.includes("12,000 chars"), text);
 });
 
 test("formatResultText explains the generic cap for truncated judge results", () => {

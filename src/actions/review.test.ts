@@ -1,5 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +10,7 @@ import { mergeReviewResults, dedupeIssues } from "./review-helpers.js";
 import { resolveReviewTaskModel } from "../config.js";
 import { resolveReviewSettings } from "../review-level.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
+import { gitSpawnEnv } from "../git-env.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ReviewResult, ReviewIssue, YoowaiConfig } from "../types.js";
 
@@ -319,5 +322,172 @@ describe("dedupeIssues (parallel-review cross-batch dedup)", () => {
     ]);
     assert.equal(failing.issues.length, 1);
     assert.equal(failing.verdict, "needs-work"); // worst-of unaffected by dedup
+  });
+});
+
+describe("executeWaiReview diff-only budget guard (levels are strategy-only)", () => {
+  const tmpDirs: string[] = [];
+  const originalAgentDir = getAgentDir();
+  let emptyAgentDir: string;
+  let servers: Server[] = [];
+
+  before(() => {
+    // Isolate from the real ~/.pi/agent/settings.json so the user's global
+    // secondary/task models cannot leak into these probes.
+    emptyAgentDir = mkdtempSync(join(tmpdir(), "review-guard-agent-"));
+    setAgentDirForTests(() => emptyAgentDir);
+  });
+
+  after(() => {
+    setAgentDirForTests(() => originalAgentDir);
+    for (const server of servers) {
+      server.close();
+    }
+    servers = [];
+    try {
+      rmSync(emptyAgentDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  function gitAvailable(): boolean {
+    try {
+      execFileSync("git", ["--version"], { stdio: "pipe" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const hasGit = gitAvailable();
+
+  function gitOpts() {
+    return { stdio: "pipe" as const, env: gitSpawnEnv() };
+  }
+
+  function initGitRepo(dir: string): void {
+    execFileSync("git", ["init"], { cwd: dir, ...gitOpts() });
+    execFileSync("git", ["config", "user.email", "wai-test@example.com"], { cwd: dir, ...gitOpts() });
+    execFileSync("git", ["config", "user.name", "wai test"], { cwd: dir, ...gitOpts() });
+  }
+
+  function commitAll(dir: string): void {
+    execFileSync("git", ["add", "."], { cwd: dir, ...gitOpts() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], { cwd: dir, ...gitOpts() });
+  }
+
+  function makeRepoWithChange(change: string): string {
+    const cwd = mkdtempSync(join(tmpdir(), "review-guard-repo-"));
+    tmpDirs.push(cwd);
+    initGitRepo(cwd);
+    writeFileSync(join(cwd, "a.txt"), "hello\n");
+    commitAll(cwd);
+    writeFileSync(join(cwd, "a.txt"), change);
+    const piDir = join(cwd, ".pi");
+    mkdirSync(piDir, { recursive: true });
+    return cwd;
+  }
+
+  /** A locally stubbed OpenAI-compatible endpoint: counts requests and
+   *  returns a canned passing review. */
+  async function startStubServer(): Promise<{ url: string; bodies: string[] }> {
+    const bodies: string[] = [];
+    const server = await new Promise<Server>((resolve) => {
+      const s = createServer((req: IncomingMessage, res: ServerResponse) => {
+        let body = "";
+        req.on("data", (chunk: Buffer) => {
+          body += chunk.toString("utf-8");
+        });
+        req.on("end", () => {
+          bodies.push(body);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({ verdict: "pass", issues: [], suggestions: [], consensus: true }),
+                  },
+                },
+              ],
+              usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+            }),
+          );
+        });
+      });
+      s.listen(0, "127.0.0.1", () => resolve(s));
+    });
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("stub server has no port");
+    return { url: `http://127.0.0.1:${address.port}`, bodies };
+  }
+
+  function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
+  }
+
+  it("min level refuses an over-budget diff with guidance instead of truncating", { skip: !hasGit }, async () => {
+    // ~100KB diff → ~25k estimated tokens, far above the tiny model budget.
+    const bigLine = "x".repeat(200);
+    const big = Array.from({ length: 500 }, (_, i) => `${i} ${bigLine}`).join("\n");
+    const cwd = makeRepoWithChange(big);
+    writeSettings(cwd, {
+      reviewLevel: "min",
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        thinking: "off",
+        contextWindow: 8000,
+        maxOutputTokens: 1024,
+        // If the guard regressed and a model call happened, this dead port
+        // fails the test with a connection error instead of the guidance.
+        backend: "http",
+        baseUrl: "http://127.0.0.1:9",
+      },
+    });
+
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const result = await executeWaiReview(cwd, "oversized diff probe", ctx, {}, undefined, () => {});
+
+    assert.ok(result.error, "expected an error result");
+    assert.match(result.error, /wai_review_med/);
+    assert.match(result.error, /wai_review_high/);
+    assert.match(result.error, /files:\[\.\.\.\]/);
+    assert.match(result.error, /too large/);
+  });
+
+  it("min level reviews a fitting diff in exactly one model call with the full diff", { skip: !hasGit }, async () => {
+    const marker = "UNDER_BUDGET_MARKER_12345";
+    const small = `hello\n\n${marker}\n` + "y".repeat(2000) + "\n";
+    const cwd = makeRepoWithChange(small);
+    const { url, bodies } = await startStubServer();
+    writeSettings(cwd, {
+      reviewLevel: "min",
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        thinking: "off",
+        contextWindow: 8000,
+        maxOutputTokens: 1024,
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test-key",
+      },
+    });
+
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const result = await executeWaiReview(cwd, "fitting diff probe", ctx, {}, undefined, () => {});
+
+    assert.equal(bodies.length, 1, "expected exactly one model call");
+    assert.ok(bodies[0].includes(marker), "the full diff must reach the model, not be truncated");
+    assert.equal(result.review?.verdict, "pass");
   });
 });

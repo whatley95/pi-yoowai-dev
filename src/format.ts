@@ -1,7 +1,6 @@
 import { formatTokenCount } from "./actions/shared.js";
 import { formatCost } from "./cost-tracker.js";
 import { formatConventions } from "./conventions.js";
-import { LEVEL_DEFAULTS } from "./review-level.js";
 import { planStepDescription, isPlanStep } from "./types.js";
 import type { StageProfile, WaiToolResult, ReviewLevel } from "./types.js";
 
@@ -29,19 +28,14 @@ export function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** Why a review's context was limited, and how to lift the limit. The default
- *  budgets are read from LEVEL_DEFAULTS so the hint cannot drift from the
- *  actual caps: min caps the diff at 3,000 chars / 4,000 tokens, high at
- *  12,000 chars; med has no default caps. */
+/** Why a review's context was limited, and how to lift the limit. Levels are
+ *  strategy-only and impose no diff/token caps: the model's context-derived
+ *  budget is the single ceiling, so a truncated result means the change
+ *  exceeded that budget (or an explicit reviewMaxDiffChars /
+ *  reviewMaxInputTokens user cap). */
 function largeChangeHint(level: ReviewLevel | undefined): string {
   if (level === "min" || level === "high") {
-    const defaults = LEVEL_DEFAULTS[level];
-    const diff = defaults.reviewMaxDiffChars;
-    const tokens = defaults.reviewMaxInputTokens;
-    const diffText = diff !== undefined ? `caps the diff at ${diff.toLocaleString()} chars` : "";
-    const tokensText = tokens !== undefined ? `${tokens.toLocaleString()} input tokens` : "";
-    const budget = [diffText, tokensText].filter(Boolean).join(" and ");
-    return `The review ran at level \`${level}\`, which ${budget}. Re-run with \`wai_review_med\` (or \`wai_review_high\` for large changes) or raise \`pi-yoowai.reviewMaxDiffChars\` / \`reviewMaxInputTokens\` to include everything.`;
+    return `The review ran at level \`${level}\` without diff caps: the change exceeded the model's context budget. Re-run with \`wai_review_med\` (or \`wai_review_high\` for large changes), scope the review with \`files:[...]\`, or raise \`pi-yoowai.reviewMaxDiffChars\` / \`reviewMaxInputTokens\` to allow a larger diff.`;
   }
   return "The change exceeded the configured review context limits. Raise `pi-yoowai.reviewMaxDiffChars` / `reviewMaxInputTokens`, or scope the review with `files:[...]` to reduce the diff.";
 }

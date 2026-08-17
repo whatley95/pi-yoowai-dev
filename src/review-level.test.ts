@@ -62,14 +62,25 @@ describe("resolveReviewLevel", () => {
 });
 
 describe("getReviewLevelSettings", () => {
-  it("min level sets diff-only and disables codemap", () => {
+  it("min level sets diff-only and disables codemap; no size caps", () => {
     const config = baseConfig({ provider: "openai", id: "gpt-4o", thinking: "medium" });
     const settings = getReviewLevelSettings(config, "min");
     assert.equal(settings.level, "min");
     assert.equal(settings.reviewStrategy, "diff-only");
     assert.equal(settings.selfVerify, false);
     assert.equal(settings.codemapMaxTokens, 0);
-    assert.equal(settings.reviewMaxDiffChars, 3000);
+    // Levels are strategy-only: the context-derived budget is the ceiling.
+    assert.equal(settings.reviewMaxDiffChars, undefined);
+    assert.equal(settings.reviewMaxInputTokens, undefined);
+  });
+
+  it("med level defaults to no size caps", () => {
+    const config = baseConfig({ provider: "openai", id: "gpt-4o", thinking: "medium" });
+    const settings = getReviewLevelSettings(config, "med");
+    assert.equal(settings.reviewStrategy, "auto");
+    assert.equal(settings.reviewMaxDiffChars, undefined);
+    assert.equal(settings.reviewMaxInputTokens, undefined);
+    assert.equal(settings.selfVerify, false);
   });
 
   it("med level preserves configured values", () => {
@@ -81,12 +92,14 @@ describe("getReviewLevelSettings", () => {
     assert.equal(settings.selfVerify, false);
   });
 
-  it("high level enables full-files and self-verify", () => {
+  it("high level enables full-files and self-verify; no size caps", () => {
     const config = baseConfig({ provider: "openai", id: "gpt-4o", thinking: "medium" });
     const settings = getReviewLevelSettings(config, "high");
     assert.equal(settings.reviewStrategy, "full-files");
     assert.equal(settings.selfVerify, true);
     assert.equal(settings.reviewMaxConventionsTokens, 1500);
+    assert.equal(settings.reviewMaxDiffChars, undefined);
+    assert.equal(settings.reviewMaxInputTokens, undefined);
   });
 
   it("explicit config overrides level defaults", () => {

@@ -278,6 +278,33 @@ export async function executeWaiReview(
   const maxConcurrency =
     typeof config.parallelReview === "number" && config.parallelReview > 0 ? config.parallelReview : 3;
 
+  // Diff-only reviews (the min level default, or explicit diff-only config)
+  // cannot split the diff into hunks or parallelize by file: a single model
+  // call must see the whole change. When the diff exceeds the context-derived
+  // budget, fail loudly with guidance instead of silently truncating the diff
+  // and reviewing only a fragment (the old behavior produced unreliable
+  // "diff truncated · context limited" reviews). The budget math mirrors
+  // runReviewBatch's remainingForDiff so a diff that fits never errors here.
+  if (strategy === "diff-only") {
+    const remainingForDiff = Math.max(
+      0,
+      budgetWithPreReview.availableInputTokens -
+        1000 -
+        estimateTokens(codemap ?? "") -
+        estimateTokens(designRefText ?? ""),
+    );
+    const diffTokens = estimateTokens(diff);
+    if (diffTokens > remainingForDiff) {
+      progress(7, STAGES.review, "Diff too large for a diff-only review…");
+      return {
+        action: "review",
+        error: `The change is too large for a diff-only (${level} level) review: the diff needs ~${diffTokens.toLocaleString()} tokens but the model's available context budget is ~${remainingForDiff.toLocaleString()} tokens. Re-run with wai_review_med or wai_review_high (they split large diffs automatically), or scope the review with files:[...].`,
+        model: modelProfile,
+        level,
+      };
+    }
+  }
+
   let review: ReviewResult | undefined;
   let cost: UsageCost | undefined;
   let finalDiffTruncated = false;

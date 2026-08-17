@@ -6,7 +6,13 @@ import { resolveTaskModel } from "./config.js";
 export type ReviewStrategy = "auto" | "diff-only" | "full-files";
 
 /** Effective review settings after applying a review level.
- *  Explicit config values always override the level's defaults. */
+ *  Explicit config values always override the level's defaults.
+ *
+ *  Levels are STRATEGY-ONLY: they no longer cap the diff or input tokens.
+ *  The single ceiling for every level is the context-derived budget from
+ *  calculateReviewBudget (model context window minus output reservation and
+ *  safety margin). Only explicit user config (reviewMaxDiffChars /
+ *  reviewMaxInputTokens) imposes fixed caps. */
 export interface ReviewLevelSettings {
   level: ReviewLevel;
   reviewStrategy: ReviewStrategy;
@@ -35,8 +41,8 @@ export const LEVEL_DEFAULTS: Record<
   min: {
     reviewStrategy: "diff-only",
     selfVerify: false,
-    reviewMaxDiffChars: 3000,
-    reviewMaxInputTokens: 4000,
+    reviewMaxDiffChars: undefined,
+    reviewMaxInputTokens: undefined,
     reviewMaxConventionsTokens: 500,
     reviewMaxMemoryTokens: 400,
     codemapMaxTokens: 0,
@@ -57,7 +63,7 @@ export const LEVEL_DEFAULTS: Record<
   high: {
     reviewStrategy: "full-files",
     selfVerify: true,
-    reviewMaxDiffChars: 12000,
+    reviewMaxDiffChars: undefined,
     reviewMaxInputTokens: undefined,
     reviewMaxConventionsTokens: 1500,
     reviewMaxMemoryTokens: 1200,
