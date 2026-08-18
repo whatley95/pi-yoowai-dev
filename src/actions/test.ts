@@ -9,7 +9,7 @@ import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-mod
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
-import { calculateReviewBudget, estimateTokens } from "../token-budget.js";
+import { calculateReviewBudget } from "../token-budget.js";
 import { buildTestPrompt, validateTestResult, getTestValidationErrors, salvageTestFromMarkdown } from "../prompts.js";
 import {
   STAGES,
@@ -21,6 +21,8 @@ import {
   continuationMeta,
 } from "./shared.js";
 import { getSessionContext } from "./review-helpers.js";
+import { prepareActionDiff } from "./context-shared.js";
+import { buildCacheKey, getCachedTest, setCachedResult } from "../review-cache.js";
 import { getState } from "../session-state.js";
 import { planStepDescription } from "../types.js";
 import type { ProgressReporter } from "../progress.js";
@@ -97,8 +99,31 @@ export async function executeWaiTest(
   const conventions = loadConventions(cwd);
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
-  progress(3, STAGES.test, "Running tests…");
+  // The test command is resolved BEFORE the cache lookup so it can be keyed
+  // (testOutput is NOT — flaky runs would poison the key; the command list is
+  // deterministic given cwd). Session context is intentionally excluded.
   const testCommand = options.command ?? config.testCommand ?? detectTestCommand(cwd, conventions);
+  const cacheKey = buildCacheKey("test", {
+    diff,
+    description,
+    modelProfile,
+    options: { ...options, command: testCommand },
+    testCommand,
+    conventionsText,
+    reviewMaxDiffChars: config.reviewMaxDiffChars,
+    reviewStrategy: config.reviewStrategy ?? "auto",
+    reviewFullFileThresholdLines: config.reviewFullFileThresholdLines ?? 300,
+    toolUseLoop: config.toolUseLoop,
+  });
+  {
+    const cached = getCachedTest(cwd, cacheKey);
+    if (cached) {
+      progress(3, STAGES.test, "Using cached test analysis…");
+      return { action: "test", test: cached.test, model: cached.model, cost: cached.cost };
+    }
+  }
+
+  progress(3, STAGES.test, "Running tests…");
   let testOutput: string;
   if (testCommand) {
     const results = await runPreReviewCommands(cwd, [testCommand]);
@@ -135,10 +160,17 @@ export async function executeWaiTest(
   });
   const fileContents = mapFileContentEntries(fileResult.entries);
 
-  const systemPromptEstimate = 1000;
-  const remainingForDiff = Math.max(0, budget.availableInputTokens - fileResult.totalTokens - systemPromptEstimate);
-  const diffTokens = estimateTokens(diff);
-  const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
+  // Fail closed instead of silently truncating: test has no hunk/parallel
+  // splitting, so an over-budget diff returns guidance before any model call.
+  const prepared = prepareActionDiff("test", {
+    diff,
+    availableInputTokens: budget.availableInputTokens,
+    fileTokens: fileResult.totalTokens,
+  });
+  if (!prepared.ok) {
+    return { action: "test", error: prepared.error, model: modelProfile };
+  }
+  const finalDiff = prepared.diff;
 
   const { system, user } = buildTestPrompt(
     description,
@@ -203,6 +235,8 @@ export async function executeWaiTest(
       });
     }
   }
+
+  setCachedResult(cwd, "test", cacheKey, { test, model: modelProfile, cost });
 
   return {
     action: "test",

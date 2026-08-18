@@ -6,7 +6,7 @@ import { logEvent } from "../logger.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
-import { calculateReviewBudget, estimateTokens } from "../token-budget.js";
+import { calculateReviewBudget } from "../token-budget.js";
 import {
   buildSecurityPrompt,
   validateSecurityResult,
@@ -23,6 +23,8 @@ import {
   continuationMeta,
 } from "./shared.js";
 import { getSessionContext } from "./review-helpers.js";
+import { prepareActionDiff } from "./context-shared.js";
+import { buildCacheKey, getCachedSecurity, setCachedResult } from "../review-cache.js";
 import { getState } from "../session-state.js";
 import { planStepDescription } from "../types.js";
 import type { ProgressReporter } from "../progress.js";
@@ -95,6 +97,28 @@ export async function executeWaiSecurity(
     changedFiles = diffResult.changedFiles;
   }
 
+  // Cache key: every stable prompt input (diff for diff mode, the project-scan
+  // flag + sample list for fullProject mode). Session context is intentionally
+  // excluded (changes every turn).
+  const cacheKey = buildCacheKey("security", {
+    diff: options.fullProject ? `project-scan:${changedFiles.join(",")}` : diff,
+    description,
+    modelProfile,
+    options: { ...options, untracked: options.untracked ?? true },
+    conventionsText,
+    reviewMaxDiffChars: config.reviewMaxDiffChars,
+    reviewStrategy: config.reviewStrategy ?? "auto",
+    reviewFullFileThresholdLines: config.reviewFullFileThresholdLines ?? 300,
+    toolUseLoop: config.toolUseLoop,
+  });
+  {
+    const cached = getCachedSecurity(cwd, cacheKey);
+    if (cached) {
+      progress(2, STAGES.security, "Using cached security audit…");
+      return { action: "security", security: cached.security, model: cached.model, cost: cached.cost };
+    }
+  }
+
   progress(2, STAGES.security, "Calculating token budget…");
   const budget = calculateReviewBudget(
     modelConfig.provider,
@@ -123,10 +147,17 @@ export async function executeWaiSecurity(
   });
   const fileContents = mapFileContentEntries(fileResult.entries);
 
-  const systemPromptEstimate = 1000;
-  const remainingForDiff = Math.max(0, budget.availableInputTokens - fileResult.totalTokens - systemPromptEstimate);
-  const diffTokens = estimateTokens(diff);
-  const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
+  // Fail closed instead of silently truncating: security has no hunk/parallel
+  // splitting, so an over-budget diff returns guidance before any model call.
+  const prepared = prepareActionDiff("security", {
+    diff,
+    availableInputTokens: budget.availableInputTokens,
+    fileTokens: fileResult.totalTokens,
+  });
+  if (!prepared.ok) {
+    return { action: "security", error: prepared.error, model: modelProfile };
+  }
+  const finalDiff = prepared.diff;
 
   const { system, user } = buildSecurityPrompt(
     description,
@@ -186,6 +217,8 @@ export async function executeWaiSecurity(
       });
     }
   }
+
+  setCachedResult(cwd, "security", cacheKey, { security, model: modelProfile, cost });
 
   return {
     action: "security",

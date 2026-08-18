@@ -15,7 +15,7 @@ import {
 } from "../prompts.js";
 import { getPastIssuesForFiles } from "../review-memory.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
-import { calculateReviewBudget, estimateTokens } from "../token-budget.js";
+import { calculateReviewBudget } from "../token-budget.js";
 import {
   getState,
   buildReviewHistory,
@@ -36,6 +36,8 @@ import {
 } from "./shared.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { runJudgeCouncil } from "./judge-council.js";
+import { resolveEffectivePreReviewCommands, prepareActionDiff } from "./context-shared.js";
+import { buildCacheKey, getCachedJudge, setCachedResult } from "../review-cache.js";
 import type { ProgressReporter } from "../progress.js";
 import type { JudgeResult, UsageCost, WaiToolResult } from "../types.js";
 
@@ -84,11 +86,46 @@ export async function executeWaiJudge(
     ? formatDesignRulesForPrompt(cwd, config.designRefMaxTokens ?? 800)
     : "";
 
+  // Judge is the deepest verdict — auto-detected pre-review commands use the
+  // high profile (typecheck+lint+test when autoPreReviewCommands is on); an
+  // explicit preReviewCommands list, including [], always wins.
+  const effectivePreReviewCommands = resolveEffectivePreReviewCommands(cwd, config, "high");
+
+  // Cache key: every stable prompt input (command LISTS, not their output —
+  // commands are deterministic given cwd, and a hit must not re-run them).
+  // Session context is intentionally excluded (changes every turn).
+  const cacheKey = buildCacheKey("judge", {
+    diff,
+    description,
+    modelProfile,
+    planProgress: state.plan ? `${state.completedSteps}/${state.totalSteps}` : "none",
+    planTodo: state.plan?.todo,
+    acceptanceCriteria: state.plan?.acceptanceCriteria,
+    reviewHistory,
+    conventionsText,
+    memoryContext,
+    codemap,
+    designRefText,
+    preReviewCommands: effectivePreReviewCommands,
+    reviewMaxDiffChars: config.reviewMaxDiffChars,
+    reviewStrategy: config.reviewStrategy ?? "auto",
+    reviewFullFileThresholdLines: config.reviewFullFileThresholdLines ?? 300,
+    selfVerify: config.selfVerify ?? false,
+    toolUseLoop: config.toolUseLoop,
+  });
+  {
+    const cached = getCachedJudge(cwd, cacheKey);
+    if (cached) {
+      progress(2, STAGES.judge, "Using cached judgment…");
+      return { action: "judge", judge: cached.judge, model: cached.model, cost: cached.cost };
+    }
+  }
+
   progress(2, STAGES.judge, "Calculating token budget…");
   let preReviewOutput = "";
-  if (config.preReviewCommands && config.preReviewCommands.length > 0) {
+  if (effectivePreReviewCommands.length > 0) {
     progress(2, STAGES.judge, "Running pre-review commands…");
-    const results = await runPreReviewCommands(cwd, config.preReviewCommands);
+    const results = await runPreReviewCommands(cwd, effectivePreReviewCommands);
     preReviewOutput = formatPreReviewOutput(results);
   }
 
@@ -143,21 +180,20 @@ export async function executeWaiJudge(
           fullFileThresholdLines,
         });
 
-  const systemPromptEstimate = 1000;
-  // The codemap and design rules are counted within the input budget but
-  // yield to file contents: they are deducted from what remains for the
-  // diff, after files.
-  const remainingForDiff = Math.max(
-    0,
-    budgetWithPreReview.availableInputTokens -
-      fileResult.totalTokens -
-      systemPromptEstimate -
-      estimateTokens(codemap) -
-      estimateTokens(designRefText),
-  );
-  const diffTokens = estimateTokens(diff);
-  const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
-  const finalDiffTruncated = truncated || finalDiff !== diff;
+  // Fail closed instead of silently truncating: judge has no hunk/parallel
+  // splitting, so an over-budget diff returns guidance before any model call.
+  const prepared = prepareActionDiff("judge", {
+    diff,
+    availableInputTokens: budgetWithPreReview.availableInputTokens,
+    fileTokens: fileResult.totalTokens,
+    codemap,
+    designRefText,
+  });
+  if (!prepared.ok) {
+    return { action: "judge", error: prepared.error, model: modelProfile };
+  }
+  const finalDiff = prepared.diff;
+  const finalDiffTruncated = truncated;
   const finalDroppedFiles = fileResult.dropped;
 
   const { system, user } = buildJudgePrompt(description, {
@@ -336,6 +372,8 @@ export async function executeWaiJudge(
       });
     }
   }
+
+  setCachedResult(cwd, "judge", cacheKey, { judge, model: modelProfile, cost });
 
   return {
     action: "judge",

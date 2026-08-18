@@ -5,13 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  REVIEW_NO_MODEL_ERROR,
-  executeWaiReview,
-  planAdvanceFromReview,
-  resolveReviewToolLoop,
-  resolveReviewPreReviewCommands,
-} from "./review.js";
+import { REVIEW_NO_MODEL_ERROR, executeWaiReview, planAdvanceFromReview } from "./review.js";
 import { mergeReviewResults, dedupeIssues } from "./review-helpers.js";
 import { resolveReviewTaskModel } from "../config.js";
 import { resolveReviewSettings } from "../review-level.js";
@@ -155,83 +149,6 @@ describe("executeWaiReview model resolution (effective level drives per-level mo
     const model = resolveReviewTaskModel(plain, level);
     assert.equal(model.id, "k3-256k");
     assert.equal(model.thinking, "high");
-  });
-});
-
-describe("resolveReviewToolLoop (level-aware defaults)", () => {
-  it("unset toolUseLoop resolves off/3/5 for min/med/high", () => {
-    const config: YoowaiConfig = { secondary: { provider: "openai", id: "gpt-4o-mini" } };
-    assert.equal(resolveReviewToolLoop(config, "min"), undefined);
-    assert.equal(resolveReviewToolLoop(config, "med"), 3);
-    assert.equal(resolveReviewToolLoop(config, "high"), 5);
-  });
-
-  it("explicit toolUseLoop config overrides the level default", () => {
-    const config: YoowaiConfig = { secondary: { provider: "openai", id: "gpt-4o-mini" }, toolUseLoop: 1 };
-    assert.equal(resolveReviewToolLoop(config, "min"), 1);
-    assert.equal(resolveReviewToolLoop(config, "high"), 1);
-
-    const off: YoowaiConfig = { secondary: { provider: "openai", id: "gpt-4o-mini" }, toolUseLoop: false };
-    assert.equal(resolveReviewToolLoop(off, "high"), false);
-  });
-});
-
-describe("resolveReviewPreReviewCommands (auto-detection opt-in)", () => {
-  const tmpDirs: string[] = [];
-
-  after(() => {
-    for (const dir of tmpDirs) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best-effort cleanup
-      }
-    }
-  });
-
-  function makeProject(scripts?: Record<string, string>): string {
-    const cwd = mkdtempSync(join(tmpdir(), "review-precmd-"));
-    tmpDirs.push(cwd);
-    const pkg = { name: "probe", version: "1.0.0" } as Record<string, unknown>;
-    if (scripts) pkg.scripts = scripts;
-    writeFileSync(join(cwd, "package.json"), JSON.stringify(pkg), "utf-8");
-    return cwd;
-  }
-
-  const base = (overrides: Partial<YoowaiConfig> = {}): YoowaiConfig => ({
-    secondary: { provider: "openai", id: "gpt-4o-mini" },
-    ...overrides,
-  });
-
-  it("default-off: no commands without autoPreReviewCommands, at any level", () => {
-    const cwd = makeProject({ typecheck: "tsc --noEmit", lint: "eslint ." });
-    assert.deepEqual(resolveReviewPreReviewCommands(cwd, base(), "min"), []);
-    assert.deepEqual(resolveReviewPreReviewCommands(cwd, base(), "med"), []);
-    assert.deepEqual(resolveReviewPreReviewCommands(cwd, base(), "high"), []);
-  });
-
-  it("auto mode: med detects typecheck+lint, high adds test, min nothing", () => {
-    const cwd = makeProject({ typecheck: "tsc --noEmit", lint: "eslint .", test: "vitest run" });
-    const auto = base({ autoPreReviewCommands: true });
-    assert.deepEqual(resolveReviewPreReviewCommands(cwd, auto, "min"), []);
-    assert.deepEqual(resolveReviewPreReviewCommands(cwd, auto, "med"), ["npm run typecheck", "npm run lint"]);
-    assert.deepEqual(resolveReviewPreReviewCommands(cwd, auto, "high"), [
-      "npm run typecheck",
-      "npm run lint",
-      "npm run test",
-    ]);
-  });
-
-  it("explicit preReviewCommands always wins over auto mode", () => {
-    const cwd = makeProject({ typecheck: "tsc --noEmit" });
-    const explicit = base({ autoPreReviewCommands: true, preReviewCommands: ["npm run custom-check"] });
-    assert.deepEqual(resolveReviewPreReviewCommands(cwd, explicit, "high"), ["npm run custom-check"]);
-  });
-
-  it("an explicitly empty preReviewCommands list also wins (never triggers auto mode)", () => {
-    const cwd = makeProject({ typecheck: "tsc --noEmit" });
-    const explicitEmpty = base({ autoPreReviewCommands: true, preReviewCommands: [] });
-    assert.deepEqual(resolveReviewPreReviewCommands(cwd, explicitEmpty, "high"), []);
   });
 });
 

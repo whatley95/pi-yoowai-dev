@@ -9,7 +9,8 @@ import { buildCodemap } from "../codemap.js";
 import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { buildAstContext } from "../ast-context.js";
 import { getPastIssuesForFiles, recordIssues } from "../review-memory.js";
-import { runPreReviewCommands, formatPreReviewOutput, detectAutoPreReviewCommands } from "../pre-review.js";
+import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
+import { resolveEffectivePreReviewCommands, resolveEffectiveToolLoop } from "./context-shared.js";
 import { calculateReviewBudget, estimateTokens, truncateToTokenBudget, type ReviewBudget } from "../token-budget.js";
 import { getSessionCost, formatCost, reserveCost, releaseCost } from "../cost-tracker.js";
 import { logEvent } from "../logger.js";
@@ -47,7 +48,7 @@ import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
 import { resolveReviewSettings } from "../review-level.js";
 import type { ProgressReporter } from "../progress.js";
-import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel, YoowaiConfig } from "../types.js";
+import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../types.js";
 
 /** Error returned when no review model can be resolved — the effective level
  *  drives the per-level task lookup (reviewMin/reviewMed/reviewHigh) with the
@@ -55,26 +56,6 @@ import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel, YoowaiConfig 
  *  tests can reference the exact message. */
 export const REVIEW_NO_MODEL_ERROR =
   "No secondary model configured. Set pi-yoowai.secondary, taskModels.review, or taskModels.reviewMin/reviewMed/reviewHigh in settings.json.";
-
-/** Resolve the effective toolUseLoop setting for a review: explicit config
- *  wins; unset falls back to the level default (min off — one cheap call —
- *  med 3 iterations, high 5). Exported for tests and the cache key. */
-export function resolveReviewToolLoop(config: YoowaiConfig, level: ReviewLevel): boolean | number | undefined {
-  if (config.toolUseLoop !== undefined) return config.toolUseLoop;
-  return level === "high" ? 5 : level === "med" ? 3 : undefined;
-}
-
-/** Resolve the effective pre-review command list for a review: an explicit
- *  preReviewCommands config wins — INCLUDING an explicitly empty list, which
- *  never triggers auto mode (the config default is undefined, so a defined
- *  empty array is user intent). Otherwise auto-detect from the reviewed
- *  project's package.json when autoPreReviewCommands is enabled (min
- *  auto-detects nothing); else no commands. Exported for tests. */
-export function resolveReviewPreReviewCommands(cwd: string, config: YoowaiConfig, level: ReviewLevel): string[] {
-  if (config.preReviewCommands !== undefined) return config.preReviewCommands;
-  if (config.autoPreReviewCommands) return detectAutoPreReviewCommands(cwd, level);
-  return [];
-}
 
 /** Decide whether a passing review advances the plan tracker, and by how
  *  many steps. Guards the guarded auto-completion contract:
@@ -145,7 +126,7 @@ export async function executeWaiReview(
   // let the reviewer pull the exact context it needs (read_file/search_code/
   // read-only commands). Explicit toolUseLoop config always wins. Resolved
   // here so the cache key and every runReviewBatch call share one value.
-  const effectiveToolUseLoop = resolveReviewToolLoop(config, level);
+  const effectiveToolUseLoop = resolveEffectiveToolLoop(config, level);
   const loopConfig = { ...config, toolUseLoop: effectiveToolUseLoop };
 
   const state = getState(cwd);
@@ -211,7 +192,7 @@ export async function executeWaiReview(
   // wins; otherwise auto-detected from the reviewed project's package.json
   // when autoPreReviewCommands is enabled (min auto-detects nothing); else no
   // commands. Explicitly empty preReviewCommands does NOT trigger auto mode.
-  const effectivePreReviewCommands = resolveReviewPreReviewCommands(cwd, config, level);
+  const effectivePreReviewCommands = resolveEffectivePreReviewCommands(cwd, config, level);
 
   // Cache key: every STABLE prompt input. Pre-review COMMANDS are keyed (not
   // their output — commands are deterministic given cwd, and this keeps a
