@@ -1,6 +1,8 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { logEvent } from "./logger.js";
 import { resolveProjectPath } from "./path-security.js";
+import type { ReviewLevel } from "./types.js";
 
 const SHELL_METACHARACTERS = /[;|&$()`{}[\]<>]/;
 const MAX_OUTPUT_CHARS = 4000;
@@ -54,6 +56,58 @@ export interface PreReviewOutput {
   command: string;
   output: string;
   exitCode: number;
+}
+
+/** Common package.json script names per validation phase, in deterministic
+ *  order. The first script found for a phase becomes the command for that
+ *  phase; later aliases are only consulted when earlier ones are absent. */
+const AUTO_SCRIPT_PHASES: Array<{ phase: "typecheck" | "lint" | "test"; names: string[] }> = [
+  { phase: "typecheck", names: ["typecheck", "tsc", "check-types", "check:types"] },
+  { phase: "lint", names: ["lint", "eslint", "lint:check"] },
+  { phase: "test", names: ["test", "unit", "test:unit"] },
+];
+
+/** Which phases a review level auto-runs. min stays a cheap pass (no
+ *  commands); med runs static checks; high also runs tests. */
+const AUTO_PHASES_BY_LEVEL: Record<ReviewLevel, string[]> = {
+  min: [],
+  med: ["typecheck", "lint"],
+  high: ["typecheck", "lint", "test"],
+};
+
+/** Auto-detect deterministic validation commands from the reviewed project's
+ *  package.json scripts (e.g. `npm run typecheck` when a typecheck/tsc script
+ *  exists). Used only when pi-yoowai.autoPreReviewCommands is enabled; runs
+ *  the reviewed project's code, so it requires trusting the repository.
+ *  Returns an empty list for min, a missing package.json, or projects with no
+ *  recognized scripts. */
+export function detectAutoPreReviewCommands(cwd: string, level: ReviewLevel): string[] {
+  const phases = AUTO_PHASES_BY_LEVEL[level];
+  if (phases.length === 0) return [];
+
+  let scripts: Record<string, string> | undefined;
+  try {
+    const pkgPath = resolveProjectPath(cwd, "package.json");
+    if (!pkgPath) return [];
+    const raw = readFileSync(pkgPath, "utf-8");
+    const parsed = JSON.parse(raw) as { scripts?: Record<string, string> };
+    scripts = parsed.scripts;
+  } catch {
+    return [];
+  }
+  if (!scripts || typeof scripts !== "object") return [];
+
+  const commands: string[] = [];
+  for (const { phase, names } of AUTO_SCRIPT_PHASES) {
+    if (!phases.includes(phase)) continue;
+    for (const name of names) {
+      if (typeof scripts[name] === "string" && scripts[name].trim().length > 0) {
+        commands.push(`npm run ${name}`);
+        break;
+      }
+    }
+  }
+  return commands;
 }
 
 const INTERPRETER_COMMANDS = new Set(["node", "python", "python3", "ruby"]);

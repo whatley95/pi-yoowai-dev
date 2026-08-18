@@ -383,7 +383,7 @@ Core keys:
 - `steerEscalationThreshold` — consecutive `turn_end`s with unreviewed edits pending before the workflow steer escalates to an explicit stop directive (default: `3`).
 - `autoInjectContext` — prepend the active plan summary, current step, and scanned conventions to the main agent's context before every LLM call (default: `true`).
 - `contextInjectMaxTokens` — token budget for the injected context (default: `800`).
-- `codemapMaxTokens` — token budget for the project symbol map injected into review/judge prompts (default: `1500`; `0` disables codemap injection).
+- `codemapMaxTokens` — token budget for the project symbol map injected into review/judge prompts (default: unset — review-level defaults apply: min 20000, med 8000, high 8000; `0` disables codemap injection).
 - `designRefMaxTokens` — token budget for the design rules injected into review/judge prompts when UI files change (default: `800`; `0` disables design-rule injection).
 - `entryRenderer` — render wai audit entries with a custom TUI entry renderer (default: `true`).
 - `shortcuts` — register keyboard shortcuts for common wai actions (default: `true`).

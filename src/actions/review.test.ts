@@ -5,7 +5,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REVIEW_NO_MODEL_ERROR, executeWaiReview, planAdvanceFromReview } from "./review.js";
+import {
+  REVIEW_NO_MODEL_ERROR,
+  executeWaiReview,
+  planAdvanceFromReview,
+  resolveReviewToolLoop,
+  resolveReviewPreReviewCommands,
+} from "./review.js";
 import { mergeReviewResults, dedupeIssues } from "./review-helpers.js";
 import { resolveReviewTaskModel } from "../config.js";
 import { resolveReviewSettings } from "../review-level.js";
@@ -149,6 +155,83 @@ describe("executeWaiReview model resolution (effective level drives per-level mo
     const model = resolveReviewTaskModel(plain, level);
     assert.equal(model.id, "k3-256k");
     assert.equal(model.thinking, "high");
+  });
+});
+
+describe("resolveReviewToolLoop (level-aware defaults)", () => {
+  it("unset toolUseLoop resolves off/3/5 for min/med/high", () => {
+    const config: YoowaiConfig = { secondary: { provider: "openai", id: "gpt-4o-mini" } };
+    assert.equal(resolveReviewToolLoop(config, "min"), undefined);
+    assert.equal(resolveReviewToolLoop(config, "med"), 3);
+    assert.equal(resolveReviewToolLoop(config, "high"), 5);
+  });
+
+  it("explicit toolUseLoop config overrides the level default", () => {
+    const config: YoowaiConfig = { secondary: { provider: "openai", id: "gpt-4o-mini" }, toolUseLoop: 1 };
+    assert.equal(resolveReviewToolLoop(config, "min"), 1);
+    assert.equal(resolveReviewToolLoop(config, "high"), 1);
+
+    const off: YoowaiConfig = { secondary: { provider: "openai", id: "gpt-4o-mini" }, toolUseLoop: false };
+    assert.equal(resolveReviewToolLoop(off, "high"), false);
+  });
+});
+
+describe("resolveReviewPreReviewCommands (auto-detection opt-in)", () => {
+  const tmpDirs: string[] = [];
+
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  function makeProject(scripts?: Record<string, string>): string {
+    const cwd = mkdtempSync(join(tmpdir(), "review-precmd-"));
+    tmpDirs.push(cwd);
+    const pkg = { name: "probe", version: "1.0.0" } as Record<string, unknown>;
+    if (scripts) pkg.scripts = scripts;
+    writeFileSync(join(cwd, "package.json"), JSON.stringify(pkg), "utf-8");
+    return cwd;
+  }
+
+  const base = (overrides: Partial<YoowaiConfig> = {}): YoowaiConfig => ({
+    secondary: { provider: "openai", id: "gpt-4o-mini" },
+    ...overrides,
+  });
+
+  it("default-off: no commands without autoPreReviewCommands, at any level", () => {
+    const cwd = makeProject({ typecheck: "tsc --noEmit", lint: "eslint ." });
+    assert.deepEqual(resolveReviewPreReviewCommands(cwd, base(), "min"), []);
+    assert.deepEqual(resolveReviewPreReviewCommands(cwd, base(), "med"), []);
+    assert.deepEqual(resolveReviewPreReviewCommands(cwd, base(), "high"), []);
+  });
+
+  it("auto mode: med detects typecheck+lint, high adds test, min nothing", () => {
+    const cwd = makeProject({ typecheck: "tsc --noEmit", lint: "eslint .", test: "vitest run" });
+    const auto = base({ autoPreReviewCommands: true });
+    assert.deepEqual(resolveReviewPreReviewCommands(cwd, auto, "min"), []);
+    assert.deepEqual(resolveReviewPreReviewCommands(cwd, auto, "med"), ["npm run typecheck", "npm run lint"]);
+    assert.deepEqual(resolveReviewPreReviewCommands(cwd, auto, "high"), [
+      "npm run typecheck",
+      "npm run lint",
+      "npm run test",
+    ]);
+  });
+
+  it("explicit preReviewCommands always wins over auto mode", () => {
+    const cwd = makeProject({ typecheck: "tsc --noEmit" });
+    const explicit = base({ autoPreReviewCommands: true, preReviewCommands: ["npm run custom-check"] });
+    assert.deepEqual(resolveReviewPreReviewCommands(cwd, explicit, "high"), ["npm run custom-check"]);
+  });
+
+  it("an explicitly empty preReviewCommands list also wins (never triggers auto mode)", () => {
+    const cwd = makeProject({ typecheck: "tsc --noEmit" });
+    const explicitEmpty = base({ autoPreReviewCommands: true, preReviewCommands: [] });
+    assert.deepEqual(resolveReviewPreReviewCommands(cwd, explicitEmpty, "high"), []);
   });
 });
 
@@ -395,10 +478,60 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     return cwd;
   }
 
-  /** A locally stubbed OpenAI-compatible endpoint: counts requests and
-   *  returns a canned passing review. */
-  async function startStubServer(): Promise<{ url: string; bodies: string[] }> {
+  /** Like makeRepoWithChange, but commits N files and then rewrites each. */
+  function makeRepoWithMultiFileChange(files: Record<string, string>): string {
+    const cwd = mkdtempSync(join(tmpdir(), "review-guard-repo-"));
+    tmpDirs.push(cwd);
+    initGitRepo(cwd);
+    for (const name of Object.keys(files)) {
+      writeFileSync(join(cwd, name), "hello\n");
+    }
+    commitAll(cwd);
+    for (const [name, content] of Object.entries(files)) {
+      writeFileSync(join(cwd, name), content);
+    }
+    const piDir = join(cwd, ".pi");
+    mkdirSync(piDir, { recursive: true });
+    return cwd;
+  }
+
+  /** A locally stubbed OpenAI-compatible endpoint: counts requests, tracks the
+   *  observed request concurrency, and returns a canned passing review.
+   *  With holdForConcurrency set, responses are withheld until that many
+   *  requests are in flight simultaneously (with a fail-safe release after
+   *  10s) so tests can prove calls actually overlap rather than run
+   *  sequentially. */
+  async function startStubServer(options?: {
+    holdForConcurrency?: number;
+  }): Promise<{ url: string; bodies: string[]; peakActive: () => number }> {
     const bodies: string[] = [];
+    const held: Array<() => void> = [];
+    let active = 0;
+    let peak = 0;
+    let releaseTimer: NodeJS.Timeout | undefined;
+    const releaseAll = () => {
+      if (releaseTimer) {
+        clearTimeout(releaseTimer);
+        releaseTimer = undefined;
+      }
+      while (held.length > 0) held.shift()!();
+    };
+    const respond = (res: ServerResponse) => {
+      active -= 1;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ verdict: "pass", issues: [], suggestions: [], consensus: true }),
+              },
+            },
+          ],
+          usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+        }),
+      );
+    };
     const server = await new Promise<Server>((resolve) => {
       const s = createServer((req: IncomingMessage, res: ServerResponse) => {
         let body = "";
@@ -407,19 +540,18 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
         });
         req.on("end", () => {
           bodies.push(body);
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({
-              choices: [
-                {
-                  message: {
-                    content: JSON.stringify({ verdict: "pass", issues: [], suggestions: [], consensus: true }),
-                  },
-                },
-              ],
-              usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
-            }),
-          );
+          active += 1;
+          peak = Math.max(peak, active);
+          const target = options?.holdForConcurrency;
+          if (!target || active >= target) {
+            respond(res);
+            releaseAll();
+          } else {
+            held.push(() => respond(res));
+            if (!releaseTimer) {
+              releaseTimer = setTimeout(releaseAll, 10_000);
+            }
+          }
         });
       });
       s.listen(0, "127.0.0.1", () => resolve(s));
@@ -427,7 +559,11 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     servers.push(server);
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("stub server has no port");
-    return { url: `http://127.0.0.1:${address.port}`, bodies };
+    return {
+      url: `http://127.0.0.1:${address.port}`,
+      bodies,
+      peakActive: () => peak,
+    };
   }
 
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
@@ -490,4 +626,154 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     assert.ok(bodies[0].includes(marker), "the full diff must reach the model, not be truncated");
     assert.equal(result.review?.verdict, "pass");
   });
+
+  it(
+    "identical re-review with pre-review commands configured is served from cache (no second model call)",
+    { skip: !hasGit },
+    async () => {
+      const marker = "CACHE_HIT_MARKER_555";
+      const small = `hello\n\n${marker}\n` + "z".repeat(500) + "\n";
+      const cwd = makeRepoWithChange(small);
+      const { url, bodies } = await startStubServer();
+      writeSettings(cwd, {
+        reviewLevel: "min",
+        // Pre-review commands used to disable the review cache entirely; the
+        // comprehensive key (command LIST, not output) keeps caching correct.
+        preReviewCommands: ["npm --version"],
+        secondary: {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          contextWindow: 8000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: url,
+          apiKey: "test-key",
+        },
+      });
+
+      const ctx = { cwd } as unknown as ExtensionContext;
+      const first = await executeWaiReview(cwd, "cache probe", ctx, {}, undefined, () => {});
+      const second = await executeWaiReview(cwd, "cache probe", ctx, {}, undefined, () => {});
+
+      assert.equal(bodies.length, 1, "second identical review must hit the cache, not call the model again");
+      assert.equal(first.review?.verdict, "pass");
+      assert.equal(second.review?.verdict, "pass");
+    },
+  );
+
+  it(
+    "min + explicit parallelReview runs one diff-only call per file with each file's own diff",
+    { skip: !hasGit },
+    async () => {
+      const markerA = "PARALLEL_MARKER_A_111";
+      const markerB = "PARALLEL_MARKER_B_222";
+      const markerC = "PARALLEL_MARKER_C_333";
+      const cwd = makeRepoWithMultiFileChange({
+        "a.txt": `hello\n\n${markerA}\n` + "a".repeat(500) + "\n",
+        "b.txt": `hello\n\n${markerB}\n` + "b".repeat(500) + "\n",
+        "c.txt": `hello\n\n${markerC}\n` + "c".repeat(500) + "\n",
+      });
+      const { url, bodies, peakActive } = await startStubServer({ holdForConcurrency: 3 });
+      writeSettings(cwd, {
+        reviewLevel: "min",
+        parallelReview: true,
+        secondary: {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          contextWindow: 8000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: url,
+          apiKey: "test-key",
+        },
+      });
+
+      const ctx = { cwd } as unknown as ExtensionContext;
+      const result = await executeWaiReview(cwd, "parallel diff-only probe", ctx, {}, undefined, () => {});
+
+      assert.equal(bodies.length, 3, "expected one model call per changed file");
+      assert.equal(peakActive(), 3, "the three model calls must overlap (run concurrently)");
+      for (const body of bodies) {
+        const present = [markerA, markerB, markerC].filter((m) => body.includes(m));
+        assert.equal(present.length, 1, `each request must carry exactly one file's diff: ${body.slice(0, 200)}`);
+      }
+      assert.equal(result.review?.verdict, "pass");
+      assert.equal(result.review?.consensus, true);
+    },
+  );
+
+  it(
+    "min + explicit parallelReview fails closed when one file's diff alone exceeds the budget",
+    { skip: !hasGit },
+    async () => {
+      // a.txt is ~100KB (~25k tokens) — far above the per-file budget; b.txt
+      // is small. The dead-port backend proves no model call happens: a
+      // regression would surface a connection error instead of the guidance.
+      const bigLine = "x".repeat(200);
+      const big = Array.from({ length: 500 }, (_, i) => `${i} ${bigLine}`).join("\n");
+      const cwd = makeRepoWithMultiFileChange({
+        "a.txt": `hello\n\n${big}`,
+        "b.txt": "hello\n\nPARALLEL_OVERFLOW_SMALL_444\n",
+      });
+      writeSettings(cwd, {
+        reviewLevel: "min",
+        parallelReview: true,
+        secondary: {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          contextWindow: 8000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: "http://127.0.0.1:9",
+        },
+      });
+
+      const ctx = { cwd } as unknown as ExtensionContext;
+      const result = await executeWaiReview(cwd, "parallel overflow probe", ctx, {}, undefined, () => {});
+
+      assert.ok(result.error, "expected an error result");
+      assert.match(result.error, /a\.txt/);
+      assert.match(result.error, /wai_review_med|wai_review_high/);
+      assert.match(result.error, /files:\[\.\.\.\]/);
+    },
+  );
+
+  it(
+    "min without parallelReview on a multi-file overflow suggests enabling parallelReview",
+    { skip: !hasGit },
+    async () => {
+      // Two files whose combined diff exceeds the budget, but parallelReview
+      // is NOT configured: the error must mention enabling it as the escape
+      // hatch (the single-file overflow test cannot exercise this branch).
+      const bigLine = "x".repeat(200);
+      const big = Array.from({ length: 300 }, (_, i) => `${i} ${bigLine}`).join("\n");
+      const cwd = makeRepoWithMultiFileChange({
+        "a.txt": `hello\n\n${big}`,
+        "b.txt": `hello\n\n${big}`,
+      });
+      writeSettings(cwd, {
+        reviewLevel: "min",
+        secondary: {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          contextWindow: 8000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: "http://127.0.0.1:9",
+        },
+      });
+
+      const ctx = { cwd } as unknown as ExtensionContext;
+      const result = await executeWaiReview(cwd, "multi-file no-parallel overflow probe", ctx, {}, undefined, () => {});
+
+      assert.ok(result.error, "expected an error result");
+      assert.match(result.error, /parallelReview/);
+      assert.match(result.error, /wai_review_med/);
+      assert.match(result.error, /files:\[\.\.\.\]/);
+    },
+  );
 });

@@ -483,13 +483,13 @@ describe("loadYoowaiConfig codemapMaxTokens", () => {
     }
   });
 
-  it("defaults to 1500 when unconfigured", () => {
+  it("defaults to undefined (level defaults apply) when unconfigured", () => {
     const cwd = makeTempDir("config-codemap-default-");
     tmpDirs.push(cwd);
     writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
 
     const config = loadYoowaiConfig(cwd);
-    assert.equal(config.codemapMaxTokens, 1500);
+    assert.equal(config.codemapMaxTokens, undefined);
   });
 
   it("parses a positive integer and accepts 0 (disabled)", () => {
@@ -506,7 +506,7 @@ describe("loadYoowaiConfig codemapMaxTokens", () => {
     assert.equal(loadYoowaiConfig(cwd0).codemapMaxTokens, 0);
   });
 
-  it("falls back to the default for invalid values", () => {
+  it("falls back to undefined (level defaults apply) for invalid values", () => {
     for (const invalid of [-5, 1.5, "lots", NaN]) {
       const cwd = makeTempDir("config-codemap-invalid-");
       tmpDirs.push(cwd);
@@ -514,8 +514,92 @@ describe("loadYoowaiConfig codemapMaxTokens", () => {
         secondary: { provider: "openai", id: "gpt-4o" },
         codemapMaxTokens: invalid,
       });
-      assert.equal(loadYoowaiConfig(cwd).codemapMaxTokens, 1500, `invalid value ${invalid} should fall back`);
+      assert.equal(loadYoowaiConfig(cwd).codemapMaxTokens, undefined, `invalid value ${invalid} should fall back`);
     }
+  });
+});
+
+describe("loadYoowaiConfig relatedContextMaxTokens", () => {
+  const tmpDirs: string[] = [];
+
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("defaults to undefined (level defaults apply) when unconfigured", () => {
+    const cwd = makeTempDir("config-related-default-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.relatedContextMaxTokens, undefined);
+  });
+
+  it("parses a positive integer and accepts 0 (disabled)", () => {
+    const cwd = makeTempDir("config-related-parse-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" }, relatedContextMaxTokens: 2500 });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.relatedContextMaxTokens, 2500);
+
+    const cwd0 = makeTempDir("config-related-zero-");
+    tmpDirs.push(cwd0);
+    writeProjectSettings(cwd0, { secondary: { provider: "openai", id: "gpt-4o" }, relatedContextMaxTokens: 0 });
+    assert.equal(loadYoowaiConfig(cwd0).relatedContextMaxTokens, 0);
+  });
+
+  it("falls back to undefined for invalid values", () => {
+    for (const invalid of [-5, 1.5, "lots", NaN]) {
+      const cwd = makeTempDir("config-related-invalid-");
+      tmpDirs.push(cwd);
+      writeProjectSettings(cwd, {
+        secondary: { provider: "openai", id: "gpt-4o" },
+        relatedContextMaxTokens: invalid,
+      });
+      assert.equal(loadYoowaiConfig(cwd).relatedContextMaxTokens, undefined, `invalid ${invalid} should fall back`);
+    }
+  });
+});
+
+describe("loadYoowaiConfig autoPreReviewCommands", () => {
+  const tmpDirs: string[] = [];
+
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("defaults to false when unconfigured", () => {
+    const cwd = makeTempDir("config-autopre-default-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.autoPreReviewCommands, false);
+  });
+
+  it("parses true/false and rejects non-booleans", () => {
+    const cwd = makeTempDir("config-autopre-parse-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" }, autoPreReviewCommands: true });
+    assert.equal(loadYoowaiConfig(cwd).autoPreReviewCommands, true);
+
+    const cwdFalse = makeTempDir("config-autopre-false-");
+    tmpDirs.push(cwdFalse);
+    writeProjectSettings(cwdFalse, { secondary: { provider: "openai", id: "gpt-4o" }, autoPreReviewCommands: "yes" });
+    assert.equal(loadYoowaiConfig(cwdFalse).autoPreReviewCommands, false);
   });
 });
 

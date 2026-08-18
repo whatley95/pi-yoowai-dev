@@ -9,7 +9,7 @@ import { buildCodemap } from "../codemap.js";
 import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { buildAstContext } from "../ast-context.js";
 import { getPastIssuesForFiles, recordIssues } from "../review-memory.js";
-import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
+import { runPreReviewCommands, formatPreReviewOutput, detectAutoPreReviewCommands } from "../pre-review.js";
 import { calculateReviewBudget, estimateTokens, truncateToTokenBudget, type ReviewBudget } from "../token-budget.js";
 import { getSessionCost, formatCost, reserveCost, releaseCost } from "../cost-tracker.js";
 import { logEvent } from "../logger.js";
@@ -47,7 +47,7 @@ import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
 import { resolveReviewSettings } from "../review-level.js";
 import type { ProgressReporter } from "../progress.js";
-import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../types.js";
+import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel, YoowaiConfig } from "../types.js";
 
 /** Error returned when no review model can be resolved — the effective level
  *  drives the per-level task lookup (reviewMin/reviewMed/reviewHigh) with the
@@ -55,6 +55,26 @@ import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../typ
  *  tests can reference the exact message. */
 export const REVIEW_NO_MODEL_ERROR =
   "No secondary model configured. Set pi-yoowai.secondary, taskModels.review, or taskModels.reviewMin/reviewMed/reviewHigh in settings.json.";
+
+/** Resolve the effective toolUseLoop setting for a review: explicit config
+ *  wins; unset falls back to the level default (min off — one cheap call —
+ *  med 3 iterations, high 5). Exported for tests and the cache key. */
+export function resolveReviewToolLoop(config: YoowaiConfig, level: ReviewLevel): boolean | number | undefined {
+  if (config.toolUseLoop !== undefined) return config.toolUseLoop;
+  return level === "high" ? 5 : level === "med" ? 3 : undefined;
+}
+
+/** Resolve the effective pre-review command list for a review: an explicit
+ *  preReviewCommands config wins — INCLUDING an explicitly empty list, which
+ *  never triggers auto mode (the config default is undefined, so a defined
+ *  empty array is user intent). Otherwise auto-detect from the reviewed
+ *  project's package.json when autoPreReviewCommands is enabled (min
+ *  auto-detects nothing); else no commands. Exported for tests. */
+export function resolveReviewPreReviewCommands(cwd: string, config: YoowaiConfig, level: ReviewLevel): string[] {
+  if (config.preReviewCommands !== undefined) return config.preReviewCommands;
+  if (config.autoPreReviewCommands) return detectAutoPreReviewCommands(cwd, level);
+  return [];
+}
 
 /** Decide whether a passing review advances the plan tracker, and by how
  *  many steps. Guards the guarded auto-completion contract:
@@ -121,6 +141,13 @@ export async function executeWaiReview(
   };
   const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
 
+  // Level-aware tool loop: min stays a single cheap call by default, med/high
+  // let the reviewer pull the exact context it needs (read_file/search_code/
+  // read-only commands). Explicit toolUseLoop config always wins. Resolved
+  // here so the cache key and every runReviewBatch call share one value.
+  const effectiveToolUseLoop = resolveReviewToolLoop(config, level);
+  const loopConfig = { ...config, toolUseLoop: effectiveToolUseLoop };
+
   const state = getState(cwd);
   const currentStep =
     state.plan && state.completedSteps < state.plan.todo.length
@@ -157,7 +184,8 @@ export async function executeWaiReview(
   }
   const { diff, truncated, changedFiles, vcs } = getDiff(cwd, diffOptions);
   const relatedContext =
-    buildAstContext(cwd, changedFiles, { maxTokens: 1000 }) || buildRelatedContext(cwd, changedFiles).context;
+    buildAstContext(cwd, changedFiles, { maxTokens: effectiveConfig.relatedContextMaxTokens ?? 1000 }) ||
+    buildRelatedContext(cwd, changedFiles).context;
   const codemap = buildCodemap(cwd, changedFiles, effectiveConfig.codemapMaxTokens ?? 1500);
   const designRefText = changedFiles.some(isUiFile)
     ? formatDesignRulesForPrompt(cwd, effectiveConfig.designRefMaxTokens ?? 800)
@@ -179,30 +207,52 @@ export async function executeWaiReview(
     effectiveConfig.reviewMaxMemoryTokens ?? 800,
   );
 
-  const cacheable = !config.preReviewCommands || config.preReviewCommands.length === 0;
-  const cacheKey = cacheable
-    ? buildCacheKey("review", {
-        diff,
-        description,
-        modelProfile,
-        currentStep,
-        // Plan progress is part of the key: without it, a cached review with
-        // stepComplete/consensus auto-advance could replay after a tracker
-        // regression (identical step description + identical diff within the
-        // TTL) and advance the plan without a fresh model call.
-        planProgress: state.plan ? `${state.completedSteps}/${state.totalSteps}` : "none",
-        options,
-        reviewMaxDiffChars: effectiveConfig.reviewMaxDiffChars,
-        reviewStrategy: effectiveConfig.reviewStrategy,
-        reviewFullFileThresholdLines: config.reviewFullFileThresholdLines,
-        parallelReview: config.parallelReview,
-        selfVerify: config.selfVerify,
-        conventionsText,
-        memoryContext,
-      })
-    : undefined;
+  // Effective pre-review commands: explicit user config (any non-empty list)
+  // wins; otherwise auto-detected from the reviewed project's package.json
+  // when autoPreReviewCommands is enabled (min auto-detects nothing); else no
+  // commands. Explicitly empty preReviewCommands does NOT trigger auto mode.
+  const effectivePreReviewCommands = resolveReviewPreReviewCommands(cwd, config, level);
 
-  if (cacheable && cacheKey) {
+  // Cache key: every STABLE prompt input. Pre-review COMMANDS are keyed (not
+  // their output — commands are deterministic given cwd, and this keeps a
+  // cache hit from re-running them), along with codemap, design rules, related
+  // context, level instructions, the effective tool-loop setting, both token
+  // caps, and the level. The session context is INTENTIONALLY excluded: it
+  // changes on every turn, so including it would make every key unique and
+  // the cache useless; the reviewed artifact (diff + files + conventions +
+  // memory) is identical regardless of the conversation that led here.
+  const cacheKey = buildCacheKey("review", {
+    diff,
+    description,
+    modelProfile,
+    currentStep,
+    // Plan progress is part of the key: without it, a cached review with
+    // stepComplete/consensus auto-advance could replay after a tracker
+    // regression (identical step description + identical diff within the
+    // TTL) and advance the plan without a fresh model call.
+    planProgress: state.plan ? `${state.completedSteps}/${state.totalSteps}` : "none",
+    options,
+    reviewMaxDiffChars: effectiveConfig.reviewMaxDiffChars,
+    reviewMaxInputTokens: effectiveConfig.reviewMaxInputTokens,
+    reviewStrategy: effectiveConfig.reviewStrategy,
+    reviewFullFileThresholdLines: config.reviewFullFileThresholdLines,
+    parallelReview: config.parallelReview,
+    selfVerify: config.selfVerify,
+    conventionsText,
+    memoryContext,
+    codemap,
+    designRefText,
+    relatedContext,
+    levelInstructions: reviewSettings.instructions,
+    level,
+    toolUseLoop: effectiveToolUseLoop,
+    codemapMaxTokens: effectiveConfig.codemapMaxTokens,
+    relatedContextMaxTokens: effectiveConfig.relatedContextMaxTokens,
+    autoPreReviewCommands: config.autoPreReviewCommands ?? false,
+    preReviewCommands: effectivePreReviewCommands,
+  });
+
+  {
     const cached = getCachedReview(cwd, cacheKey);
     if (cached) {
       progress(3, STAGES.review, "Using cached review result…");
@@ -232,10 +282,15 @@ export async function executeWaiReview(
     modelConfig,
   );
 
+  // Effective pre-review commands: explicit user config (any non-empty list)
+  // wins; otherwise auto-detected from the reviewed project's package.json
+  // when autoPreReviewCommands is enabled (min auto-detects nothing); else no
+  // commands. Explicitly empty preReviewCommands does NOT trigger auto mode.
+  // (Already resolved above for the cache key.)
   let preReviewOutput = "";
-  if (config.preReviewCommands && config.preReviewCommands.length > 0) {
+  if (effectivePreReviewCommands.length > 0) {
     progress(4, STAGES.review, "Running pre-review commands…");
-    const results = await runPreReviewCommands(cwd, config.preReviewCommands);
+    const results = await runPreReviewCommands(cwd, effectivePreReviewCommands);
     preReviewOutput = formatPreReviewOutput(results);
     const preReviewChars = baseBudget.availableInputTokens * 4;
     if (preReviewChars <= 0) {
@@ -271,20 +326,29 @@ export async function executeWaiReview(
   const filesWithDiff = reviewableFiles.filter((file) => fileDiffs[file] || !truncated);
   const skippedDueToTruncation = reviewableFiles.filter((file) => !fileDiffs[file] && truncated);
   const diffLikelyTruncated = estimateTokens(diff) > Math.max(0, budgetWithPreReview.availableInputTokens - 1000);
+  // Explicit parallelReview config is honored at every level, including
+  // diff-only (min): the user opted into per-file concurrent reviews. The
+  // AUTO-split trigger (diff too large for one call) stays med/high-only —
+  // min's default contract is still one cheap call per change.
+  const explicitParallel = Boolean(config.parallelReview);
   const shouldParallelize =
-    (Boolean(config.parallelReview) || (diffLikelyTruncated && strategy !== "diff-only")) &&
+    (explicitParallel || (diffLikelyTruncated && strategy !== "diff-only")) &&
     filesWithDiff.length > 1 &&
-    strategy !== "diff-only";
+    (strategy !== "diff-only" || explicitParallel);
   const maxConcurrency =
     typeof config.parallelReview === "number" && config.parallelReview > 0 ? config.parallelReview : 3;
 
   // Diff-only reviews (the min level default, or explicit diff-only config)
-  // cannot split the diff into hunks or parallelize by file: a single model
-  // call must see the whole change. When the diff exceeds the context-derived
-  // budget, fail loudly with guidance instead of silently truncating the diff
-  // and reviewing only a fragment (the old behavior produced unreliable
-  // "diff truncated · context limited" reviews). The budget math mirrors
-  // runReviewBatch's remainingForDiff so a diff that fits never errors here.
+  // cannot split the diff into hunks: without explicit parallelReview a
+  // single model call must see the whole change, and when the diff exceeds
+  // the context-derived budget we fail loudly with guidance instead of
+  // silently truncating the diff and reviewing only a fragment (the old
+  // behavior produced unreliable "diff truncated · context limited" reviews).
+  // With explicit parallelReview the change is split per file instead; the
+  // only remaining hard stop is a SINGLE file whose diff alone still exceeds
+  // the per-file budget (that file would need med/high hunk-splitting). The
+  // budget math mirrors runReviewBatch's remainingForDiff so a diff that fits
+  // never errors here.
   if (strategy === "diff-only") {
     const remainingForDiff = Math.max(
       0,
@@ -294,14 +358,34 @@ export async function executeWaiReview(
         estimateTokens(designRefText ?? ""),
     );
     const diffTokens = estimateTokens(diff);
-    if (diffTokens > remainingForDiff) {
+    if (diffTokens > remainingForDiff && !shouldParallelize) {
       progress(7, STAGES.review, "Diff too large for a diff-only review…");
+      const parallelHint =
+        filesWithDiff.length > 1 ? " Enable pi-yoowai.parallelReview for a per-file parallel diff-only review, or" : "";
       return {
         action: "review",
-        error: `The change is too large for a diff-only (${level} level) review: the diff needs ~${diffTokens.toLocaleString()} tokens but the model's available context budget is ~${remainingForDiff.toLocaleString()} tokens. Re-run with wai_review_med or wai_review_high (they split large diffs automatically), or scope the review with files:[...].`,
+        error: `The change is too large for a diff-only (${level} level) review: the diff needs ~${diffTokens.toLocaleString()} tokens but the model's available context budget is ~${remainingForDiff.toLocaleString()} tokens.${parallelHint} Re-run with wai_review_med or wai_review_high (they split large diffs automatically), or scope the review with files:[...].`,
         model: modelProfile,
         level,
       };
+    }
+    // Explicit parallel review is active: the whole diff fits only because it
+    // is split per file, so make sure EVERY per-file diff also fits its own
+    // budget — a single oversized file would be truncated inside the batch.
+    if (shouldParallelize) {
+      const oversizedFile = filesWithDiff.find((file) => {
+        const perFileTokens = estimateTokens(fileDiffs[file] ?? "");
+        return perFileTokens > remainingForDiff;
+      });
+      if (oversizedFile) {
+        progress(7, STAGES.review, "A single file's diff exceeds the model budget…");
+        return {
+          action: "review",
+          error: `The diff of \`${oversizedFile}\` (~${estimateTokens(fileDiffs[oversizedFile] ?? "").toLocaleString()} tokens) exceeds the model's per-file available context budget (~${remainingForDiff.toLocaleString()} tokens), so a parallel diff-only review would truncate it. Re-run with wai_review_med or wai_review_high (they split individual files into hunks), or scope the review with files:[...].`,
+          model: modelProfile,
+          level,
+        };
+      }
     }
   }
 
@@ -399,7 +483,7 @@ export async function executeWaiReview(
           nativeJson,
           focusFiles: stepFocusFiles,
           levelInstructions: reviewSettings.instructions,
-          ...toolLoopOptions(config),
+          ...toolLoopOptions(loopConfig),
         });
         return { review: result.review, usage: result.usage, rounds: result.rounds, truncated: result.truncated };
       });
@@ -552,7 +636,7 @@ export async function executeWaiReview(
         nativeJson,
         focusFiles: stepFocusFiles,
         levelInstructions: reviewSettings.instructions,
-        ...toolLoopOptions(config),
+        ...toolLoopOptions(loopConfig),
       });
       return {
         review: result.review,
@@ -672,7 +756,7 @@ export async function executeWaiReview(
         nativeJson,
         focusFiles: stepFocusFiles,
         levelInstructions: reviewSettings.instructions,
-        ...toolLoopOptions(config),
+        ...toolLoopOptions(loopConfig),
       });
     } catch (err) {
       return {
@@ -778,9 +862,7 @@ export async function executeWaiReview(
     );
   }
 
-  if (cacheable && cacheKey) {
-    setCachedResult(cwd, "review", cacheKey, { review, model: modelProfile, cost });
-  }
+  setCachedResult(cwd, "review", cacheKey, { review, model: modelProfile, cost });
 
   // Propose-only staleness: never touch the plan; surface the update
   // suggestion once per review round (auto-review on settle must not repeat

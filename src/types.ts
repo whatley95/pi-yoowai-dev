@@ -94,8 +94,12 @@ export interface YoowaiConfig {
   autoInjectContext?: boolean;
   /** Maximum tokens of injected context per message. Default 800. */
   contextInjectMaxTokens?: number;
-  /** Token budget for the project symbol map injected into review/judge prompts. Default 1500; 0 disables. */
+  /** Token budget for the project symbol map injected into review/judge prompts. Default: unset — review uses the level defaults (min 20000, med 8000, high 8000); judge keeps a 1500-token fallback; 0 disables. */
   codemapMaxTokens?: number;
+  /** Token budget for related-file/AST context injected into review prompts (level default: min 1000, med 2500, high 4000). 0 disables. */
+  relatedContextMaxTokens?: number;
+  /** Auto-detect typecheck/lint(/test) scripts from the reviewed project's package.json and run them before med/high reviews. Default false (requires trusting the reviewed repository). Explicit preReviewCommands always wins. */
+  autoPreReviewCommands?: boolean;
   /** Token budget for user-curated design rules injected into review/judge prompts for UI files. Default 800; 0 disables. */
   designRefMaxTokens?: number;
   /** Render wai audit entries (plan, review, judge, etc.) with a custom TUI entry renderer. Default true. */

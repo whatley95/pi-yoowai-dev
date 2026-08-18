@@ -1,7 +1,7 @@
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { runPreReviewCommands, formatPreReviewOutput } from "./pre-review.js";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { runPreReviewCommands, formatPreReviewOutput, detectAutoPreReviewCommands } from "./pre-review.js";
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -198,5 +198,62 @@ describe("pre-review", () => {
       assert.equal(results.length, 1);
       assert.doesNotMatch(results[0].output, /not allowed for model-generated tool calls/);
     });
+  });
+});
+
+describe("detectAutoPreReviewCommands", () => {
+  const tmpDirs: string[] = [];
+
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  function makeProject(scripts?: Record<string, string>): string {
+    const cwd = mkdtempSync(join(tmpdir(), "pre-auto-"));
+    tmpDirs.push(cwd);
+    const pkg = { name: "probe", version: "1.0.0" } as Record<string, unknown>;
+    if (scripts) pkg.scripts = scripts;
+    writeFileSync(join(cwd, "package.json"), JSON.stringify(pkg), "utf-8");
+    return cwd;
+  }
+
+  it("never runs commands at min level", () => {
+    const cwd = makeProject({ typecheck: "tsc --noEmit", lint: "eslint .", test: "vitest run" });
+    assert.deepEqual(detectAutoPreReviewCommands(cwd, "min"), []);
+  });
+
+  it("med detects typecheck and lint in phase order, ignoring aliases", () => {
+    const cwd = makeProject({ typecheck: "tsc --noEmit", lint: "eslint .", test: "vitest run" });
+    assert.deepEqual(detectAutoPreReviewCommands(cwd, "med"), ["npm run typecheck", "npm run lint"]);
+  });
+
+  it("high adds test; aliases are recognized when canonical names are absent", () => {
+    const cwd = makeProject({ tsc: "tsc -p tsconfig.json", eslint: "eslint src", unit: "node --test" });
+    assert.deepEqual(detectAutoPreReviewCommands(cwd, "high"), ["npm run tsc", "npm run eslint", "npm run unit"]);
+  });
+
+  it("returns [] for missing package.json or no recognized scripts", () => {
+    const noPkg = mkdtempSync(join(tmpdir(), "pre-auto-nopkg-"));
+    tmpDirs.push(noPkg);
+    assert.deepEqual(detectAutoPreReviewCommands(noPkg, "high"), []);
+
+    const unrelated = makeProject({ build: "vite build", start: "vite dev" });
+    assert.deepEqual(detectAutoPreReviewCommands(unrelated, "high"), []);
+  });
+
+  it("ignores empty script values and malformed package.json", () => {
+    const empty = makeProject({ typecheck: "", lint: "eslint ." });
+    assert.deepEqual(detectAutoPreReviewCommands(empty, "med"), ["npm run lint"]);
+
+    const cwd = mkdtempSync(join(tmpdir(), "pre-auto-bad-"));
+    tmpDirs.push(cwd);
+    writeFileSync(join(cwd, "package.json"), "{ not json", "utf-8");
+    assert.deepEqual(detectAutoPreReviewCommands(cwd, "high"), []);
   });
 });

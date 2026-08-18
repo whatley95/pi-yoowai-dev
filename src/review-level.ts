@@ -22,6 +22,7 @@ export interface ReviewLevelSettings {
   reviewMaxConventionsTokens: number | undefined;
   reviewMaxMemoryTokens: number | undefined;
   codemapMaxTokens: number | undefined;
+  relatedContextMaxTokens: number | undefined;
   instructions: string;
 }
 
@@ -35,6 +36,7 @@ export const LEVEL_DEFAULTS: Record<
     reviewMaxConventionsTokens: number | undefined;
     reviewMaxMemoryTokens: number | undefined;
     codemapMaxTokens: number | undefined;
+    relatedContextMaxTokens: number | undefined;
     instructions: string;
   }
 > = {
@@ -45,7 +47,16 @@ export const LEVEL_DEFAULTS: Record<
     reviewMaxInputTokens: undefined,
     reviewMaxConventionsTokens: 500,
     reviewMaxMemoryTokens: 400,
-    codemapMaxTokens: 0,
+    // Compact symbol map for changed files + import neighbors. The diff budget
+    // deducts the ACTUAL rendered map length, not this cap, so a high cap costs
+    // nothing on typical projects (1-10k token maps) and only binds on huge
+    // ones. 20k keeps ~34k tokens for the diff on the smallest 64k-context
+    // min-default model; beyond ~30k the map can crowd out the diff (fail-closed
+    // at min, not truncation).
+    codemapMaxTokens: 20000,
+    // Diff-only sends no file contents, so related/AST context is the main
+    // cross-file evidence at min — compact budget.
+    relatedContextMaxTokens: 1000,
     instructions:
       "Review level: MINIMAL. Do a quick, lightweight pass. Only flag obvious bugs, syntax errors, clear regressions, and surface-level style issues. Skip architectural concerns, speculative edge cases, and deep cross-file analysis.",
   },
@@ -56,7 +67,8 @@ export const LEVEL_DEFAULTS: Record<
     reviewMaxInputTokens: undefined,
     reviewMaxConventionsTokens: undefined,
     reviewMaxMemoryTokens: undefined,
-    codemapMaxTokens: undefined,
+    codemapMaxTokens: 8000,
+    relatedContextMaxTokens: 2500,
     instructions:
       "Review level: STANDARD. Perform a balanced code review. Check logic, correctness, tests, conventions, and cross-file impact. Flag real problems; avoid nit-picking or speculative issues without evidence.",
   },
@@ -67,7 +79,8 @@ export const LEVEL_DEFAULTS: Record<
     reviewMaxInputTokens: undefined,
     reviewMaxConventionsTokens: 1500,
     reviewMaxMemoryTokens: 1200,
-    codemapMaxTokens: 2500,
+    codemapMaxTokens: 8000,
+    relatedContextMaxTokens: 4000,
     instructions:
       "Review level: DEEP. Perform a thorough, critical review. Examine architecture, security, edge cases, error handling, concurrency, API contracts, and cross-file implications. Be strict; only pass when the change is genuinely robust.",
   },
@@ -103,6 +116,7 @@ export function getReviewLevelSettings(config: YoowaiConfig, level: ReviewLevel)
     reviewMaxConventionsTokens: pick(config.reviewMaxConventionsTokens, defaults.reviewMaxConventionsTokens),
     reviewMaxMemoryTokens: pick(config.reviewMaxMemoryTokens, defaults.reviewMaxMemoryTokens),
     codemapMaxTokens: pick(config.codemapMaxTokens, defaults.codemapMaxTokens),
+    relatedContextMaxTokens: pick(config.relatedContextMaxTokens, defaults.relatedContextMaxTokens),
     instructions: defaults.instructions,
   };
 }

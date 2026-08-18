@@ -33,6 +33,23 @@ describe("review-cache", () => {
     assert.equal(a.length, 32);
   });
 
+  it("key changes when any stable prompt input changes (field sensitivity)", () => {
+    const base = { diff: "abc", description: "x", codemap: "map", level: "med" };
+    const baseKey = buildCacheKey("review", base);
+    // Every newly keyed field must change the key: an identical review cannot
+    // be replayed when the effective prompt inputs differ.
+    for (const field of ["codemap", "designRefText", "relatedContext", "levelInstructions"]) {
+      const changed = buildCacheKey("review", { ...base, [field]: `${base[field as keyof typeof base]}-DIFFERENT` });
+      assert.notEqual(changed, baseKey, `key must react to ${field}`);
+    }
+    const levelChanged = buildCacheKey("review", { ...base, level: "high" });
+    assert.notEqual(levelChanged, baseKey, "key must react to level");
+    const toolLoopChanged = buildCacheKey("review", { ...base, toolUseLoop: 5 });
+    assert.notEqual(toolLoopChanged, baseKey, "key must react to toolUseLoop");
+    const commandsChanged = buildCacheKey("review", { ...base, preReviewCommands: ["npm run lint"] });
+    assert.notEqual(commandsChanged, baseKey, "key must react to preReviewCommands");
+  });
+
   it("stores and retrieves review results", () => {
     const review: ReviewResult = {
       verdict: "pass",

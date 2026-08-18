@@ -23,8 +23,8 @@ type CacheFile = {
   entries: CacheEntry[];
 };
 
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-const MAX_ENTRIES = 100;
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours — the key covers every stable prompt input, so long-lived hits stay correct
+const MAX_ENTRIES = 200;
 
 function getCachePath(cwd: string): string {
   const dir = join(cwd, ".pi", "yoowai");

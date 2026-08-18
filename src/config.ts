@@ -129,7 +129,7 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
   let config: YoowaiConfig = {
     secondary: { provider: "", id: "", thinking: "xhigh" },
     autoJudge: false,
-    preReviewCommands: [],
+    preReviewCommands: undefined,
     reviewFullFileThresholdLines: 300,
     reviewMaxConventionsTokens: 1000,
     reviewMaxMemoryTokens: 800,
@@ -139,7 +139,8 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     reviewReminderEdits: 3,
     autoInjectContext: true,
     contextInjectMaxTokens: 800,
-    codemapMaxTokens: 1500,
+    codemapMaxTokens: undefined,
+    autoPreReviewCommands: false,
     designRefMaxTokens: 800,
     entryRenderer: true,
     shortcuts: true,
@@ -223,6 +224,8 @@ const KNOWN_CONFIG_KEYS = new Set([
   "autoInjectContext",
   "contextInjectMaxTokens",
   "codemapMaxTokens",
+  "relatedContextMaxTokens",
+  "autoPreReviewCommands",
   "designRefMaxTokens",
   "maxContinuations",
   "entryRenderer",
@@ -495,7 +498,16 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
       Number.isFinite(o.codemapMaxTokens) &&
       o.codemapMaxTokens >= 0
         ? o.codemapMaxTokens
-        : (base.codemapMaxTokens ?? 1500),
+        : base.codemapMaxTokens,
+    relatedContextMaxTokens:
+      typeof o.relatedContextMaxTokens === "number" &&
+      Number.isInteger(o.relatedContextMaxTokens) &&
+      Number.isFinite(o.relatedContextMaxTokens) &&
+      o.relatedContextMaxTokens >= 0
+        ? o.relatedContextMaxTokens
+        : (base.relatedContextMaxTokens ?? undefined),
+    autoPreReviewCommands:
+      typeof o.autoPreReviewCommands === "boolean" ? o.autoPreReviewCommands : (base.autoPreReviewCommands ?? false),
     designRefMaxTokens:
       typeof o.designRefMaxTokens === "number" &&
       Number.isInteger(o.designRefMaxTokens) &&
