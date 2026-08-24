@@ -53,7 +53,17 @@ function isRetryableBackendError(err: unknown): boolean {
     msg.includes("econnrefused") ||
     msg.includes("etimedout") ||
     msg.includes("network error") ||
-    msg.includes("fetch failed")
+    msg.includes("fetch failed") ||
+    // Provider stream terminations: pi-ai maps an unmapped provider finish_reason
+    // to stopReason "error" with "Provider finish_reason: <reason>". The upstream
+    // provider failed mid-generation (OpenRouter reports "finish_reason: error"
+    // for overloaded upstreams) or the stream died at the network layer — both
+    // transient, so give the pi-backend fallback a chance. "content_filter" is
+    // deliberately excluded: re-sending the same prompt hits the same filter.
+    msg.includes("finish_reason: error") ||
+    msg.includes("finish_reason: network_error") ||
+    // pi-ai's own retry policy classifies "terminated" streams as retryable.
+    msg.includes("terminated")
   );
 }
 

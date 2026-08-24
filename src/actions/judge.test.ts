@@ -2,7 +2,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeWaiJudge } from "./judge.js";
@@ -175,6 +175,69 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
       assert.equal(bodies.length, 1, "second identical judge must hit the cache, not call the model again");
       assert.equal(first.judge?.verdict, "pass");
       assert.equal(second.judge?.verdict, "pass");
+    },
+  );
+
+  it(
+    "council judge with selfVerify runs 4 model calls and verifies without the council field",
+    { skip: !hasGit },
+    async () => {
+      const marker = "JUDGE_COUNCIL_VERIFY_MARKER_991";
+      const small = `hello\n\n${marker}\n` + "z".repeat(500) + "\n";
+      const cwd = makeRepoWithChange(small);
+      const { url, bodies } = await startStubServer();
+      writeSettings(cwd, {
+        selfVerify: true,
+        // Two distinct ids dedupe to two members; both inherit the http
+        // backend + baseUrl from `secondary`.
+        judgeCouncil: ["openai/gpt-4o-mini", "openai/gpt-4o-mini-2"],
+        secondary: {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          contextWindow: 8000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: url,
+          apiKey: "test-key",
+        },
+      });
+
+      const ctx = { cwd } as unknown as ExtensionContext;
+      // NB: the description is embedded in the judge prompt and re-sent inside
+      // the verification request, so it must not contain the word "council"
+      // for the body assertion below to be meaningful.
+      const result = await executeWaiJudge(cwd, "joint verdict verify probe", undefined, () => {}, ctx.sessionManager);
+
+      // 2 council members + 1 synthesis + 1 self-verification call.
+      assert.equal(bodies.length, 4, "council judge + selfVerify must make exactly four model requests");
+      assert.equal(result.judge?.verdict, "pass");
+      assert.equal(
+        result.judge?.council?.members.length,
+        2,
+        "council summary must survive self-verification on the result",
+      );
+      // The verification request re-sends the original context + result; the
+      // runtime-attached council summary must be stripped from the serialized
+      // result so the verifier cannot echo it back (which would fail schema
+      // validation). Parse the "judge result to verify" section and assert the
+      // JSON has no council key.
+      const verifyBody = JSON.parse(bodies[3]) as { messages: Array<{ role: string; content: string }> };
+      const verifyUser = verifyBody.messages.find((m) => m.role === "user")?.content ?? "";
+      const sectionMarker = "judge result to verify:";
+      const resultSection = verifyUser.slice(verifyUser.indexOf(sectionMarker) + sectionMarker.length);
+      const resultJson = resultSection.slice(0, resultSection.indexOf("\n\n---"));
+      const resultToVerify = JSON.parse(resultJson) as Record<string, unknown>;
+      assert.ok(
+        !("council" in resultToVerify),
+        "serialized judge result in the verify prompt must not carry the council field",
+      );
+
+      // End-to-end: self-verification must succeed (no invalid-JSON WARN).
+      const logPath = join(cwd, ".pi", "yoowai", "wai.log");
+      const log = readFileSync(logPath, "utf-8");
+      assert.match(log, /Self-verified judge result/);
+      assert.doesNotMatch(log, /Self-verification of judge produced invalid JSON/);
     },
   );
 });

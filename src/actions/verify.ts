@@ -18,10 +18,19 @@ export async function verifyResult<T>(
     validate: (data: unknown) => T | null;
     validationErrors: (data: unknown) => Array<{ path: string; message: string; value: unknown }>;
     salvage?: (raw: string) => T | null;
+    /** Transform the result before it is serialized into the verification prompt.
+     *  Used to strip runtime-attached fields (e.g. the judge council summary)
+     *  that are not part of the schema and would otherwise be echoed back by
+     *  the verifier and fail validation. */
+    resultForPrompt?: (result: T) => T;
   },
 ): Promise<{ result: T; usage: UsageCost }> {
   const originalContextRaw = `${options.originalSystem}\n\n${options.originalUser}`;
-  const originalResultRaw = JSON.stringify(options.result, null, 2);
+  const originalResultRaw = JSON.stringify(
+    options.resultForPrompt ? options.resultForPrompt(options.result) : options.result,
+    null,
+    2,
+  );
   // Self-verification re-sends the full original context + result. For the
   // largest reviews that overflows the model context and the verify call fails
   // deterministically, so cap both inputs before building the prompt.

@@ -1178,6 +1178,74 @@ describe("sdk backend", () => {
     assert.equal(content, "pi kimi ok");
   });
 
+  it("auto-falls back to pi backend when the sdk stream ends with provider finish_reason: error", async () => {
+    const cwd = makeTempDir("wai-sdk-finish-reason-fallback-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "kimi-coding", id: "k3" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    setSdkStreamSimpleOverride(() => {
+      throw new Error("Secondary model request failed (error): Provider finish_reason: error");
+    });
+
+    const script = join(cwd, "fake-pi-finish-reason.js");
+    writeFileSync(
+      script,
+      `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"pi finish reason ok"}],usage:{input:10,output:5,cost:0.0001}}}));`,
+      "utf-8",
+    );
+    setPiSpawnResolver(() => ({ command: process.execPath, prefixArgs: [script] }));
+
+    const { content } = await callSecondaryModel("kimi-coding", "k3", "system", "user", { cwd });
+    assert.equal(content, "pi finish reason ok");
+  });
+
+  it("auto-falls back to pi backend when the sdk stream ends terminated", async () => {
+    const cwd = makeTempDir("wai-sdk-terminated-fallback-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "kimi-coding", id: "k3" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    setSdkStreamSimpleOverride(() => {
+      throw new Error("Secondary model request failed (error): terminated");
+    });
+
+    const script = join(cwd, "fake-pi-terminated.js");
+    writeFileSync(
+      script,
+      `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"pi terminated ok"}],usage:{input:10,output:5,cost:0.0001}}}));`,
+      "utf-8",
+    );
+    setPiSpawnResolver(() => ({ command: process.execPath, prefixArgs: [script] }));
+
+    const { content } = await callSecondaryModel("kimi-coding", "k3", "system", "user", { cwd });
+    assert.equal(content, "pi terminated ok");
+  });
+
+  it("does not fall back to pi backend on finish_reason: content_filter", async () => {
+    const cwd = makeTempDir("wai-sdk-content-filter-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "kimi-coding", id: "k3" });
+
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    setSdkStreamSimpleOverride(() => {
+      throw new Error("Secondary model request failed (error): Provider finish_reason: content_filter");
+    });
+    setPiSpawnResolver(() => {
+      throw new Error("pi backend should not be spawned for content_filter");
+    });
+
+    await assert.rejects(
+      () => callSecondaryModel("kimi-coding", "k3", "system", "user", { cwd }),
+      (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        assert.match(message, /finish_reason: content_filter/);
+        assert.doesNotMatch(message, /pi fallback also failed/);
+        return true;
+      },
+    );
+  });
+
   it("sdk backend passes reasoning option when thinking is enabled", async () => {
     const cwd = makeTempDir("wai-sdk-reasoning-");
     tmpDirs.push(cwd);

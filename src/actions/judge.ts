@@ -291,8 +291,15 @@ export async function executeWaiJudge(
         validate: validateJudgeResult,
         validationErrors: getJudgeValidationErrors,
         salvage: salvageJudgeFromMarkdown,
+        // The council summary is attached at runtime after schema validation and
+        // is not part of JudgeResultSchema; strip it from the verification
+        // prompt so the verifier cannot echo it back (which would fail
+        // validation and turn self-verification into a wasted call).
+        resultForPrompt: (r) => (r.council ? { ...r, council: undefined } : r),
       });
-      judge = verified.result;
+      // A schema-valid verifier response cannot carry the council summary;
+      // re-attach the original so the Council line still renders.
+      judge = judge.council ? { ...verified.result, council: judge.council } : verified.result;
       cost = mergeVerifiedCost(cost, recordCostWithBudget(cwd, verified.usage)) ?? cost;
     } catch (err) {
       logEvent(cwd, "warn", "Self-verification failed; keeping original judgment", {
