@@ -41,6 +41,7 @@ export function loadState(cwd: string): YoowaiSessionState | null {
       editsSinceLastReview: typeof data.editsSinceLastReview === "number" ? data.editsSinceLastReview : 0,
       editsSinceLastDone: typeof data.editsSinceLastDone === "number" ? data.editsSinceLastDone : 0,
       unreviewedTurns: typeof data.unreviewedTurns === "number" ? data.unreviewedTurns : 0,
+      noPlanTurns: typeof data.noPlanTurns === "number" ? data.noPlanTurns : 0,
       unreviewedEditsTotal: typeof data.unreviewedEditsTotal === "number" ? data.unreviewedEditsTotal : 0,
       unreviewedEditsFlushed: typeof data.unreviewedEditsFlushed === "number" ? data.unreviewedEditsFlushed : 0,
       editedFiles: Array.isArray(data.editedFiles)
@@ -92,6 +93,7 @@ export function saveState(cwd: string, state: YoowaiSessionState): void {
           editsSinceLastReview: state.editsSinceLastReview ?? 0,
           editsSinceLastDone: state.editsSinceLastDone ?? 0,
           unreviewedTurns: state.unreviewedTurns ?? 0,
+          noPlanTurns: state.noPlanTurns ?? 0,
           unreviewedEditsTotal: state.unreviewedEditsTotal ?? 0,
           unreviewedEditsFlushed: state.unreviewedEditsFlushed ?? 0,
           editedFiles: state.editedFiles ?? [],

@@ -22,6 +22,7 @@ import {
   recordFileEdit,
   markJudgeCompleted,
   recordUnreviewedTurn,
+  recordNoPlanTurn,
 } from "../session-state.js";
 import { executeWaiJudge } from "../actions/judge.js";
 import { executeWaiReview } from "../actions/review.js";
@@ -243,20 +244,28 @@ export function registerLifecycleHandlers(
       const hadRealEdit = toolResults.some((tr) => isFileWriteTool(tr.toolName) && !tr.isError);
       if (!hadRealEdit) return;
 
-      const editState = getEditTracker(ctx.cwd);
-      if (editState.editsSinceLastReview <= 0) return;
-
       const state = getState(ctx.cwd);
+      // Count plan-less edit turns right after the real-edit gate — before the
+      // pending-review check — so the no-plan escalation cannot be dodged by
+      // reviewing every edit within the same turn. Creating a plan resets the
+      // streak.
+      const noActivePlan = !state.plan || state.totalSteps === 0;
+      if (noActivePlan) recordNoPlanTurn(ctx.cwd);
+
+      const editState = getEditTracker(ctx.cwd);
+      const reviewPending = editState.editsSinceLastReview > 0;
+      if (!reviewPending && !noActivePlan) return;
+
       // The turn ended with review pending and no review call in between.
-      recordUnreviewedTurn(ctx.cwd);
+      if (reviewPending) recordUnreviewedTurn(ctx.cwd);
       const now = Date.now();
       if (state.lastSteerAt && now - state.lastSteerAt < STEER_COOLDOWN_MS) return;
 
       const config = loadYoowaiConfig(ctx.cwd);
       // Prefer the files the agent actually edited (accurate and VCS-independent);
       // fall back to the diff's changed files when paths could not be captured.
-      let changedFiles = editState.editedFiles;
-      if (changedFiles.length === 0) {
+      let changedFiles = reviewPending ? editState.editedFiles : [];
+      if (reviewPending && changedFiles.length === 0) {
         changedFiles = getDiff(ctx.cwd, { maxDiffChars: config.reviewMaxDiffChars }).changedFiles;
       }
       const fileList =
@@ -271,10 +280,12 @@ export function registerLifecycleHandlers(
         state.plan && state.completedSteps < state.totalSteps
           ? ` If this work completes the current plan step (${state.completedSteps + 1}/${state.totalSteps}), call \`wai({ done: true })\` after the review passes to keep the plan tracker in sync.`
           : "";
-      const noPlanNudge =
-        !state.plan || state.totalSteps === 0
-          ? ` No active wai plan — if this is non-trivial work, create one first with \`wai({ plan: '...' })\`.`
-          : "";
+      const noPlanEscalated = noActivePlan && (state.noPlanTurns ?? 0) >= (config.noPlanSteerEscalationThreshold ?? 3);
+      const noPlanNudge = noActivePlan
+        ? noPlanEscalated
+          ? ` STOP. No active wai plan — create one now with \`wai({ plan: '...' })\` before making further edits.`
+          : ` No active wai plan — if this is non-trivial work, create one first with \`wai({ plan: '...' })\`.`
+        : "";
       // After K consecutive turns with review pending, escalate from a gentle
       // reminder to an explicit stop directive. The counter resets on review.
       const escalated = (state.unreviewedTurns ?? 0) >= (config.steerEscalationThreshold ?? 3);
@@ -284,20 +295,22 @@ export function registerLifecycleHandlers(
         state.plan && state.completedSteps < state.totalSteps
           ? `Step ${state.completedSteps + 1}/${state.totalSteps} (${planStepDescription(state.plan.todo[state.completedSteps])})`
           : undefined;
-      const reminder = escalated
-        ? stepLabel
-          ? `STOP. Do not continue new work until \`wai review\` has been run on the pending edits. ` +
-            `${stepLabel} has ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList} spanning ${state.unreviewedTurns} turn(s). ` +
-            `Call \`wai({ review: '...' })\` now.`
-          : `STOP. Do not continue new work until \`wai review\` has been run on the pending edits. ` +
-            `You have ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList} spanning ${state.unreviewedTurns} turn(s). ` +
-            `Call \`wai({ review: '...' })\` now.`
-        : stepLabel
-          ? `WORKFLOW REMINDER: ${stepLabel} has ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList}. ` +
-            `Call \`wai({ review: '...' })\` to review the changes before continuing.`
-          : `WORKFLOW REMINDER: you have made ${editState.editsSinceLastReview} file edit(s) since the last review. ` +
-            `Call \`wai({ review: '...' })\` to review the changes${fileList} before continuing.`;
-      pi.sendUserMessage(`${reminder}${planNudge}${noPlanNudge}`, { deliverAs: "steer" });
+      const reminder = reviewPending
+        ? escalated
+          ? stepLabel
+            ? `STOP. Do not continue new work until \`wai review\` has been run on the pending edits. ` +
+              `${stepLabel} has ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList} spanning ${state.unreviewedTurns} turn(s). ` +
+              `Call \`wai({ review: '...' })\` now.`
+            : `STOP. Do not continue new work until \`wai review\` has been run on the pending edits. ` +
+              `You have ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList} spanning ${state.unreviewedTurns} turn(s). ` +
+              `Call \`wai({ review: '...' })\` now.`
+          : stepLabel
+            ? `WORKFLOW REMINDER: ${stepLabel} has ${editState.editsSinceLastReview} unreviewed file edit(s)${fileList}. ` +
+              `Call \`wai({ review: '...' })\` to review the changes before continuing.`
+            : `WORKFLOW REMINDER: you have made ${editState.editsSinceLastReview} file edit(s) since the last review. ` +
+              `Call \`wai({ review: '...' })\` to review the changes${fileList} before continuing.`
+        : "";
+      pi.sendUserMessage(`${reminder}${planNudge}${noPlanNudge}`.trimStart(), { deliverAs: "steer" });
       updateWaiStatus(ctx);
     } catch {
       // best-effort steer

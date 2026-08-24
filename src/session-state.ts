@@ -19,6 +19,7 @@ export function getState(cwd: string): YoowaiSessionState {
     state.editsSinceLastReview ??= 0;
     state.editsSinceLastDone ??= 0;
     state.unreviewedTurns ??= 0;
+    state.noPlanTurns ??= 0;
     state.unreviewedEditsTotal ??= 0;
     state.unreviewedEditsFlushed ??= 0;
     state.lastReviewedCommit ??= undefined;
@@ -39,6 +40,7 @@ export function setPlan(cwd: string, plan: PlanResult): void {
   state.editsSinceLastDone = 0;
   state.editedFiles = [];
   state.unreviewedTurns = 0;
+  state.noPlanTurns = 0;
   state.unreviewedEditsTotal = 0;
   state.unreviewedEditsFlushed = 0;
   state.lastSteerAt = undefined;
@@ -234,6 +236,13 @@ export function resetEditsSinceReview(cwd: string): void {
 export function recordUnreviewedTurn(cwd: string): void {
   const state = getState(cwd);
   state.unreviewedTurns = (state.unreviewedTurns ?? 0) + 1;
+}
+
+/** Record that a turn ended with real file edits while no active plan
+ *  existed. Drives the escalating no-plan steer. */
+export function recordNoPlanTurn(cwd: string): void {
+  const state = getState(cwd);
+  state.noPlanTurns = (state.noPlanTurns ?? 0) + 1;
 }
 
 export function resetEditsSinceDone(cwd: string): void {

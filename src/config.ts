@@ -147,6 +147,7 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     planWidget: true,
     registerProvider: false,
     steerEscalationThreshold: 3,
+    noPlanSteerEscalationThreshold: 3,
     requireReviewBeforeDone: true,
     autoReviewOnSettle: true,
     docs: {
@@ -233,6 +234,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   "planWidget",
   "registerProvider",
   "steerEscalationThreshold",
+  "noPlanSteerEscalationThreshold",
   "requireReviewBeforeDone",
   "autoReviewOnSettle",
   "presets",
@@ -522,6 +524,10 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
     steerEscalationThreshold: pickPositiveInteger(
       o.steerEscalationThreshold ?? NaN,
       base.steerEscalationThreshold ?? 3,
+    ),
+    noPlanSteerEscalationThreshold: pickPositiveInteger(
+      o.noPlanSteerEscalationThreshold ?? NaN,
+      base.noPlanSteerEscalationThreshold ?? 3,
     ),
     requireReviewBeforeDone:
       typeof o.requireReviewBeforeDone === "boolean" ? o.requireReviewBeforeDone : base.requireReviewBeforeDone,

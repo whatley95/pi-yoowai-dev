@@ -112,6 +112,8 @@ export interface YoowaiConfig {
   registerProvider?: boolean;
   /** Consecutive turn_ends with unreviewed edits pending before the workflow steer escalates to an explicit stop directive. Default 3. */
   steerEscalationThreshold?: number;
+  /** Consecutive turn_ends with real file edits while no active plan exists before the no-plan nudge escalates to an explicit stop directive. Default 3. */
+  noPlanSteerEscalationThreshold?: number;
   /** Block wai.done from marking steps complete while unreviewed edits are pending (overridable with force). Default false. */
   requireReviewBeforeDone?: boolean;
   /** Automatically run wai.review when the agent settles with unreviewed edits pending, before any auto-judge. Default false. */
@@ -265,6 +267,8 @@ export interface YoowaiSessionState {
   editedFiles?: string[];
   /** Turns that ended with unreviewed edits pending and no review call in between. Reset when a review runs. */
   unreviewedTurns?: number;
+  /** Consecutive turns that ended with real file edits while no active plan existed. Reset when a plan is created. */
+  noPlanTurns?: number;
   /** Cumulative edits that were still unreviewed when session state flushed to disk. */
   unreviewedEditsTotal?: number;
   /** Internal marker: editsSinceLastReview value already folded into unreviewedEditsTotal, so repeated flushes do not double count. */

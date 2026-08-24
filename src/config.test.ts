@@ -308,6 +308,7 @@ describe("loadYoowaiConfig review enforcement", () => {
 
     const config = loadYoowaiConfig(cwd);
     assert.equal(config.steerEscalationThreshold, 3);
+    assert.equal(config.noPlanSteerEscalationThreshold, 3);
     assert.equal(config.requireReviewBeforeDone, true);
     assert.equal(config.autoReviewOnSettle, true);
   });
@@ -318,12 +319,14 @@ describe("loadYoowaiConfig review enforcement", () => {
     writeProjectSettings(cwd, {
       secondary: { provider: "openai", id: "gpt-4o" },
       steerEscalationThreshold: 5,
+      noPlanSteerEscalationThreshold: 5,
       requireReviewBeforeDone: true,
       autoReviewOnSettle: true,
     });
 
     const config = loadYoowaiConfig(cwd);
     assert.equal(config.steerEscalationThreshold, 5);
+    assert.equal(config.noPlanSteerEscalationThreshold, 5);
     assert.equal(config.requireReviewBeforeDone, true);
     assert.equal(config.autoReviewOnSettle, true);
   });
@@ -334,14 +337,74 @@ describe("loadYoowaiConfig review enforcement", () => {
     writeProjectSettings(cwd, {
       secondary: { provider: "openai", id: "gpt-4o" },
       steerEscalationThreshold: -2,
+      noPlanSteerEscalationThreshold: -2,
       requireReviewBeforeDone: "yes",
       autoReviewOnSettle: 1,
     });
 
     const config = loadYoowaiConfig(cwd);
     assert.equal(config.steerEscalationThreshold, 3);
+    assert.equal(config.noPlanSteerEscalationThreshold, 3);
     assert.equal(config.requireReviewBeforeDone, true);
     assert.equal(config.autoReviewOnSettle, true);
+  });
+});
+
+describe("loadYoowaiConfig noPlanSteerEscalationThreshold merge", () => {
+  const tmpDirs: string[] = [];
+  const originalAgentDir = getAgentDir();
+  // Isolate from any real global ~/.pi/agent/settings.json.
+  const agentDir = mkdtempSync(join(tmpdir(), "config-noplan-agent-"));
+
+  before(() => {
+    setAgentDirForTests(() => agentDir);
+    // Shared global settings: the inheritance test relies on it, and writing it
+    // here keeps both tests independent of execution order.
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({
+        "pi-yoowai": { secondary: { provider: "openai", id: "gpt-4o" }, noPlanSteerEscalationThreshold: 7 },
+      }),
+      "utf-8",
+    );
+  });
+
+  after(() => {
+    setAgentDirForTests(() => originalAgentDir);
+    try {
+      rmSync(agentDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("lets the project value override the global value", () => {
+    const cwd = makeTempDir("config-noplan-override-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      noPlanSteerEscalationThreshold: 5,
+    });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.noPlanSteerEscalationThreshold, 5);
+  });
+
+  it("inherits the global value when the project omits the key", () => {
+    const cwd = makeTempDir("config-noplan-inherit-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.noPlanSteerEscalationThreshold, 7);
   });
 });
 

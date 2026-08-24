@@ -23,6 +23,7 @@ import {
   getState,
   markStepComplete,
   resetEditsSinceReview,
+  flushSessionState,
 } from "../session-state.js";
 import { createLoopDetectionState, type LoopDetectionState } from "../loop-detector.js";
 import type { WaiToolResult } from "../types.js";
@@ -583,8 +584,290 @@ describe("lifecycle", () => {
     state.lastSteerAt = 0;
     emitTurnEnd(turnEnd, makeContext(cwd));
     assert.strictEqual(steers.length, 3);
+    // The review escalation reset: the review portion is back to a gentle
+    // reminder. (The no-plan portion may still escalate because the agent
+    // edited several turns without creating a plan — that streak only resets
+    // when a plan is created.)
     assert.ok(steers[2].message.includes("WORKFLOW REMINDER"));
-    assert.ok(!steers[2].message.includes("STOP"));
+    assert.ok(steers[2].message.startsWith("WORKFLOW REMINDER"));
+    assert.ok(!steers[2].message.includes("Do not continue new work until `wai review` has been run"));
+  });
+
+  it("escalates the no-plan nudge to a STOP after K consecutive edit turns without a plan", () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { noPlanSteerEscalationThreshold: 2 } }),
+    );
+    const state = getState(cwd);
+    state.editsSinceLastReview = 1;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    const turnEnd = {
+      type: "turn_end",
+      turnIndex: 1,
+      message: { role: "assistant", content: [] },
+      toolResults: [{ toolName: "write", isError: false, content: [] }],
+    } as unknown as TurnEndEvent;
+
+    // Turn 1: below the threshold, the existing soft nudge stays soft.
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.strictEqual(steers.length, 1);
+    assert.ok(steers[0].message.includes("No active wai plan"));
+    assert.ok(!steers[0].message.includes("STOP"));
+
+    // Turn 2 (cooldown bypassed): at the threshold, the nudge escalates.
+    state.lastSteerAt = 0;
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.strictEqual(steers.length, 2);
+    assert.ok(steers[1].message.includes("STOP. No active wai plan — create one now"));
+    assert.ok(steers[1].message.includes("wai({ plan: '...' })"));
+    assert.strictEqual(steers[1].options?.deliverAs, "steer");
+    assert.strictEqual(getState(cwd).noPlanTurns, 2);
+
+    // Turn 3: past the threshold, later qualifying turns keep the STOP.
+    state.lastSteerAt = 0;
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.strictEqual(steers.length, 3);
+    assert.ok(steers[2].message.includes("STOP. No active wai plan — create one now"));
+    assert.strictEqual(getState(cwd).noPlanTurns, 3);
+  });
+
+  it("keeps the no-plan nudge soft below the configured threshold", () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { noPlanSteerEscalationThreshold: 5 } }),
+    );
+    const state = getState(cwd);
+    state.editsSinceLastReview = 1;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    emitTurnEnd(
+      {
+        type: "turn_end",
+        turnIndex: 1,
+        message: { role: "assistant", content: [] },
+        toolResults: [{ toolName: "write", isError: false, content: [] }],
+      } as unknown as TurnEndEvent,
+      makeContext(cwd),
+    );
+
+    assert.strictEqual(steers.length, 1);
+    assert.ok(steers[0].message.includes("No active wai plan"));
+    assert.ok(!steers[0].message.includes("STOP"));
+  });
+
+  it("does not count no-plan turns when a plan is active", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
+    const state = getState(cwd);
+    state.editsSinceLastReview = 1;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    emitTurnEnd(
+      {
+        type: "turn_end",
+        turnIndex: 1,
+        message: { role: "assistant", content: [] },
+        toolResults: [{ toolName: "write", isError: false, content: [] }],
+      } as unknown as TurnEndEvent,
+      makeContext(cwd),
+    );
+
+    assert.strictEqual(getState(cwd).noPlanTurns, 0);
+    assert.ok(!steers[0].message.includes("No active wai plan"));
+  });
+
+  it("does not count no-plan turns when the turn had no real edits", () => {
+    const state = getState(cwd);
+    state.editsSinceLastReview = 1;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    emitTurnEnd(
+      {
+        type: "turn_end",
+        turnIndex: 1,
+        message: { role: "assistant", content: [] },
+        toolResults: [{ toolName: "bash", isError: false, content: [] }],
+      } as unknown as TurnEndEvent,
+      makeContext(cwd),
+    );
+
+    assert.strictEqual(steers.length, 0);
+    assert.strictEqual(getState(cwd).noPlanTurns, 0);
+  });
+
+  it("counts no-plan turns even while the steer cooldown suppresses the message", () => {
+    // Threshold 2 with two consecutive turns without bypassing the cooldown:
+    // had the STOP wrongly bypassed the cooldown, a second steer would appear.
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { noPlanSteerEscalationThreshold: 2 } }),
+    );
+    const state = getState(cwd);
+    state.editsSinceLastReview = 1;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    const turnEnd = {
+      type: "turn_end",
+      turnIndex: 1,
+      message: { role: "assistant", content: [] },
+      toolResults: [{ toolName: "write", isError: false, content: [] }],
+    } as unknown as TurnEndEvent;
+
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    // Cooldown suppresses the second steer (even past the threshold), but the
+    // turn still counted.
+    assert.strictEqual(steers.length, 1);
+    assert.ok(!steers[0].message.includes("STOP"));
+    assert.strictEqual(getState(cwd).noPlanTurns, 2);
+  });
+
+  it("resets the no-plan streak when a plan is created", () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { noPlanSteerEscalationThreshold: 1 } }),
+    );
+    const state = getState(cwd);
+    state.editsSinceLastReview = 1;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    const turnEnd = {
+      type: "turn_end",
+      turnIndex: 1,
+      message: { role: "assistant", content: [] },
+      toolResults: [{ toolName: "write", isError: false, content: [] }],
+    } as unknown as TurnEndEvent;
+
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.ok(steers[0].message.includes("STOP. No active wai plan"));
+
+    // Creating a plan clears the streak; the next edit turn nudges fresh.
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
+    assert.strictEqual(getState(cwd).noPlanTurns, 0);
+    state.editsSinceLastReview = 1;
+    state.lastSteerAt = 0;
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.strictEqual(getState(cwd).noPlanTurns, 0);
+    assert.ok(!steers[1].message.includes("No active wai plan"));
+  });
+
+  it("persists the no-plan turn counter through state flush", () => {
+    const state = getState(cwd);
+    state.editsSinceLastReview = 1;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    emitTurnEnd(
+      {
+        type: "turn_end",
+        turnIndex: 1,
+        message: { role: "assistant", content: [] },
+        toolResults: [{ toolName: "write", isError: false, content: [] }],
+      } as unknown as TurnEndEvent,
+      makeContext(cwd),
+    );
+    assert.strictEqual(steers.length, 1);
+
+    flushSessionState(cwd);
+    const saved = JSON.parse(readFileSync(join(cwd, ".pi", "yoowai", "plan.json"), "utf-8"));
+    assert.strictEqual(saved.noPlanTurns, 1);
+  });
+
+  it("counts no-plan turns when the turn's edits were already reviewed", () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { noPlanSteerEscalationThreshold: 2 } }),
+    );
+    // Edits were reviewed within the same turn, so no review reminder is due —
+    // but the plan-less editing turn still counts toward the no-plan streak.
+    const state = getState(cwd);
+    state.editsSinceLastReview = 0;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    const turnEnd = {
+      type: "turn_end",
+      turnIndex: 1,
+      message: { role: "assistant", content: [] },
+      toolResults: [{ toolName: "write", isError: false, content: [] }],
+    } as unknown as TurnEndEvent;
+
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.strictEqual(steers.length, 1);
+    assert.ok(steers[0].message.includes("No active wai plan"));
+    assert.ok(!steers[0].message.includes("WORKFLOW REMINDER"));
+
+    state.lastSteerAt = 0;
+    emitTurnEnd(turnEnd, makeContext(cwd));
+    assert.strictEqual(steers.length, 2);
+    assert.ok(steers[1].message.includes("STOP. No active wai plan"));
+    assert.strictEqual(getState(cwd).noPlanTurns, 2);
+    assert.strictEqual(getState(cwd).unreviewedTurns, 0);
+  });
+
+  it("does not steer when the turn had a real edit, an active plan, and nothing pending review", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
+    const state = getState(cwd);
+    state.editsSinceLastReview = 0;
+
+    const { pi, steers, emitTurnEnd } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    emitTurnEnd(
+      {
+        type: "turn_end",
+        turnIndex: 1,
+        message: { role: "assistant", content: [] },
+        toolResults: [{ toolName: "write", isError: false, content: [] }],
+      } as unknown as TurnEndEvent,
+      makeContext(cwd),
+    );
+
+    assert.strictEqual(steers.length, 0);
+    assert.strictEqual(getState(cwd).noPlanTurns, 0);
+  });
+
+  it("tracks no-plan turns per cwd independently", () => {
+    const cwd2 = join(tmpdir(), `wai-lifecycle-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(join(cwd2, ".pi", "yoowai"), { recursive: true });
+    try {
+      const state = getState(cwd);
+      state.editsSinceLastReview = 1;
+      const state2 = getState(cwd2);
+      state2.editsSinceLastReview = 1;
+
+      const { pi, emitTurnEnd } = createFakePi();
+      registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+      const turnEnd = {
+        type: "turn_end",
+        turnIndex: 1,
+        message: { role: "assistant", content: [] },
+        toolResults: [{ toolName: "write", isError: false, content: [] }],
+      } as unknown as TurnEndEvent;
+
+      emitTurnEnd(turnEnd, makeContext(cwd2));
+      emitTurnEnd(turnEnd, makeContext(cwd2));
+      assert.strictEqual(getState(cwd2).noPlanTurns, 2);
+      assert.strictEqual(getState(cwd).noPlanTurns, 0);
+    } finally {
+      dropSessionState(cwd2);
+      rmSync(cwd2, { recursive: true, force: true });
+    }
   });
 
   it("triggers auto-review before auto-judge on agent_settled when autoReviewOnSettle is enabled", async () => {
