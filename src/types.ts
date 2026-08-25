@@ -1,5 +1,15 @@
 export type WaiAction =
-  "plan" | "review" | "suggest" | "recommend" | "judge" | "scan" | "test" | "security" | "done" | "planUpdate";
+  | "plan"
+  | "advisor"
+  | "review"
+  | "suggest"
+  | "recommend"
+  | "judge"
+  | "scan"
+  | "test"
+  | "security"
+  | "done"
+  | "planUpdate";
 
 /** Tasks that can have a per-model override in settings.json.
  *  planUpdate intentionally shares the plan model, so it is not selectable separately.
@@ -12,6 +22,7 @@ export type WaiModelTask =
   | "reviewMin"
   | "reviewMed"
   | "reviewHigh"
+  | "advisor"
   | "suggest"
   | "recommend"
   | "judge"
@@ -92,6 +103,8 @@ export interface YoowaiConfig {
   reviewReminderEdits?: number;
   /** Inject active plan, conventions, and workflow reminders into every user message. Default true. */
   autoInjectContext?: boolean;
+  /** Inject state-derived advisor notes (edited-file review memory) into the main agent's context. Default true; no model calls. */
+  advisorNotes?: boolean;
   /** Maximum tokens of injected context per message. Default 800. */
   contextInjectMaxTokens?: number;
   /** Token budget for the project symbol map injected into review/judge prompts. Default: unset — review uses the level defaults (min 20000, med 8000, high 8000); judge keeps a 1500-token fallback; 0 disables. */
@@ -102,6 +115,8 @@ export interface YoowaiConfig {
   autoPreReviewCommands?: boolean;
   /** Token budget for user-curated design rules injected into review/judge prompts for UI files. Default 800; 0 disables. */
   designRefMaxTokens?: number;
+  /** Token budget for per-action instruction files (.pi/yoowai/instructions/<action>.md) injected into the secondary-model prompt for that action. Default 800; 0 disables. */
+  instructionsMaxTokens?: number;
   /** Render wai audit entries (plan, review, judge, etc.) with a custom TUI entry renderer. Default true. */
   entryRenderer?: boolean;
   /** Register keyboard shortcuts for common wai actions (review, done, status). Default true. */
@@ -182,6 +197,11 @@ export interface Approach {
 
 export interface SuggestResult {
   approaches: Approach[];
+}
+
+/** Plain-text advice from the wai.advisor action (no structured contract). */
+export interface AdvisorResult {
+  advice: string;
 }
 
 export interface RecommendResult {
@@ -281,6 +301,8 @@ export interface YoowaiSessionState {
 
 export interface WaiToolParams {
   plan?: string;
+  /** Ask the pair-programming advisor a question; returns plain-text advice (cheap, conversational). */
+  advisor?: string;
   review?: string;
   suggest?: string;
   recommend?: string;
@@ -307,6 +329,7 @@ export interface WaiToolResult {
   action: WaiAction;
   plan?: PlanResult;
   review?: ReviewResult;
+  advisor?: AdvisorResult;
   suggest?: SuggestResult;
   recommend?: RecommendResult;
   judge?: JudgeResult;

@@ -43,6 +43,7 @@ import { executeWaiReview } from "./actions/review.js";
 import { executeWaiTest } from "./actions/test.js";
 import { executeWaiSecurity } from "./actions/security.js";
 import { executeWaiSuggest } from "./actions/suggest.js";
+import { executeWaiAdvisor } from "./actions/advisor.js";
 import { executeWaiRecommend } from "./actions/recommend.js";
 import { executeWaiJudge } from "./actions/judge.js";
 import { executeWaiScan } from "./actions/scan.js";
@@ -187,6 +188,8 @@ export default async function (pi: ExtensionAPI) {
           signal,
           progress,
         );
+      } else if (p.advisor) {
+        result = await executeWaiAdvisor(ctx.cwd, p.advisor, signal, progress, ctx.sessionManager);
       } else if (p.suggest) {
         result = await executeWaiSuggest(ctx.cwd, p.suggest, signal, progress, ctx.sessionManager, {
           docs: p.docs,
@@ -441,9 +444,9 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "wai",
-    label: "Wai — Pair Programmer",
+    label: "Wai — Pair Programmer Advisor",
     description:
-      "Mandatory second-opinion workflow powered by a secondary model. Always use wai.plan before implementing, wai.review after every change, wai.scan when opening a new project, wai.suggest for non-trivial architectural or design questions, wai.recommend when deciding next steps, and wai.judge before declaring work complete. Optionally use wai.test to check test coverage and failures, and wai.security to audit for vulnerabilities.",
+      "Mandatory second-opinion workflow powered by a secondary model. Always use wai.plan before implementing, wai.advisor for quick judgment calls (cheap, conversational — call it often), wai.review after every change, wai.scan when opening a new project, wai.suggest for structured alternative comparisons, wai.recommend when deciding next steps, and wai.judge before declaring work complete. Optionally use wai.test to check test coverage and failures, and wai.security to audit for vulnerabilities.",
     promptSnippet:
       "wai: always get a second opinion from the secondary model before acting on code or making architectural decisions",
     promptGuidelines: [
@@ -452,7 +455,8 @@ export default async function (pi: ExtensionAPI) {
       "Use wai with review:true and files:[...] to limit the review to specific files, or exclude:[...] to skip files like generated output.",
       "Pick the review depth by the change's risk and complexity: wai_review_min for docs, comments, config, tests-only, or tiny mechanical changes (renames, version bumps); wai_review_med as the default for normal features and bugfixes when unsure; wai_review_high for changes touching auth, secrets, payments, migrations, public APIs, or concurrency, and for complex logic such as algorithm changes, state machines, intricate control flow, or cross-module refactors. These tools override the configured default review level.",
       "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans. Add scanDeep:true on that first scan to also sample source files and build the project symbol index.",
-      "Use wai with suggest:true whenever you are uncertain about the best approach for a specific technical question. If you are stuck, looping, or about to ask the user for help, call wai.suggest first.",
+      "Use wai with advisor:true liberally for quick judgment calls — one-line questions, cheap plain-text answers, no structured output. Treat it as your pair-programming advisor; consult it before committing to an approach or when stuck. When the question needs a structured comparison of alternatives, use suggest instead.",
+      "Use wai with suggest:true whenever you need structured alternative approaches with evidence. If you are stuck, looping, or about to ask the user for help, call wai.suggest or wai.advisor first.",
       "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call wai.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without wai.",
       "Use wai with recommend:true whenever you need to decide what step to take next. If you have spent more than one turn without clear progress, call wai.recommend.",
       "Use wai with test:true when you want a dedicated check for missing tests, failing tests, or low test quality. This is optional; wai.review already catches many quality issues.",
@@ -466,13 +470,19 @@ export default async function (pi: ExtensionAPI) {
       "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
       "Use `verify: true` when a wai finding is surprising, high-stakes, or unclear. The main agent must then confirm or refute the finding with evidence before acting.",
       "The secondary model should be a DIFFERENT model family than the main model to catch blind spots. Configure in settings.json under pi-yoowai.secondary.",
-      "Only one action (plan/review/suggest/recommend/judge/scan/test/security/done/planUpdate) per call. Do not combine them.",
+      "Only one action (plan/advisor/review/suggest/recommend/judge/scan/test/security/done/planUpdate) per call. Do not combine them.",
       "When stuck, confused, or looping, stop and use a wai tool. Do not spin in place or guess.",
     ],
     parameters: Type.Object({
       plan: Type.Optional(
         Type.String({
           description: "Provide a task description to get a structured todo plan with acceptance criteria.",
+        }),
+      ),
+      advisor: Type.Optional(
+        Type.String({
+          description:
+            "Ask the pair-programming advisor a question for quick, conversational, plain-text advice (cheap — use it often).",
         }),
       ),
       review: Type.Optional(

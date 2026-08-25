@@ -7,6 +7,7 @@ import { loadFileContentsForReview, isReviewableFile, type FileContentEntry } fr
 import { buildRelatedContext } from "../context-retrieval.js";
 import { buildCodemap } from "../codemap.js";
 import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
+import { capActionInstructions } from "../instructions.js";
 import { buildAstContext } from "../ast-context.js";
 import { getPastIssuesForFiles, recordIssues } from "../review-memory.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
@@ -171,6 +172,7 @@ export async function executeWaiReview(
   const designRefText = changedFiles.some(isUiFile)
     ? formatDesignRulesForPrompt(cwd, effectiveConfig.designRefMaxTokens ?? 800)
     : "";
+  const instructionsText = capActionInstructions(cwd, "review", effectiveConfig.instructionsMaxTokens ?? 800);
   const sessionContext = getSessionContext(ctx);
 
   progress(2, STAGES.review, "Loading project conventions…");
@@ -223,6 +225,7 @@ export async function executeWaiReview(
     memoryContext,
     codemap,
     designRefText,
+    instructionsText,
     relatedContext,
     levelInstructions: reviewSettings.instructions,
     level,
@@ -336,7 +339,8 @@ export async function executeWaiReview(
       budgetWithPreReview.availableInputTokens -
         1000 -
         estimateTokens(codemap ?? "") -
-        estimateTokens(designRefText ?? ""),
+        estimateTokens(designRefText ?? "") -
+        estimateTokens(instructionsText),
     );
     const diffTokens = estimateTokens(diff);
     if (diffTokens > remainingForDiff && !shouldParallelize) {
@@ -410,7 +414,14 @@ export async function executeWaiReview(
       });
       const droppedForBudget = fileResult.dropped.filter((f) => isReviewableFile(f));
 
-      const sharedContextEstimate = [sessionContext, conventionsText, preReviewOutput, description].join("\n");
+      const sharedContextEstimate = [
+        sessionContext,
+        conventionsText,
+        preReviewOutput,
+        description,
+        // Every model call also receives the injected instructions.
+        instructionsText,
+      ].join("\n");
       const outputEstimate =
         modelConfig.thinking && modelConfig.thinking.toLowerCase() !== "off"
           ? (modelConfig.maxOutputTokens ?? 8192)
@@ -454,6 +465,7 @@ export async function executeWaiReview(
           relatedContext,
           codemap,
           designRefText,
+          instructionsText,
           truncated,
           droppedFiles: droppedForBudget,
           budget: fileBudget,
@@ -527,7 +539,14 @@ export async function executeWaiReview(
       `Reviewing ${filesWithDiff.length} files in parallel with ${secondaryModelLabel(modelConfig)}${diffLikelyTruncated && !config.parallelReview ? " (auto: diff too large for single review)" : ""}…`,
     );
 
-    const sharedContextEstimate = [sessionContext, conventionsText, preReviewOutput, description].join("\n");
+    const sharedContextEstimate = [
+      sessionContext,
+      conventionsText,
+      preReviewOutput,
+      description,
+      // Every model call also receives the injected instructions.
+      instructionsText,
+    ].join("\n");
     const outputEstimate =
       modelConfig.thinking && modelConfig.thinking.toLowerCase() !== "off"
         ? (modelConfig.maxOutputTokens ?? 8192)
@@ -607,6 +626,7 @@ export async function executeWaiReview(
         relatedContext,
         codemap,
         designRefText,
+        instructionsText,
         truncated,
         droppedFiles: p.droppedForBudget,
         budget: p.fileBudget,
@@ -726,6 +746,7 @@ export async function executeWaiReview(
         relatedContext,
         codemap,
         designRefText,
+        instructionsText,
         truncated: finalDiffTruncated,
         droppedFiles: finalDroppedFiles,
         budget: budgetWithPreReview,
@@ -759,6 +780,7 @@ export async function executeWaiReview(
           originalUser: result.user,
           result: review,
           task: "review",
+          instructionsText,
           signal,
           sessionManager: ctx.sessionManager,
           validate: validateReviewResult,

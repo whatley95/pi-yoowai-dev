@@ -5,6 +5,7 @@ import { findRelevantFiles } from "../project-index.js";
 import { loadRelevantFileContents } from "../project-snapshot.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
+import { capActionInstructions } from "../instructions.js";
 import {
   buildRecommendPrompt,
   validateRecommendResult,
@@ -84,6 +85,7 @@ export async function executeWaiRecommend(
     fileContents,
     currentStep,
     memoryContext,
+    capActionInstructions(cwd, "recommend", config.instructionsMaxTokens ?? 800),
   );
   progress(2, STAGES.recommend, `Calling ${secondaryModelLabel(modelConfig)}…`);
   let raw: string;

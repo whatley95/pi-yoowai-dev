@@ -545,6 +545,66 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
   });
 
   it(
+    "review.md instructions reach the model and changing them invalidates the review cache",
+    { skip: !hasGit },
+    async () => {
+      const marker = "INSTRUCTION_REVIEW_MARKER_777";
+      const small = `hello\n\n${marker}\n` + "q".repeat(500) + "\n";
+      const cwd = makeRepoWithChange(small);
+      const { url, bodies } = await startStubServer();
+      writeSettings(cwd, {
+        reviewLevel: "min",
+        secondary: {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          contextWindow: 8000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: url,
+          apiKey: "test-key",
+        },
+      });
+
+      // Instruction file lives at .pi/yoowai/instructions/review.md.
+      const instructionsDir = join(cwd, ".pi", "yoowai", "instructions");
+      mkdirSync(instructionsDir, { recursive: true });
+      const instructionPath = join(instructionsDir, "review.md");
+      writeFileSync(instructionPath, "ALWAYS_CHECK_AUTH_V1\n", "utf-8");
+
+      const ctx = { cwd } as unknown as ExtensionContext;
+      const first = await executeWaiReview(cwd, "instructions probe", ctx, {}, undefined, () => {});
+      assert.equal(first.review?.verdict, "pass");
+      assert.equal(bodies.length, 1, "first review must call the model once");
+      const firstBody = JSON.parse(bodies[0]) as { messages?: Array<{ role: string; content: string }> };
+      const firstSystem = firstBody.messages?.find((m) => m.role === "system")?.content ?? "";
+      assert.ok(
+        firstSystem.includes("<user_instructions>") && firstSystem.includes("ALWAYS_CHECK_AUTH_V1"),
+        "the review.md instructions must be injected into the system prompt",
+      );
+
+      // Changing the instruction content must produce a different cache key,
+      // so the second review calls the model again instead of hitting the
+      // 1-hour TTL review cache. (Different length also defeats the loader's
+      // mtime+size fingerprint cache on coarse-timestamp filesystems.)
+      writeFileSync(instructionPath, "ALWAYS_CHECK_AUTH_V2_LONGER\n", "utf-8");
+      const second = await executeWaiReview(cwd, "instructions probe", ctx, {}, undefined, () => {});
+      assert.equal(second.review?.verdict, "pass");
+      assert.equal(bodies.length, 2, "changed instructions must invalidate the review cache");
+      const secondBody = JSON.parse(bodies[1]) as { messages?: Array<{ role: string; content: string }> };
+      const secondSystem = secondBody.messages?.find((m) => m.role === "system")?.content ?? "";
+      assert.ok(
+        secondSystem.includes("ALWAYS_CHECK_AUTH_V2_LONGER"),
+        "the second review must carry the updated instructions",
+      );
+      assert.ok(
+        !secondSystem.includes("ALWAYS_CHECK_AUTH_V1"),
+        "the second review must not carry the stale V1 instructions",
+      );
+    },
+  );
+
+  it(
     "identical re-review with pre-review commands configured is served from cache (no second model call)",
     { skip: !hasGit },
     async () => {

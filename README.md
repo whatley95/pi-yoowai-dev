@@ -114,7 +114,7 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | Option                         | Type                                                   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ------------------------------ | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `secondary`                    | object                                                 | `{ provider, id, thinking? }` for the base secondary model                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `taskModels`                   | object                                                 | Per-tool model overrides keyed by action (`plan`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `explain`, `vision`)                                                                                                                                                                                                                                                                                                                                                                                       |
+| `taskModels`                   | object                                                 | Per-tool model overrides keyed by action (`plan`, `advisor`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `explain`, `vision`; the advisor falls back to the `suggest` override, then `secondary`)                                                                                                                                                                                                                                                                                                        |
 | `judgeCouncil`                 | array                                                  | Council of models that judge in parallel — entry shape in [Configuration](#configuration), behavior in [Judge council](#judge-council) (default: `[]`, single-model judge)                                                                                                                                                                                                                                                                                                                                                                  |
 | `presets`                      | object                                                 | Named model presets (`{ secondary?, taskModels? }`) applied to the global settings file with `/wai-preset <name>`; preview with `/wai-preset show <name>`                                                                                                                                                                                                                                                                                                                                                                                   |
 | `autoJudge`                    | boolean                                                | Run `wai.judge` automatically when the last plan step passes review, is marked done via `/wai-done`, or when the agent settles after all steps are complete                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -129,6 +129,8 @@ Structured tools let the secondary model write brief Markdown analysis, but the 
 | `contextInjectMaxTokens`       | number                                                 | Token budget for the injected plan/conventions context (default: `800`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `codemapMaxTokens`             | number                                                 | Token budget for the project symbol map injected into review/judge prompts (default: unset — review uses the level defaults: min 20000, med 8000, high 8000; judge keeps a 1500-token fallback since it has no review level; `0` disables)                                                                                                                                                                                                                                                                                                  |
 | `designRefMaxTokens`           | number                                                 | Token budget for user-curated design rules injected into review/judge prompts when UI files change (default: `800`; `0` disables)                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `instructionsMaxTokens`        | number                                                 | Token budget for per-action instruction files (`.pi/yoowai/instructions/<action>.md`) injected into that action's secondary-model prompt (default: `800`; `0` disables)                                                                                                                                                                                                                                                                                                                                                                       |
+| `advisorNotes`                 | boolean                                                | Inject state-derived advisor notes (recent review issues in files you are editing) into the main agent's context. Free — no model calls (default: `true`)                                                                                                                                                                                                                                                                                                                                                                                       |
 | `entryRenderer`                | boolean                                                | Render wai audit entries with a custom TUI entry renderer (default: `true`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `shortcuts`                    | boolean                                                | Register keyboard shortcuts for common wai actions (default: `true`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `planWidget`                   | boolean                                                | Show a compact plan-progress widget above the editor, including a "blocked by step N" line when the current step's `dependsOn` steps are unmet (default: `true`)                                                                                                                                                                                                                                                                                                                                                                            |
@@ -722,6 +724,8 @@ This prevents the main agent from spinning in review-fix-review cycles.
 - **Project conventions** — scan results feed into plan, suggest, recommend, review, and judge prompts
 - **Codemap** — review and judge prompts include a compact project symbol map (one line per exported/top-level symbol, `file.ts:12 — function foo(a, b): void`) covering the changed files and their direct import neighbors, built from the TypeScript AST symbol index (with a related-file-outline fallback for non-TypeScript projects). The block is counted within the review input-token budget but yields to changed file contents; size is tuned with `codemapMaxTokens` (`0` disables)
 - **Design references** — user-curated UI/design rules are injected into review and judge prompts when the changed files include UI files (`.tsx`, `.jsx`, `.css`, `.scss`, `.sass`, `.less`, `.svelte`, `.vue`, `.html`), and surfaced to the main agent when unreviewed edits touch UI files; see [Design references](#design-references)
+- **Per-action instruction files** — user-authored markdown injected into the secondary-model prompt per action (`.pi/yoowai/instructions/<action>.md`); see [Per-action instruction files](#per-action-instruction-files)
+- **Pair-programming advisor** — a cheap, conversational `wai.advisor` action for quick judgment calls, plus always-on advisor notes in the main agent's context (review-memory heads-up, no model calls); see [Advisor](#advisor)
 - **Learned facts** — `wai_learn` persists project-specific facts across sessions; surfaced by `wai_index`
 - **Review memory** — previous issues per file are included so the model knows what was already fixed. When a review description is provided, issues are ranked by semantic similarity to the current change. Memory is reset for each new Pi session
 - **Pre-review commands** — configured lint/test/typecheck output is included in the review prompt
@@ -750,6 +754,72 @@ When a review or judge run touches UI files (`.tsx`, `.jsx`, `.css`, `.scss`, `.
 ```
 
 `import` reads a project-relative markdown file and extracts bullet points, numbered items, and sentences under headings, skipping code fences, frontmatter, and checkbox markers. The prompt block is budgeted with `designRefMaxTokens` (default: `800`; `0` disables injection) and counted within the review input-token budget.
+
+## Per-action instruction files
+
+Sometimes the built-in prompts need project-specific guidance that does not fit the design-rule format — team review checklists, security requirements, API conventions, or "how we write plans here" notes. Drop a markdown file at `.pi/yoowai/instructions/<action>.md` and its content is injected into that action's secondary-model prompt as a `<user_instructions>` block, framed with "follow them unless they conflict with the output contract — the contract wins".
+
+The supported file names are the wai actions plus the explain/vision tools:
+
+```
+.pi/yoowai/instructions/
+├── plan.md
+├── advisor.md      # wai.advisor — the pair-programming advisor
+├── review.md
+├── suggest.md
+├── recommend.md
+├── judge.md
+├── scan.md
+├── test.md
+├── security.md
+├── done.md          # applies to the done step-verification prompt
+├── planUpdate.md    # planUpdate regenerates the plan via the plan action
+├── explain.md       # /wai-explain and the wai_explain tool
+└── vision.md        # wai_vision text-layer PDF analysis (image calls have no text prompt)
+```
+
+Only the exact per-action file is loaded — there is no discovery or directory scanning, so an empty/missing directory costs nothing. Files larger than 50 KB are ignored with a warning, and content is truncated to `instructionsMaxTokens` (default: `800`; `0` disables injection) on whole-line boundaries. Changes to an instruction file are picked up on the next call (mtime+size fingerprint) and invalidate the review/judge/test/security result caches, since the instruction text is part of every cache key.
+
+Example `review.md`:
+
+```markdown
+- Always check that new API routes are wrapped in try/catch
+- Never flag missing tests for legacy modules outside this change
+- Our team treats "blocked" as reserved for build-breaking issues only
+```
+
+The instructions ride in the system prompt before the fixed output contract and are counted within the input-token budget (in the review path they yield to changed file contents and the diff, like design rules). The same text is also forwarded to self-verification passes (`selfVerify`) and judge-council member prompts, so the whole pipeline applies the same rules.
+
+## Advisor
+
+The advisor is the pair-programming companion for **frequent, lightweight interaction**: a cheap, conversational opinion on demand, plus an always-on heads-up in the main agent's context.
+
+### `wai.advisor` — ask it anything, cheap
+
+```js
+wai({ advisor: "should I use a Map or a Record for this cache?" })
+```
+
+Unlike `suggest` (structured `approaches[]` with pros/cons), the advisor answers in **plain text**: a direct recommendation up front, the reasoning, and pushback when your plan is a bad idea. There is no JSON contract, no doc fetching, and no tool loop — one fast call. Use it liberally for quick judgment calls; reserve `suggest` for formal alternative comparisons.
+
+The advisor uses its own model when configured (`taskModels.advisor` via `/wai-model`), otherwise it **falls back to the `suggest` model**, then the base `secondary`. Point both at a fast, cheap model for frictionless interaction:
+
+```json
+{
+  "pi-yoowai": {
+    "taskModels": {
+      "advisor": { "provider": "opencode-go", "id": "fast-model", "thinking": "off" },
+      "suggest": { "provider": "opencode-go", "id": "fast-model", "thinking": "off" }
+    }
+  }
+}
+```
+
+Like every action, it loads its instruction file (`.pi/yoowai/instructions/advisor.md`) when present, and `/wai advisor <question>` works in the terminal.
+
+### Always-on advisor notes
+
+When `advisorNotes` is enabled (default `true`), the main agent's context is injected with `<advisor_notes>`: recent review issues in the files you are actively editing (from wai's review memory). It costs nothing — the notes are derived from stored state, no model calls — and keeps the advisor's memory in front of the agent while it works. Disable with `advisorNotes: false`. Notes are counted within `contextInjectMaxTokens` and are dropped after design rules/conventions under truncation.
 
 ## Consensus protocol
 

@@ -7,6 +7,7 @@ import { recordCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveProjectPath } from "./path-security.js";
 import { buildExplainPrompt } from "./prompts.js";
+import { capActionInstructions } from "./instructions.js";
 import { loadDocContext, type DocContextRequest } from "./doc-fetcher.js";
 import { createStreamProgressCallback } from "./actions/shared.js";
 import { resolveBackendType } from "./backends/backend-resolver.js";
@@ -105,6 +106,7 @@ export async function executeWaiExplain(
     indexSummary,
     fileContents,
     docContext,
+    capActionInstructions(cwd, "explain", config.instructionsMaxTokens ?? 800),
   );
   const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,

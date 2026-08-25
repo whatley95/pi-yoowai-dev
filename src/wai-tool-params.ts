@@ -2,6 +2,7 @@ import type { WaiToolParams, WaiAction, WaiModelTask } from "./types.js";
 
 export const WAI_ACTIONS: WaiAction[] = [
   "plan",
+  "advisor",
   "review",
   "suggest",
   "recommend",
@@ -18,6 +19,7 @@ export const WAI_MODEL_TASKS: WaiModelTask[] = [
   "reviewMin",
   "reviewMed",
   "reviewHigh",
+  "advisor",
   "suggest",
   "recommend",
   "judge",
@@ -66,7 +68,7 @@ export function validateWaiToolParams(params: unknown): ValidationResult {
     return {
       ok: false,
       error:
-        "No action specified. Provide one of: plan, review, suggest, recommend, judge, scan, test, security, done, or planUpdate.",
+        "No action specified. Provide one of: plan, advisor, review, suggest, recommend, judge, scan, test, security, done, or planUpdate.",
     };
   }
   if (active.length > 1) {
@@ -84,6 +86,7 @@ export function validateWaiToolParams(params: unknown): ValidationResult {
 
   const result: WaiToolParams = {
     plan: action === "plan" ? (p.plan as string) : undefined,
+    advisor: action === "advisor" ? (p.advisor as string) : undefined,
     review: action === "review" ? (p.review as string) : undefined,
     suggest: action === "suggest" ? (p.suggest as string) : undefined,
     recommend: action === "recommend" ? (p.recommend as string) : undefined,

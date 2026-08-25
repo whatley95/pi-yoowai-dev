@@ -10,6 +10,7 @@ import {
 } from "../session-state.js";
 import { callSecondaryModel } from "../secondary-model.js";
 import { buildStepVerificationPrompt, parseStepVerificationResponse } from "../prompts.js";
+import { capActionInstructions } from "../instructions.js";
 import { recordCostWithBudget } from "./shared.js";
 import { logEvent } from "../logger.js";
 import type { DoneResult } from "../types.js";
@@ -119,7 +120,11 @@ export async function executeWaiDone(
       const { diff } = getDiff(cwd, { maxDiffChars: config.reviewMaxDiffChars, untracked: true, revision: "HEAD" });
       const modelConfig = resolveTaskModel(config, "done");
       if (modelConfig.provider && modelConfig.id) {
-        const { system, user } = buildStepVerificationPrompt(stepDescription, diff);
+        const { system, user } = buildStepVerificationPrompt(
+          stepDescription,
+          diff,
+          capActionInstructions(cwd, "done", config.instructionsMaxTokens ?? 800),
+        );
         const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
           signal,
           thinking: modelConfig.thinking,

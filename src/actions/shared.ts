@@ -7,6 +7,7 @@ import type { UsageCost, SecondaryModelConfig, YoowaiConfig, WaiToolResult } fro
 
 export const STAGES = {
   plan: 3,
+  advisor: 3,
   review: 10,
   suggest: 3,
   recommend: 3,

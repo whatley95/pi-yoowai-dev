@@ -15,7 +15,7 @@ export async function executeWaiPlanUpdate(
   const before = getState(cwd);
   const previousCompleted = before.completedSteps;
 
-  const planResult = await executeWaiPlan(cwd, description, signal, progress, sessionManager);
+  const planResult = await executeWaiPlan(cwd, description, signal, progress, sessionManager, "plan", "planUpdate");
   if (planResult.error || !planResult.plan) {
     return {
       completedStep: previousCompleted,

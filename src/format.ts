@@ -203,6 +203,13 @@ export function formatResultText(result: WaiToolResult): string {
     }
   }
 
+  if (result.advisor) {
+    lines.push(`## wai advisor${formatModelSuffix(result.model)}`);
+    lines.push("");
+    lines.push(result.advisor.advice);
+    lines.push("");
+  }
+
   if (result.suggest) {
     lines.push(`## wai suggest${formatModelSuffix(result.model)}`);
     lines.push("");

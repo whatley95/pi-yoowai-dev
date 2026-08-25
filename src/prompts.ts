@@ -2,6 +2,7 @@ export {
   clearPromptCache,
   buildReviewUserContext,
   buildPlanPrompt,
+  buildAdvisorPrompt,
   buildExplainPrompt,
   buildVisionPrompt,
   buildPdfAnalysisPrompt,

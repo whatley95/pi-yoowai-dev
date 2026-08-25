@@ -107,6 +107,17 @@ export function resolveReviewTaskModel(config: YoowaiConfig, level?: ReviewLevel
   return resolveTaskModel(config, "review");
 }
 
+/** Resolve the model for an advisor call: the explicit advisor task override
+ *  wins, then the suggest task override (the advisor is the lightweight
+ *  conversational cousin of suggest), then the base secondary model. */
+export function resolveAdvisorTaskModel(config: YoowaiConfig): SecondaryModelConfig {
+  const advisorOverride = config.taskModels?.advisor;
+  if (advisorOverride && (advisorOverride.provider || advisorOverride.id)) {
+    return mergeSecondary(config.secondary, advisorOverride);
+  }
+  return resolveTaskModel(config, "suggest");
+}
+
 /** Resolve judge council entries to full secondary configs the same way taskModels
  *  overrides resolve: each entry merges over `secondary`. Members that end up
  *  without a provider or id are dropped. */
@@ -138,10 +149,12 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     verifyDoneClaims: true,
     reviewReminderEdits: 3,
     autoInjectContext: true,
+    advisorNotes: true,
     contextInjectMaxTokens: 800,
     codemapMaxTokens: undefined,
     autoPreReviewCommands: false,
     designRefMaxTokens: 800,
+    instructionsMaxTokens: 800,
     entryRenderer: true,
     shortcuts: true,
     planWidget: true,
@@ -223,11 +236,13 @@ const KNOWN_CONFIG_KEYS = new Set([
   "verifyDoneClaims",
   "reviewReminderEdits",
   "autoInjectContext",
+  "advisorNotes",
   "contextInjectMaxTokens",
   "codemapMaxTokens",
   "relatedContextMaxTokens",
   "autoPreReviewCommands",
   "designRefMaxTokens",
+  "instructionsMaxTokens",
   "maxContinuations",
   "entryRenderer",
   "shortcuts",
@@ -317,6 +332,7 @@ const VALID_WAI_MODEL_TASKS = new Set<string>([
   "reviewMin",
   "reviewMed",
   "reviewHigh",
+  "advisor",
   "suggest",
   "recommend",
   "judge",
@@ -493,6 +509,7 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
     verifyDoneClaims: typeof o.verifyDoneClaims === "boolean" ? o.verifyDoneClaims : base.verifyDoneClaims,
     reviewReminderEdits: pickPositiveInteger(o.reviewReminderEdits ?? NaN, base.reviewReminderEdits ?? 3),
     autoInjectContext: typeof o.autoInjectContext === "boolean" ? o.autoInjectContext : base.autoInjectContext,
+    advisorNotes: typeof o.advisorNotes === "boolean" ? o.advisorNotes : (base.advisorNotes ?? true),
     contextInjectMaxTokens: pickPositiveInteger(o.contextInjectMaxTokens ?? NaN, base.contextInjectMaxTokens ?? 800),
     codemapMaxTokens:
       typeof o.codemapMaxTokens === "number" &&
@@ -517,6 +534,13 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
       o.designRefMaxTokens >= 0
         ? o.designRefMaxTokens
         : (base.designRefMaxTokens ?? 800),
+    instructionsMaxTokens:
+      typeof o.instructionsMaxTokens === "number" &&
+      Number.isInteger(o.instructionsMaxTokens) &&
+      Number.isFinite(o.instructionsMaxTokens) &&
+      o.instructionsMaxTokens >= 0
+        ? o.instructionsMaxTokens
+        : (base.instructionsMaxTokens ?? 800),
     entryRenderer: typeof o.entryRenderer === "boolean" ? o.entryRenderer : base.entryRenderer,
     shortcuts: typeof o.shortcuts === "boolean" ? o.shortcuts : base.shortcuts,
     planWidget: typeof o.planWidget === "boolean" ? o.planWidget : base.planWidget,

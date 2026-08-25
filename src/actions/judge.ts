@@ -4,6 +4,7 @@ import { loadConventions, formatConventions } from "../conventions.js";
 import { getDiff } from "../diff-grabber.js";
 import { buildCodemap } from "../codemap.js";
 import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
+import { capActionInstructions } from "../instructions.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
@@ -85,6 +86,7 @@ export async function executeWaiJudge(
   const designRefText = changedFiles.some(isUiFile)
     ? formatDesignRulesForPrompt(cwd, config.designRefMaxTokens ?? 800)
     : "";
+  const instructionsText = capActionInstructions(cwd, "judge", config.instructionsMaxTokens ?? 800);
 
   // Judge is the deepest verdict — auto-detected pre-review commands use the
   // high profile (typecheck+lint+test when autoPreReviewCommands is on); an
@@ -106,6 +108,7 @@ export async function executeWaiJudge(
     memoryContext,
     codemap,
     designRefText,
+    instructionsText,
     preReviewCommands: effectivePreReviewCommands,
     reviewMaxDiffChars: config.reviewMaxDiffChars,
     reviewStrategy: config.reviewStrategy ?? "auto",
@@ -134,7 +137,9 @@ export async function executeWaiJudge(
     modelConfig.id,
     config,
     {
-      systemPrompt: "",
+      // The injected instructions ride in the system prompt, so they must be
+      // counted before pre-review output, file contents, and diff are budgeted.
+      systemPrompt: instructionsText,
       sessionContext: "",
       conventionsText,
       preReviewOutput,
@@ -156,7 +161,9 @@ export async function executeWaiJudge(
     modelConfig.id,
     config,
     {
-      systemPrompt: "",
+      // The injected instructions ride in the system prompt, so they must be
+      // counted before file contents and diff are budgeted.
+      systemPrompt: instructionsText,
       sessionContext: "",
       conventionsText,
       preReviewOutput,
@@ -205,6 +212,7 @@ export async function executeWaiJudge(
     memoryContext,
     codemap,
     designRefText,
+    instructionsText,
     diff: finalDiff,
     fileContents: fileResult.entries.map((f) => ({ file: f.file, content: f.content, mode: f.mode })),
     truncated: finalDiffTruncated,
@@ -286,6 +294,7 @@ export async function executeWaiJudge(
         originalUser: user,
         result: judge,
         task: "judge",
+        instructionsText,
         signal,
         sessionManager,
         validate: validateJudgeResult,

@@ -24,7 +24,7 @@ This file is written for AI coding agents. It assumes no prior knowledge of the 
 
 | Command              | Purpose                                                                                                                                                                                                                        |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `/wai`               | Run an action or show status: `/wai <plan                                                                                                                                                                                      | review | suggest                                                         | recommend | judge | scan | test | security | status> [args]`; `scan`accepts`--deep`. |
+| `/wai`               | Run an action or show status: `/wai <plan                                                                                                                                                                                      | advisor | review | suggest                                                       | recommend | judge | scan | test | security | status> [args]`; `scan`accepts`--deep`. |
 | `/wai-scan-deep`     | Alias for `/wai scan --deep` (deep scan with source-file sampling and symbol index build).                                                                                                                                     |
 | `/wai-status`        | Detailed diagnostics (config, plan, VCS, conventions, cost).                                                                                                                                                                   |
 | `/wai-model`         | Interactively pick the secondary model (optionally per tool) and write it to `~/.pi/agent/settings.json`. `/wai-model reset [base\|<task>]` clears the base or a task override.                                                |
@@ -101,6 +101,7 @@ pi-yoowai/
     ├── conventions.ts    # Scan project conventions and persist them; also filters source files for indexing
     ├── design-ref.ts     # User-curated UI/design rules (design-ref.json); injected into review/judge prompts for UI files; also serves the vendored design-refs docs and lazily seeds defaults
     ├── design-ref-defaults.ts # Distilled default rules from the vendored Emil Kowalski skills (MIT), seeding/reset, and compact writer-side guidance
+    ├── instructions.ts   # Per-action instruction files (.pi/yoowai/instructions/<action>.md); mtime+size fingerprint cache, 50 KB cap, token capping
     ├── project-index.ts  # Build a TypeScript AST symbol index of the project (SymbolInfo)
     ├── project-snapshot.ts # Assemble a token-bounded project snapshot for plan/context prompts
     ├── plan-store.ts     # Persist plan/session state to disk
@@ -138,6 +139,7 @@ pi-yoowai/
     ├── reflect.ts        # /wai-reflect: recurring-issue pattern analysis over review memory (no model calls)
     ├── actions/          # One executor per wai action + shared helpers
     │   ├── plan.ts       #   plan action executor
+    │   ├── advisor.ts    #   advisor action executor (lightweight plain-text advice; taskModels.advisor → suggest → secondary)
     │   ├── review.ts     #   review action executor
     │   ├── suggest.ts    #   suggest action executor
     │   ├── recommend.ts  #   recommend action executor
@@ -152,7 +154,7 @@ pi-yoowai/
     │   ├── verify.ts     #   secondary-model self-verification loop for structured results
     │   └── shared.ts     #   cross-action helpers: STAGES, cost recording, JSON parsing, usage merging
     ├── integration/      # Pi lifecycle hooks, context injection, status, audit, and native Pi UI surfaces
-    │   ├── context-injector.ts # inject active plan/conventions into Pi context; setWaiToolExecuting guard
+    │   ├── context-injector.ts # inject active plan/conventions/advisor notes into Pi context; setWaiToolExecuting guard
     │   ├── lifecycle.ts  # registerLifecycleHandlers + triggerAutoJudge
     │   ├── status.ts     # update Pi footer status with plan progress, cost, and pending review
     │   ├── audit.ts      # appendEntry helpers for session audit trail
@@ -186,7 +188,7 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 ### Module responsibilities
 
 - **`index.ts`** — Extension entry and main wiring. Wires the Pi session lifecycle (`session_start`/`session_shutdown`/`tool_execution_start`), registers the `wai` tool and the additional `wai_index`/`wai_explain`/`wai_learn`/`wai_design_ref` tools, registers the context injector (`registerContextInjector`) and lifecycle handlers (`registerLifecycleHandlers`), and delegates all `/wai-*` slash-command registration to `registerWaiCommands` (see `commands/register.ts`). Holds the per-`cwd` loop-detection state.
-- **`integration/context-injector.ts`** — Registers a Pi `context` event handler that prepends the active plan summary, current step, and scanned conventions to the main agent's context when `autoInjectContext` is enabled. Uses `setWaiToolExecuting` to skip injection while a `wai` tool is running and includes a workflow reminder when unreviewed edits exceed `reviewReminderEdits`.
+- **`integration/context-injector.ts`** — Registers a Pi `context` event handler that prepends the active plan summary, current step, scanned conventions, and (when `advisorNotes` is enabled) review-memory advisor notes for actively edited files to the main agent's context when `autoInjectContext` is enabled. Uses `setWaiToolExecuting` to skip injection while a `wai` tool is running and includes a workflow reminder when unreviewed edits exceed `reviewReminderEdits`.
 - **`integration/lifecycle.ts`** — Registers Pi lifecycle handlers: counts successful `write`/`edit` tool results, sends workflow-review steers at `turn_end` (escalating to a stop directive after `steerEscalationThreshold` consecutive turns with review pending, tracked via the `unreviewedTurns` session counter), triggers `wai.review` on `agent_settled` when `autoReviewOnSettle` is enabled and edits are pending (`triggerAutoReview`, before any auto-judge, guarded by a per-cwd in-flight set and `setWaiToolExecuting`), triggers `wai.judge` on `agent_settled` when `autoJudge` is enabled and the plan is complete, clears the prompt cache on `model_select`, injects plan progress into `session_before_compact` custom instructions, and flushes volatile counters to disk on `session_before_switch` / `session_before_fork` / `session_compact` / `session_shutdown` (`flushSessionStateWithAudit`, which also appends a session audit entry when edits are still unreviewed at flush time).
 - **`integration/status.ts`** — Updates the Pi footer/status bar with the active plan progress, current step, session cost, and pending-review edit count via `ctx.ui.setStatus`.
 - **`integration/audit.ts`** — Appends custom session entries (`pi.appendEntry("wai", ...)`) for plan creation/updates, step completion, review/judge verdicts, scan completion, and unreviewed edits outstanding at state flush (`session-unreviewed`) so the session timeline records wai decisions.
@@ -214,6 +216,7 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 - **`conventions.ts`** — Static heuristics over the tracked file list plus an LLM pass; stores conventions in `.pi/yoowai/conventions.json`. Also provides `filterSourceFiles` / `listTrackedFiles` reused by indexing.
 - **`design-ref.ts`** — Stores UI/design rules in `.pi/yoowai/design-ref.json` (max 100, deduped). `loadDesignRules` lazily seeds the distilled defaults when the store is missing/empty (`peekDesignRules` reads the raw store without seeding). `formatDesignRulesForPrompt` renders a token-budgeted bullet list injected into review/judge prompts when the changed files include a UI file (`isUiFile`). `importDesignRules` extracts rules from a project-relative markdown file (bullets, numbered items, heading content; skips code fences and frontmatter). Also serves the vendored `design-refs/` docs: `listDesignRefDocs` (topics with SKILL.md first) and `readDesignRefDoc` (token-budgeted, traversal-guarded read of a topic's markdown).
 - **`design-ref-defaults.ts`** — `DEFAULT_DESIGN_RULES` (22 reviewer rules distilled from the vendored Emil Kowalski skills, MIT, `source: "emilkowalski/skills (MIT)"`), `seedDefaultDesignRules` (seeds only a missing/zero-rule store), `resetDesignRulesToDefaults` (explicit replace), and `formatWriterDesignGuidance` (the ~10 load-bearing rules plus a `wai_design_ref` pointer, injected into the main agent's context by `context-injector.ts` when unreviewed edits touch UI files).
+- **`instructions.ts`** — Loads per-action instruction files (`.pi/yoowai/instructions/<action>.md`) for a closed set of action names (validated before path construction, so no user input reaches a path), with an mtime+size fingerprint cache (re-reads only on change; missing files evict the entry) and a 50 KB size cap (larger files are ignored with a logged warning). `capActionInstructions` token-caps the content (`instructionsMaxTokens`; `0` disables) truncating on whole-line boundaries.
 - **`project-index.ts`** — Builds a TypeScript AST symbol index of the project (`SymbolInfo`); persisted to `.pi/yoowai/index.json` (incremental reuse of unchanged files) and used by explain/suggest/recommend.
 - **`project-snapshot.ts`** — Assembles a token-bounded project snapshot (tracked files, package.json, doc samples, index symbols) for plan/context prompts.
 - **`plan-store.ts` / `session-state.ts`** — Persist plan/session state to disk and keep an in-memory per-`cwd` state map (completed steps, review rounds, last reviewed commit, unreviewed-edit metrics: `unreviewedTurns`, `unreviewedEditsTotal`, `unreviewedEditsFlushed`). `flushSessionState` folds edits still pending review into the cumulative `unreviewedEditsTotal` without double counting across repeated flushes.
@@ -236,7 +239,7 @@ Most source modules have a co-located `*.test.ts` file next to them (not shown a
 - **`commands/arg-parsers.ts`** — Pure string parsers that turn `/wai review|test|security` command-line args into structured options objects.
 - **`commands/register.ts`** — Registers every `/wai-*` slash command (handlers plus `showWaiStatus`); each handler validates args, calls the relevant `actions/` executor or `wai-*` module, and renders the result with `formatResultText`. This is what keeps `index.ts` as pure wiring/export.
 - **`actions/`** — One executor per `wai` action plus shared helpers:
-  - `plan.ts`, `review.ts`, `suggest.ts`, `recommend.ts`, `judge.ts`, `scan.ts`, `test.ts`, `security.ts`, `done.ts`, `plan-update.ts` — action executors wiring config, prompts, diff/file loading, cost, and progress. `done.ts` also enforces the `requireReviewBeforeDone` gate: with unreviewed edits pending it returns a blocked result instead of advancing, unless the caller passes `force`.
+  - `plan.ts`, `advisor.ts`, `review.ts`, `suggest.ts`, `recommend.ts`, `judge.ts`, `scan.ts`, `test.ts`, `security.ts`, `done.ts`, `plan-update.ts` — action executors wiring config, prompts, diff/file loading, cost, and progress. `done.ts` also enforces the `requireReviewBeforeDone` gate: with unreviewed edits pending it returns a blocked result instead of advancing, unless the caller passes `force`. `advisor.ts` is the lightweight plain-text pair-programming advisor (no JSON contract, no doc fetch, no tool loop; model resolution falls back `taskModels.advisor` → `taskModels.suggest` → `secondary`).
   - `judge-council.ts` — Judge council: when `judgeCouncil` has ≥ 2 valid members, `judge.ts` fans the built judge prompt out to all members in parallel (each resolved over `secondary` like a `taskModels` override, called via `callSecondaryModel` with `secondaryOverride`), then synthesizes their verdicts with the configured judge model. Failed members are recorded and skipped; all-fail returns null so `judge.ts` falls back to the single-model path; synthesis failure falls back to a deterministic worst-verdict/union-of-issues merge. Per-member outcomes ride on `JudgeResult.council` and render as a "Council:" line in `format.ts`.
   - `review-helpers.ts` — Shared review prompt assembly, budget, and result handling.
   - `verify.ts` — Secondary-model self-verification loop for structured results.
@@ -385,6 +388,8 @@ Core keys:
 - `contextInjectMaxTokens` — token budget for the injected context (default: `800`).
 - `codemapMaxTokens` — token budget for the project symbol map injected into review/judge prompts (default: unset — review-level defaults apply: min 20000, med 8000, high 8000; `0` disables codemap injection).
 - `designRefMaxTokens` — token budget for the design rules injected into review/judge prompts when UI files change (default: `800`; `0` disables design-rule injection).
+- `instructionsMaxTokens` — token budget for per-action instruction files (`.pi/yoowai/instructions/<action>.md`) injected into that action's secondary-model prompt (default: `800`; `0` disables instruction injection).
+- `advisorNotes` — inject state-derived advisor notes (recent review issues in actively edited files, from review memory) into the main agent's context (default: `true`; no model calls).
 - `entryRenderer` — render wai audit entries with a custom TUI entry renderer (default: `true`).
 - `shortcuts` — register keyboard shortcuts for common wai actions (default: `true`).
 - `planWidget` — show a compact plan-progress widget above the editor (default: `true`).
@@ -416,6 +421,7 @@ The extension stores per-project runtime data under `.pi/yoowai/`:
 - `plan.json` — active plan, completed steps, review-round counter, and which completed steps were reviewed vs. manually marked done.
 - `conventions.json` — cached project conventions.
 - `design-ref.json` — user-curated UI/design rules (see `design-ref.ts`).
+- `instructions/` — optional per-action instruction files (`<action>.md`) injected into that action's secondary-model prompt (see `instructions.ts`).
 - `cost.json` — estimated spend for the current Pi session.
 - `memory.json` — recent issues per file.
 - `index.json` — project symbol index (incremental reuse of unchanged files).

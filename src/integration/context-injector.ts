@@ -4,6 +4,7 @@ import { loadConventions } from "../conventions.js";
 import { isUiFile } from "../design-ref.js";
 import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
+import { getPastIssuesForFiles } from "../review-memory.js";
 import { estimateTokens, truncateToTokenBudget } from "../token-budget.js";
 
 const executingCwds = new Set<string>();
@@ -67,6 +68,14 @@ function buildContextBlock(cwd: string): string {
     const designRules = formatWriterDesignGuidance(cwd, 300);
     if (designRules) parts.push(`<design_rules>\n${designRules}\n</design_rules>`);
   }
+  // Advisor notes: state-derived heads-up (no model calls) so the main agent
+  // is reminded of recent review issues in the files it is actively editing.
+  if (config.advisorNotes !== false && editState.editedFiles.length > 0) {
+    const memoryContext = getPastIssuesForFiles(cwd, editState.editedFiles);
+    if (memoryContext.trim()) {
+      parts.push(`<advisor_notes>\n${memoryContext.trim()}\n</advisor_notes>`);
+    }
+  }
   if (editState.editsSinceLastReview >= reviewThreshold) {
     const state = getState(cwd);
     const planNudge =
@@ -108,7 +117,9 @@ function truncateBlock(block: string, maxTokens: number): string {
   if (estimateTokens(block) <= maxTokens) return block;
 
   // Drop the least critical sections first: design rules, then conventions,
-  // while preserving plan + reminder.
+  // while preserving plan, advisor notes, and reminders. Advisor notes stay
+  // above conventions/design rules because they are decision-relevant for the
+  // current edits (recent review issues in files being touched).
   for (const tag of ["design_rules", "project_conventions"]) {
     const match = block.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`));
     if (match) {
@@ -118,6 +129,35 @@ function truncateBlock(block: string, maxTokens: number): string {
       }
       block = without;
     }
+  }
+
+  // Still over budget: shrink the advisor-notes CONTENT (keeping the wrapper
+  // tags balanced) before falling back to whole-block truncation, which could
+  // cut inside a section and drop trailing reminders.
+  const notesMatch = block.match(/<advisor_notes>([\s\S]*?)<\/advisor_notes>/);
+  if (notesMatch) {
+    const marker = "\n… (advisor notes truncated)";
+    const overTokens = estimateTokens(block) - maxTokens;
+    const inner = notesMatch[1];
+    // Reserve room for the truncation marker so the capped block stays within
+    // budget; the marker itself must not push the block back over.
+    const maxInnerChars = Math.max(0, inner.length - overTokens * 4 - marker.length);
+    let cappedInner = inner;
+    if (inner.length > maxInnerChars) {
+      // The slice is UTF-16 based; strip a lone trailing high surrogate from
+      // the PREFIX so an astral character (emoji etc.) at the boundary cannot
+      // be split, then append the marker.
+      let prefix = inner.slice(0, maxInnerChars);
+      if (/[\uD800-\uDBFF]$/.test(prefix)) {
+        prefix = prefix.slice(0, -1);
+      }
+      cappedInner = prefix + marker;
+    }
+    const withCappedNotes = block.replace(notesMatch[0], `<advisor_notes>${cappedInner}</advisor_notes>`);
+    if (estimateTokens(withCappedNotes) <= maxTokens) {
+      return withCappedNotes;
+    }
+    block = withCappedNotes;
   }
 
   // Then truncate the remaining block.

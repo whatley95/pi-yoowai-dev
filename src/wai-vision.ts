@@ -6,6 +6,7 @@ import { recordCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveProjectPath } from "./path-security.js";
 import { buildPdfAnalysisPrompt, buildVisionPrompt } from "./prompts.js";
+import { capActionInstructions } from "./instructions.js";
 import { createStreamProgressCallback } from "./actions/shared.js";
 import { resolveBackendType } from "./backends/backend-resolver.js";
 import type { ProgressReporter } from "./progress.js";
@@ -279,9 +280,14 @@ export async function executeWaiVision(
   const { input } = loaded;
 
   progress(2, 3, `Calling ${modelConfig.provider}:${modelConfig.id}…`);
+  // Only the text-call path (text-layer PDFs) carries the vision.md
+  // instructions: image calls ride the image-content payload where injecting
+  // developer text into the system prompt is not supported.
+  const instructionsText =
+    input.kind === "text" ? capActionInstructions(cwd, "vision", config.instructionsMaxTokens ?? 800) : "";
   const { system, user } =
     input.kind === "text"
-      ? buildPdfAnalysisPrompt(params.path, input.text, input.pages, params.question, params.context)
+      ? buildPdfAnalysisPrompt(params.path, input.text, input.pages, params.question, params.context, instructionsText)
       : buildVisionPrompt(params.path, params.question, params.context);
   const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,

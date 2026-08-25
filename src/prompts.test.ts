@@ -24,6 +24,8 @@ import {
   buildSecurityPrompt,
   buildJudgePrompt,
   buildExplainPrompt,
+  buildVerifyPrompt,
+  buildAdvisorPrompt,
   clearPromptCache,
 } from "./prompts.js";
 
@@ -1220,5 +1222,84 @@ describe("buildReviewUserContext (review block assembly)", () => {
 
     const without = buildReviewUserContext(base);
     assert.ok(!without.includes("<focus_files>"));
+  });
+});
+
+describe("per-action instructions (user_instructions block)", () => {
+  const INSTRUCTIONS = "# Team rules\n\n- always run typecheck before review\n";
+
+  it("renders the instructions block in the plan system prompt with contract precedence", () => {
+    const { system } = buildPlanPrompt("task", undefined, undefined, INSTRUCTIONS);
+    assert.ok(system.includes("<user_instructions>"));
+    assert.ok(system.includes("# Team rules"));
+    assert.ok(system.includes("contract wins"), "framing rule should state contract precedence");
+    // The output contract must come after the instructions block.
+    assert.ok(system.indexOf("</user_instructions>") < system.indexOf("## Result"));
+  });
+
+  it("leaves the prompt unchanged when no instructions are provided", () => {
+    const plain = buildPlanPrompt("task");
+    const withEmpty = buildPlanPrompt("task", undefined, undefined, "");
+    assert.equal(plain.system, withEmpty.system);
+    assert.equal(plain.user, withEmpty.user);
+    assert.ok(!plain.system.includes("<user_instructions>"));
+  });
+
+  it("injects instructions into the review system prompt via options", () => {
+    const { system } = buildAdaptiveReviewPrompt("description", "diff", [], { instructionsText: INSTRUCTIONS });
+    assert.ok(system.includes("<user_instructions>"));
+    assert.ok(system.includes("# Team rules"));
+  });
+
+  it("injects instructions into non-JSON-contract prompts (explain, verify)", () => {
+    const explained = buildExplainPrompt("target", undefined, undefined, undefined, undefined, "", INSTRUCTIONS);
+    assert.ok(explained.system.includes("<user_instructions>"));
+    const verified = buildVerifyPrompt("ctx", "result", "review", INSTRUCTIONS);
+    assert.ok(verified.system.includes("<user_instructions>"));
+    assert.ok(verified.system.includes("contract wins"));
+  });
+
+  it("includes instruction content in the memoization key", () => {
+    try {
+      clearPromptCache();
+      const a = buildPlanPrompt("task", undefined, undefined, "rules A");
+      const b = buildPlanPrompt("task", undefined, undefined, "rules A");
+      const c = buildPlanPrompt("task", undefined, undefined, "rules B");
+      // Same args → cached result (identical output); different instructions → different key.
+      assert.equal(a.system, b.system);
+      assert.notEqual(a.system, c.system);
+      assert.ok(a.system.includes("rules A"));
+      assert.ok(c.system.includes("rules B"));
+    } finally {
+      clearPromptCache();
+    }
+  });
+});
+
+describe("buildAdvisorPrompt (pair-programming advisor)", () => {
+  it("is plain text with no JSON output contract", () => {
+    const { system, user } = buildAdvisorPrompt("should I use a Map here?");
+    assert.ok(system.includes("pair-programming advisor"));
+    assert.ok(system.includes("state a clear recommendation"));
+    assert.ok(!system.includes("## Result"), "no markdown JSON contract");
+    assert.ok(!system.includes("JSON schema"), "no schema block");
+    assert.ok(!system.includes("```json"), "no JSON fence");
+    assert.ok(user.includes("should I use a Map here?"));
+  });
+
+  it("includes conventions and relevant files when provided", () => {
+    const { user } = buildAdvisorPrompt("where should this live?", "Stack: node", [
+      { file: "src/x.ts", content: "export const x = 1", mode: "outline" },
+    ]);
+    assert.ok(user.includes("<project_conventions>"));
+    assert.ok(user.includes("<relevant_files>"));
+    assert.ok(user.includes("src/x.ts"));
+  });
+
+  it("injects advisor instructions with the contract-wins framing", () => {
+    const { system } = buildAdvisorPrompt("question", undefined, undefined, "ALWAYS USE RECORD");
+    assert.ok(system.includes("<user_instructions>"));
+    assert.ok(system.includes("ALWAYS USE RECORD"));
+    assert.ok(system.includes("contract wins"));
   });
 });

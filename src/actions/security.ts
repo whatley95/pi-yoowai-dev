@@ -7,6 +7,7 @@ import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-mod
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { calculateReviewBudget } from "../token-budget.js";
+import { capActionInstructions } from "../instructions.js";
 import {
   buildSecurityPrompt,
   validateSecurityResult,
@@ -100,11 +101,13 @@ export async function executeWaiSecurity(
   // Cache key: every stable prompt input (diff for diff mode, the project-scan
   // flag + sample list for fullProject mode). Session context is intentionally
   // excluded (changes every turn).
+  const instructionsText = capActionInstructions(cwd, "security", config.instructionsMaxTokens ?? 800);
   const cacheKey = buildCacheKey("security", {
     diff: options.fullProject ? `project-scan:${changedFiles.join(",")}` : diff,
     description,
     modelProfile,
     options: { ...options, untracked: options.untracked ?? true },
+    instructionsText,
     conventionsText,
     reviewMaxDiffChars: config.reviewMaxDiffChars,
     reviewStrategy: config.reviewStrategy ?? "auto",
@@ -125,7 +128,9 @@ export async function executeWaiSecurity(
     modelConfig.id,
     config,
     {
-      systemPrompt: "",
+      // The injected instructions ride in the system prompt, so they must be
+      // counted before file contents and diff are budgeted.
+      systemPrompt: instructionsText,
       sessionContext,
       conventionsText,
       preReviewOutput: "",
@@ -166,6 +171,7 @@ export async function executeWaiSecurity(
     conventionsText,
     nativeJson,
     currentStep,
+    instructionsText,
   );
   progress(4, STAGES.security, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const {

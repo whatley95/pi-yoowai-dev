@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveTaskModel, resolveReviewTaskModel, loadYoowaiConfig, resolveJudgeCouncilMembers } from "./config.js";
+import {
+  resolveTaskModel,
+  resolveReviewTaskModel,
+  resolveAdvisorTaskModel,
+  loadYoowaiConfig,
+  resolveJudgeCouncilMembers,
+} from "./config.js";
 import { setAgentDirForTests, getAgentDir } from "./pi-paths.js";
 import type { YoowaiConfig } from "./types.js";
 
@@ -206,6 +212,98 @@ describe("resolveReviewTaskModel", () => {
     const result = resolveReviewTaskModel(config);
     assert.equal(result.provider, "anthropic");
     assert.equal(result.id, "claude-sonnet-4");
+  });
+});
+
+describe("resolveAdvisorTaskModel", () => {
+  it("uses the advisor override when it exists", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: {
+        advisor: { provider: "deepseek", id: "deepseek-v4-flash", thinking: "off" },
+        suggest: { provider: "anthropic", id: "claude-sonnet-4" },
+      },
+    };
+    const result = resolveAdvisorTaskModel(config);
+    assert.equal(result.provider, "deepseek");
+    assert.equal(result.id, "deepseek-v4-flash");
+    assert.equal(result.thinking, "off");
+  });
+
+  it("falls back to the suggest override when no advisor override exists", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: {
+        suggest: { provider: "anthropic", id: "claude-sonnet-4" },
+      },
+    };
+    const result = resolveAdvisorTaskModel(config);
+    assert.equal(result.provider, "anthropic");
+    assert.equal(result.id, "claude-sonnet-4");
+  });
+
+  it("falls back to the base secondary when neither override exists", () => {
+    const result = resolveAdvisorTaskModel(baseConfig);
+    assert.equal(result.provider, "openai");
+    assert.equal(result.id, "gpt-4o-mini");
+  });
+
+  it("treats an advisor override with empty provider/id as unset", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: {
+        advisor: { provider: "", id: "" },
+        suggest: { provider: "anthropic", id: "claude-sonnet-4" },
+      },
+    };
+    const result = resolveAdvisorTaskModel(config);
+    assert.equal(result.provider, "anthropic");
+    assert.equal(result.id, "claude-sonnet-4");
+  });
+});
+
+describe("loadYoowaiConfig advisorNotes", () => {
+  const tmpDirs: string[] = [];
+
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("defaults to true when unconfigured", () => {
+    const cwd = makeTempDir("config-advisor-default-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
+    assert.equal(loadYoowaiConfig(cwd).advisorNotes, true);
+  });
+
+  it("accepts false (disabled) and true", () => {
+    const cwd = makeTempDir("config-advisor-false-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" }, advisorNotes: false });
+    assert.equal(loadYoowaiConfig(cwd).advisorNotes, false);
+
+    const cwdT = makeTempDir("config-advisor-true-");
+    tmpDirs.push(cwdT);
+    writeProjectSettings(cwdT, { secondary: { provider: "openai", id: "gpt-4o" }, advisorNotes: true });
+    assert.equal(loadYoowaiConfig(cwdT).advisorNotes, true);
+  });
+
+  it("falls back to the default for invalid values", () => {
+    for (const invalid of ["yes", 1, null]) {
+      const cwd = makeTempDir("config-advisor-invalid-");
+      tmpDirs.push(cwd);
+      writeProjectSettings(cwd, {
+        secondary: { provider: "openai", id: "gpt-4o" },
+        advisorNotes: invalid,
+      });
+      assert.equal(loadYoowaiConfig(cwd).advisorNotes, true, `invalid value ${String(invalid)} should fall back`);
+    }
   });
 });
 
@@ -663,6 +761,55 @@ describe("loadYoowaiConfig autoPreReviewCommands", () => {
     tmpDirs.push(cwdFalse);
     writeProjectSettings(cwdFalse, { secondary: { provider: "openai", id: "gpt-4o" }, autoPreReviewCommands: "yes" });
     assert.equal(loadYoowaiConfig(cwdFalse).autoPreReviewCommands, false);
+  });
+});
+
+describe("loadYoowaiConfig instructionsMaxTokens", () => {
+  const tmpDirs: string[] = [];
+
+  after(() => {
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("defaults to 800 when unconfigured", () => {
+    const cwd = makeTempDir("config-instructions-default-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.instructionsMaxTokens, 800);
+  });
+
+  it("parses a positive integer and accepts 0 (disabled)", () => {
+    const cwd = makeTempDir("config-instructions-parse-");
+    tmpDirs.push(cwd);
+    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" }, instructionsMaxTokens: 400 });
+
+    const config = loadYoowaiConfig(cwd);
+    assert.equal(config.instructionsMaxTokens, 400);
+
+    const cwd0 = makeTempDir("config-instructions-zero-");
+    tmpDirs.push(cwd0);
+    writeProjectSettings(cwd0, { secondary: { provider: "openai", id: "gpt-4o" }, instructionsMaxTokens: 0 });
+    assert.equal(loadYoowaiConfig(cwd0).instructionsMaxTokens, 0);
+  });
+
+  it("falls back to the default for invalid values", () => {
+    for (const invalid of [-5, 1.5, "lots", NaN]) {
+      const cwd = makeTempDir("config-instructions-invalid-");
+      tmpDirs.push(cwd);
+      writeProjectSettings(cwd, {
+        secondary: { provider: "openai", id: "gpt-4o" },
+        instructionsMaxTokens: invalid,
+      });
+      assert.equal(loadYoowaiConfig(cwd).instructionsMaxTokens, 800, `invalid value ${invalid} should fall back`);
+    }
   });
 });
 

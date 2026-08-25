@@ -15,6 +15,7 @@ import { executeWaiPlanUpdate } from "../actions/plan-update.js";
 import { clearReviewCache } from "../review-cache.js";
 import { executeWaiReview } from "../actions/review.js";
 import { executeWaiSuggest } from "../actions/suggest.js";
+import { executeWaiAdvisor } from "../actions/advisor.js";
 import { executeWaiRecommend } from "../actions/recommend.js";
 import { executeWaiDone } from "../actions/done.js";
 import { executeWaiJudge } from "../actions/judge.js";
@@ -655,6 +656,13 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
             return;
           }
           result = await executeWaiSuggest(ctx.cwd, restText, signal, notifyProgress, ctx.sessionManager);
+          break;
+        case "advisor":
+          if (!restText) {
+            ctx.ui.notify("Usage: /wai advisor <question>", "warning");
+            return;
+          }
+          result = await executeWaiAdvisor(ctx.cwd, restText, signal, notifyProgress, ctx.sessionManager);
           break;
         case "recommend":
           result = await executeWaiRecommend(

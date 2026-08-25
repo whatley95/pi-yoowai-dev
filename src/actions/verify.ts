@@ -23,6 +23,10 @@ export async function verifyResult<T>(
      *  that are not part of the schema and would otherwise be echoed back by
      *  the verifier and fail validation. */
     resultForPrompt?: (result: T) => T;
+    /** Developer-provided instructions for the underlying action (review/judge),
+     *  injected into the verification prompt so the verifier applies the same
+     *  rules as the original model. */
+    instructionsText?: string;
   },
 ): Promise<{ result: T; usage: UsageCost }> {
   const originalContextRaw = `${options.originalSystem}\n\n${options.originalUser}`;
@@ -44,7 +48,12 @@ export async function verifyResult<T>(
     originalResultRaw.length > MAX_VERIFY_RESULT_CHARS
       ? originalResultRaw.slice(0, MAX_VERIFY_RESULT_CHARS) + "\n... (original result truncated for verification)"
       : originalResultRaw;
-  const { system, user } = buildVerifyPrompt(originalContext, originalResult, options.task);
+  const { system, user } = buildVerifyPrompt(
+    originalContext,
+    originalResult,
+    options.task,
+    options.instructionsText ?? "",
+  );
 
   const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal: options.signal,

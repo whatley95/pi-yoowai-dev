@@ -11,6 +11,7 @@ import { loadFileContentsForReview, type FileContentEntry } from "../file-loader
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
 import { calculateReviewBudget } from "../token-budget.js";
 import { buildTestPrompt, validateTestResult, getTestValidationErrors, salvageTestFromMarkdown } from "../prompts.js";
+import { capActionInstructions } from "../instructions.js";
 import {
   STAGES,
   secondaryModelLabel,
@@ -103,12 +104,14 @@ export async function executeWaiTest(
   // (testOutput is NOT — flaky runs would poison the key; the command list is
   // deterministic given cwd). Session context is intentionally excluded.
   const testCommand = options.command ?? config.testCommand ?? detectTestCommand(cwd, conventions);
+  const instructionsText = capActionInstructions(cwd, "test", config.instructionsMaxTokens ?? 800);
   const cacheKey = buildCacheKey("test", {
     diff,
     description,
     modelProfile,
     options: { ...options, command: testCommand },
     testCommand,
+    instructionsText,
     conventionsText,
     reviewMaxDiffChars: config.reviewMaxDiffChars,
     reviewStrategy: config.reviewStrategy ?? "auto",
@@ -138,7 +141,9 @@ export async function executeWaiTest(
     modelConfig.id,
     config,
     {
-      systemPrompt: "",
+      // The injected instructions ride in the system prompt, so they must be
+      // counted before file contents and diff are budgeted.
+      systemPrompt: instructionsText,
       sessionContext,
       conventionsText,
       preReviewOutput: testOutput,
@@ -180,6 +185,7 @@ export async function executeWaiTest(
     conventionsText,
     nativeJson,
     currentStep,
+    instructionsText,
   );
   progress(6, STAGES.test, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const {

@@ -25,6 +25,24 @@ function writeProjectSettings(cwd: string, settings: Record<string, unknown>): v
 }
 
 describe("validateWaiToolParams", () => {
+  it("accepts an advisor question as its own action", () => {
+    const result = validateWaiToolParams({ advisor: "Map or Record for this cache?" });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.action, "advisor");
+      assert.equal(result.params.advisor, "Map or Record for this cache?");
+      assert.equal(result.params.suggest, undefined);
+    }
+  });
+
+  it("rejects combining advisor with another action", () => {
+    const result = validateWaiToolParams({ advisor: "which approach?", suggest: "a vs b" });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.error, /Only one action per call/);
+    }
+  });
+
   it("accepts a regular action with docs", () => {
     const result = validateWaiToolParams({ suggest: "useEffect vs useLayoutEffect", docs: ["react"] });
     assert.equal(result.ok, true);

@@ -40,12 +40,25 @@ Rules for the final JSON block:
 - Do not include any text after the closing JSON fence.`;
 }
 
-function buildPlanPromptImpl(task: string, conventions?: string, snapshot?: string): { system: string; user: string } {
+/** Render the developer-provided instruction block for an action prompt.
+ *  Placed right after the common prefix so the fixed role/contract text stays
+ *  last in the system prompt. Returns "" when there is nothing to inject. */
+function formatInstructionsBlock(instructionsText: string): string {
+  if (!instructionsText) return "";
+  return `\n\n<user_instructions>\n${instructionsText}\n</user_instructions>\n\nThese are developer-provided instructions for this action. Follow them unless they conflict with the rules and output contract below — the contract wins.`;
+}
+
+function buildPlanPromptImpl(
+  task: string,
+  conventions?: string,
+  snapshot?: string,
+  instructionsText = "",
+): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
   const snapshotBlock = snapshot ? `\n\n<project_snapshot>\n${snapshot}\n</project_snapshot>` : "";
 
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 You are creating a structured plan for the developer. Break the task into an actionable, ordered todo list with clear acceptance criteria for each step.
 
@@ -250,6 +263,7 @@ function buildAdaptiveReviewPromptImpl(
     nativeJson?: boolean;
     focusFiles?: string[];
     levelInstructions?: string;
+    instructionsText?: string;
   } = {},
 ): { system: string; user: string } {
   const {
@@ -269,6 +283,7 @@ function buildAdaptiveReviewPromptImpl(
     nativeJson,
     focusFiles,
     levelInstructions,
+    instructionsText,
   } = options;
 
   // Plan-related rules only make sense when a plan step is actually shown;
@@ -281,7 +296,7 @@ function buildAdaptiveReviewPromptImpl(
     : `- There is no active plan for this review. Set "planStale" to false, "stepComplete" to false, and "completedSteps" to 0; judge the change on its own merits against the developer's description.`;
 
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText ?? "")}
 
 You are reviewing the latest code change as the developer's pair. Catch bugs, mistakes, and quality issues they missed.
 
@@ -351,9 +366,9 @@ ${EVIDENCE_RULES}`,
   };
 }
 
-function buildScanPromptImpl(nativeJson = false): { system: string; user: string } {
+function buildScanPromptImpl(nativeJson = false, instructionsText = ""): { system: string; user: string } {
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 You are analyzing the codebase to extract conventions and architecture patterns. This context will ground future pair-programming sessions.
 
@@ -382,12 +397,46 @@ Omit optional fields you cannot infer. Be concise and evidence-based.`,
   };
 }
 
+/** Plain-text pair-programming advisor prompt: direct, opinionated advice.
+ *  No JSON contract — the answer is conversational, like asking a senior dev.
+ *  instructionsText is injected the same way as in the other prompts. */
+function buildAdvisorPromptImpl(
+  question: string,
+  conventions?: string,
+  relevantFiles?: FileContentContext[],
+  instructionsText = "",
+): { system: string; user: string } {
+  const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
+  const filesBlock =
+    relevantFiles && relevantFiles.length > 0
+      ? `\n\n<relevant_files>\n${relevantFiles.map((f) => `--- ${f.file} (${f.mode}) ---\n${f.content}`).join("\n\n")}\n</relevant_files>`
+      : "";
+
+  return {
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
+
+You are the developer's pair-programming advisor. Answer the question directly and conversationally, like a senior engineer sitting next to them. Be opinionated: state a clear recommendation up front, then the reasoning. Push back when the developer's plan is a bad idea. Keep it short — a few sentences to a short paragraph unless the question genuinely needs more.
+
+Rules:
+- Start with a direct recommendation or answer, not a preamble
+- Be specific and concrete; reference the conventions and relevant files when they are provided
+- If you disagree with the developer's approach, say so plainly and explain why
+- If the question needs more context to answer well, say what is missing
+- If the relevant files do not cover the question, say so and answer from conventions and general knowledge
+- Do not include a structured list of options with pros/cons unless the question asks for one
+- Do not include commentary outside the advice`,
+
+    user: `Advise the developer:\n\n${question}${conventionsBlock}${filesBlock}`,
+  };
+}
+
 function buildSuggestPromptImpl(
   question: string,
   conventions?: string,
   nativeJson = false,
   docContext = "",
   fileContents: FileContentContext[] = [],
+  instructionsText = "",
 ): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
   const docsBlock = docContext ? `\n\n${docContext}` : "";
@@ -397,7 +446,7 @@ function buildSuggestPromptImpl(
       : "";
 
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 The developer is asking for advice on a technical choice. Offer practical, balanced options. Use the external documentation and relevant files when they are provided.
 
@@ -433,6 +482,7 @@ function buildRecommendPromptImpl(
   fileContents: FileContentContext[] = [],
   currentStep?: string,
   memoryContext = "",
+  instructionsText = "",
 ): { system: string; user: string } {
   const planContext = planTodo?.length
     ? `\n\nCurrent plan (check items already done):\n${planTodo
@@ -450,7 +500,7 @@ function buildRecommendPromptImpl(
   const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
 
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 Advise the developer on what to do next. Be decisive and actionable. Use the external documentation, relevant files, and recent review memory when they are provided.
 
@@ -486,6 +536,7 @@ function buildTestPromptImpl(
   conventions?: string,
   nativeJson = false,
   currentStep?: string,
+  instructionsText = "",
 ): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
   const fileContentsBlock =
@@ -498,7 +549,7 @@ function buildTestPromptImpl(
   const currentStepBlock = currentStep ? `\n\nCurrent plan step being reviewed:\n${currentStep}` : "";
 
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 You are reviewing the latest code change specifically for test coverage, test quality, and test failures.
 
@@ -549,6 +600,7 @@ function buildSecurityPromptImpl(
   conventions?: string,
   nativeJson = false,
   currentStep?: string,
+  instructionsText = "",
 ): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
   const fileContentsBlock =
@@ -558,7 +610,7 @@ function buildSecurityPromptImpl(
   const currentStepBlock = currentStep ? `\n\nCurrent plan step being audited:\n${currentStep}` : "";
 
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 You are performing a security audit of the latest code change. Look for common vulnerabilities and risky patterns.
 
@@ -614,6 +666,7 @@ function buildJudgePromptImpl(
     droppedFiles?: string[];
     budgetNote?: string;
     nativeJson?: boolean;
+    instructionsText?: string;
   } = {},
 ): { system: string; user: string } {
   const {
@@ -631,6 +684,7 @@ function buildJudgePromptImpl(
     droppedFiles,
     budgetNote,
     nativeJson,
+    instructionsText,
   } = options;
 
   const planBlock = planTodo?.length
@@ -669,7 +723,7 @@ function buildJudgePromptImpl(
   const budgetBlock = budgetNote ? `\n\n${budgetNote}` : "";
 
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText ?? "")}
 
 You are performing a final holistic review of completed work before the developer ships it. You are given the actual diff and changed file contents, so judge the code directly rather than trusting the review history alone.
 
@@ -777,9 +831,10 @@ function buildVerifyPromptImpl(
   originalContext: string,
   originalResult: string,
   task: "review" | "judge",
+  instructionsText = "",
 ): { system: string; user: string } {
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 You are critiquing a ${task} result produced by another language model. Your job is to remove or downgrade any claim that is not supported by the original context.
 
@@ -806,6 +861,7 @@ function buildExplainPromptImpl(
   indexSummary?: string,
   fileContents?: Array<{ file: string; content: string }>,
   docContext = "",
+  instructionsText = "",
 ): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
   const indexBlock = indexSummary ? `\n\n<project_index>\n${indexSummary}\n</project_index>` : "";
@@ -817,7 +873,7 @@ function buildExplainPromptImpl(
   const docsBlock = docContext ? `\n\n${docContext}` : "";
 
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 Explain the provided code, error, diff, or file to the developer. Be concise but complete. Assume they are a senior engineer who wants to understand what is happening and why. Use the external documentation when it is provided.
 
@@ -871,6 +927,7 @@ function buildPdfAnalysisPromptImpl(
   pages: number,
   question?: string,
   context?: string,
+  instructionsText = "",
 ): { system: string; user: string } {
   const questionBlock = question
     ? `Question about the document:\n${question}`
@@ -878,7 +935,7 @@ function buildPdfAnalysisPromptImpl(
   const contextBlock = context ? `\n\n<context>\n${context}\n</context>` : "";
 
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 Analyze the provided PDF document text for the developer. Be concise but complete. Assume they are a senior engineer who wants the facts, not a generic summary.
 
@@ -894,9 +951,13 @@ Rules:
   };
 }
 
-function buildStepVerificationPromptImpl(stepDescription: string, diff: string): { system: string; user: string } {
+function buildStepVerificationPromptImpl(
+  stepDescription: string,
+  diff: string,
+  instructionsText = "",
+): { system: string; user: string } {
   return {
-    system: `${COMMON_SYSTEM_PREFIX}
+    system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
 You are verifying whether a code change satisfies a specific plan step. Be conservative.
 
@@ -917,6 +978,7 @@ Rules:
 }
 
 export const buildPlanPrompt = memoizePromptBuilder(buildPlanPromptImpl);
+export const buildAdvisorPrompt = memoizePromptBuilder(buildAdvisorPromptImpl);
 export const buildExplainPrompt = memoizePromptBuilder(buildExplainPromptImpl);
 export const buildVisionPrompt = memoizePromptBuilder(buildVisionPromptImpl);
 export const buildPdfAnalysisPrompt = memoizePromptBuilder(buildPdfAnalysisPromptImpl);

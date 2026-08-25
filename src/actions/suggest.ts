@@ -5,6 +5,7 @@ import { findRelevantFiles } from "../project-index.js";
 import { loadRelevantFileContents } from "../project-snapshot.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
+import { capActionInstructions } from "../instructions.js";
 import {
   buildSuggestPrompt,
   validateSuggestResult,
@@ -68,7 +69,14 @@ export async function executeWaiSuggest(
     docContext = await loadDocContext(cwd, config.docs, docRequest);
   }
 
-  const { system, user } = buildSuggestPrompt(question, conventionsText, nativeJson, docContext, fileContents);
+  const { system, user } = buildSuggestPrompt(
+    question,
+    conventionsText,
+    nativeJson,
+    docContext,
+    fileContents,
+    capActionInstructions(cwd, "suggest", config.instructionsMaxTokens ?? 800),
+  );
   progress(2, STAGES.suggest, `Calling ${secondaryModelLabel(modelConfig)}…`);
   let raw: string;
   let usage: UsageCost;

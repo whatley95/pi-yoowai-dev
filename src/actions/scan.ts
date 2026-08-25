@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
+import { capActionInstructions } from "../instructions.js";
 import {
   scanProjectConventions,
   gatherDeepScanSamples,
@@ -48,7 +49,10 @@ export async function executeWaiScan(
   progress(1, STAGES.scan, "Scanning local project conventions…");
   const localScan = scanProjectConventions(cwd);
 
-  const { system, user } = buildScanPrompt(nativeJson);
+  const { system, user } = buildScanPrompt(
+    nativeJson,
+    capActionInstructions(cwd, "scan", config.instructionsMaxTokens ?? 800),
+  );
   const configFilesText = formatConfigFiles(cwd);
 
   const deepScanEnabled = deepOverride ?? config.deepScan;

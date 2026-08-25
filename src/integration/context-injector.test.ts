@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import type { ExtensionAPI, ContextEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerContextInjector, setWaiToolExecuting } from "./context-injector.js";
 import { setPlan, recordFileEdit, setPlanProgress } from "../session-state.js";
+import { recordIssues } from "../review-memory.js";
 import { saveConventions } from "../conventions.js";
 
 type FakePi = {
@@ -253,5 +254,141 @@ describe("context-injector", () => {
     assert.ok(lastUser);
     assert.ok(typeof lastUser.content === "string");
     assert.ok(lastUser.content.includes("No active wai plan"));
+  });
+
+  it("injects advisor notes from review memory of edited files", () => {
+    recordFileEdit(cwd, "src/auth.ts");
+    recordIssues(cwd, [
+      {
+        severity: "high",
+        file: "src/auth.ts",
+        issue: "Missing try/catch around token refresh",
+        suggestion: "Wrap it",
+      },
+    ]);
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    assert.ok(lastUser);
+    assert.ok(typeof lastUser.content === "string");
+    assert.ok(lastUser.content.includes("<advisor_notes>"), "advisor notes must be injected");
+    assert.ok(lastUser.content.includes("Missing try/catch around token refresh"));
+  });
+
+  it("suppresses advisor notes when advisorNotes is false", () => {
+    recordFileEdit(cwd, "src/auth.ts");
+    recordIssues(cwd, [
+      {
+        severity: "high",
+        file: "src/auth.ts",
+        issue: "Missing try/catch around token refresh",
+        suggestion: "Wrap it",
+      },
+    ]);
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { advisorNotes: false } }));
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    assert.ok(lastUser);
+    assert.strictEqual(lastUser.content, "first", "no injection at all when advisorNotes is false");
+  });
+
+  it("omits advisor notes when there is no review memory", () => {
+    recordFileEdit(cwd, "src/auth.ts");
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    assert.ok(lastUser);
+    assert.ok(typeof lastUser.content === "string");
+    assert.ok(!lastUser.content.includes("<advisor_notes>"));
+  });
+
+  it("caps oversized advisor notes with balanced tags and keeps reminders", () => {
+    // 3 edits → workflow reminder fires; 40 large issues → notes far over a
+    // tiny budget. The notes must be shrunk IN PLACE (balanced tags, truncation
+    // marker) while the reminder survives whole-block truncation.
+    for (let i = 0; i < 3; i++) recordFileEdit(cwd, "src/auth.ts");
+    recordIssues(
+      cwd,
+      Array.from({ length: 40 }, (_, i) => ({
+        severity: "high",
+        file: "src/auth.ts",
+        issue: `Long standing issue number ${i} ` + "x".repeat(200),
+        suggestion: "Fix it",
+      })),
+    );
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { contextInjectMaxTokens: 100 } }));
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    assert.ok(lastUser);
+    assert.ok(typeof lastUser.content === "string");
+    const content = lastUser.content;
+    // Balanced tags and a truncation marker inside the notes block.
+    assert.ok(content.includes("<advisor_notes>"), "notes block must be present");
+    assert.ok(content.includes("</advisor_notes>"), "notes block must be closed");
+    assert.ok(content.includes("advisor notes truncated"), "notes content must be capped in place");
+    // Reminders survive: they come after the notes in the block.
+    assert.ok(content.includes("WORKFLOW REMINDER"), "workflow reminder must survive truncation");
+    // The whole wrapper stays intact — no tail truncation of the block.
+    assert.ok(content.includes("</wai_context>"), "wai_context wrapper must stay closed");
+    assert.ok(
+      !content.includes("truncated to token budget"),
+      "the generic whole-block truncation fallback must not be needed",
+    );
+    // The injected block stays strictly within the token budget.
+    const injected = content.slice(content.indexOf("<wai_context>"));
+    assert.ok(Math.ceil(injected.length / 4) <= 100, "injected context must respect contextInjectMaxTokens");
+  });
+
+  it("never leaves a lone surrogate when advisor notes contain astral characters", () => {
+    // Emoji-heavy issues: wherever the truncation boundary lands, the injected
+    // text must not contain a split surrogate pair.
+    recordFileEdit(cwd, "src/auth.ts");
+    recordIssues(
+      cwd,
+      Array.from({ length: 30 }, (_, i) => ({
+        severity: "high",
+        file: "src/auth.ts",
+        issue: `Emoji issue ${i} 🚀🎯 ` + "z".repeat(150),
+        suggestion: "Fix it",
+      })),
+    );
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { contextInjectMaxTokens: 80 } }));
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    assert.ok(lastUser);
+    assert.ok(typeof lastUser.content === "string");
+    const injected = lastUser.content.slice(lastUser.content.indexOf("<wai_context>"));
+    const loneHigh = injected.match(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    const loneLow = injected.match(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+    assert.equal(loneHigh, null, "no lone high surrogate may remain");
+    assert.equal(loneLow, null, "no lone low surrogate may remain");
   });
 });
