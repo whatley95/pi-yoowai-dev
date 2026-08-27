@@ -238,6 +238,9 @@ async function runSingleAttempt(
         modelInfoOverride,
         opts.cwd,
         opts.structuredOutput,
+        // Honor the configured retry count on the http backend too (0 disables
+        // retries; the previous hardcoded default of 2 remains the fallback).
+        secondary?.maxRetries,
       );
     } catch (err) {
       // Never fall back to the pi backend with images attached — it cannot carry

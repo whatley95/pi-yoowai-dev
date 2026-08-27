@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeWaiJudge } from "./judge.js";
+import { getLastReviewedCommit, getPendingReviewCommit } from "../session-state.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import { gitSpawnEnv } from "../git-env.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -240,4 +241,43 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
       assert.doesNotMatch(log, /Self-verification of judge produced invalid JSON/);
     },
   );
+
+  it("judges committed work on a clean tree and never mutates review range state", { skip: !hasGit }, async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "judge-clean-repo-"));
+    tmpDirs.push(cwd);
+    execFileSync("git", ["init"], { cwd, ...gitOpts() });
+    execFileSync("git", ["config", "user.email", "wai-test@example.com"], { cwd, ...gitOpts() });
+    execFileSync("git", ["config", "user.name", "wai test"], { cwd, ...gitOpts() });
+    // Single committed root round; the tree is CLEAN — previously the judge
+    // diffed `git diff HEAD` and saw nothing. (.pi/ is gitignored so the
+    // settings file written later does not dirty the tree.)
+    writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
+    writeFileSync(join(cwd, "a.txt"), "JUDGE_MARKER_333\n");
+    execFileSync("git", ["add", "."], { cwd, ...gitOpts() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "round1"], { cwd, ...gitOpts() });
+    const piDir = join(cwd, ".pi");
+    mkdirSync(piDir, { recursive: true });
+
+    const { url, bodies } = await startStubServer();
+    writeSettings(cwd, {
+      reviewLevel: "min",
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        thinking: "off",
+        contextWindow: 8000,
+        maxOutputTokens: 1024,
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test-key",
+      },
+    });
+
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const result = await executeWaiJudge(cwd, "clean tree judge", undefined, () => {}, ctx.sessionManager);
+    assert.equal(result.judge?.verdict, "pass");
+    assert.ok(bodies[0].includes("JUDGE_MARKER_333"), "committed work must reach the judge");
+    assert.equal(getLastReviewedCommit(cwd), undefined, "a judge must not advance the review baseline");
+    assert.equal(getPendingReviewCommit(cwd), undefined, "a judge must not pin review range state");
+  });
 });

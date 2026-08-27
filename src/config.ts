@@ -31,6 +31,21 @@ function pickOptionalNumber(value: unknown, fallback: number | undefined): numbe
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+/** Retry counts allow 0 (disable retries) and are capped at a practical
+ *  maximum; negative, fractional, and non-finite values (NaN, Infinity) fall
+ *  back. */
+const MAX_RETRIES = 10;
+
+function pickNonNegativeInteger(value: unknown, fallback: number | undefined): number | undefined {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    Number.isInteger(value) &&
+    value <= MAX_RETRIES
+    ? value
+    : fallback;
+}
+
 function pickOptionalThinking(value: unknown, fallback: string | undefined): string | undefined {
   if (value === undefined || value === null) return fallback;
   return typeof value === "string" ? value : fallback;
@@ -64,7 +79,7 @@ function mergeSecondaryFields(
     apiKey: pickOptionalString(override.apiKey, base.apiKey),
     cacheRetention: pickOptionalEnum(override.cacheRetention, ["none", "short", "long"], base.cacheRetention),
     transport: pickOptionalEnum(override.transport, ["sse", "websocket", "websocket-cached", "auto"], base.transport),
-    maxRetries: pickOptionalNumber(override.maxRetries, base.maxRetries),
+    maxRetries: pickNonNegativeInteger(override.maxRetries, base.maxRetries),
     maxRetryDelayMs: pickOptionalNumber(override.maxRetryDelayMs, base.maxRetryDelayMs),
     timeoutMs: pickOptionalNumber(override.timeoutMs, base.timeoutMs),
     style: pickOptionalStyle(override.style, base.style),

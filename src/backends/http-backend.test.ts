@@ -1,6 +1,8 @@
-import { describe, it } from "node:test";
+import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { parseSseEvents } from "./http-backend.js";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { callHttpBackend, parseSseEvents } from "./http-backend.js";
+import type { ProviderApiInfo } from "../types/secondary-model.js";
 
 describe("parseSseEvents", () => {
   it("parses multiple complete events and keeps the remainder", () => {
@@ -76,5 +78,173 @@ describe("parseSseEvents", () => {
   it("handles empty buffers", () => {
     assert.deepEqual(parseSseEvents(""), { events: [], remainder: "" });
     assert.deepEqual(parseSseEvents("", true), { events: [], remainder: "" });
+  });
+});
+
+const servers: Server[] = [];
+after(() => {
+  for (const server of servers) {
+    server.closeAllConnections?.();
+    server.close();
+  }
+});
+
+/** A server that counts requests and answers every one with 500. */
+async function startFailingServer(): Promise<{ url: string; attempts: () => number }> {
+  let count = 0;
+  const server = await new Promise<Server>((resolve) => {
+    const s = createServer((_req: IncomingMessage, res: ServerResponse) => {
+      count += 1;
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "stub failure" }));
+    });
+    s.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  servers.push(server);
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("stub server has no port");
+  return { url: `http://127.0.0.1:${address.port}`, attempts: () => count };
+}
+
+function apiInfoFor(url: string): ProviderApiInfo {
+  return {
+    style: "openai-compatible",
+    baseUrl: url,
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+  };
+}
+
+describe("callHttpBackend retry behavior", () => {
+  it("maxRetries: 0 makes exactly one attempt on a 500", async () => {
+    const { url, attempts } = await startFailingServer();
+    await assert.rejects(
+      callHttpBackend(
+        "openai",
+        apiInfoFor(url),
+        "test-key",
+        "gpt-4o-mini",
+        "sys",
+        "user",
+        undefined,
+        "off",
+        undefined,
+        undefined,
+        false,
+        0,
+      ),
+      /Secondary model request failed/,
+    );
+    assert.equal(attempts(), 1, "maxRetries: 0 must disable retries");
+  });
+
+  it("unset maxRetries keeps the default of two retries (three attempts)", async () => {
+    const { url, attempts } = await startFailingServer();
+    await assert.rejects(
+      callHttpBackend("openai", apiInfoFor(url), "test-key", "gpt-4o-mini", "sys", "user", undefined, "off"),
+      /Secondary model request failed/,
+    );
+    assert.equal(attempts(), 3, "the default must retry twice");
+  });
+
+  it("maxRetries: 2 makes three attempts", async () => {
+    const { url, attempts } = await startFailingServer();
+    await assert.rejects(
+      callHttpBackend(
+        "openai",
+        apiInfoFor(url),
+        "test-key",
+        "gpt-4o-mini",
+        "sys",
+        "user",
+        undefined,
+        "off",
+        undefined,
+        undefined,
+        false,
+        2,
+      ),
+      /Secondary model request failed/,
+    );
+    assert.equal(attempts(), 3);
+  });
+
+  it("the reasoning-disabled fallback honors maxRetries: 0", async () => {
+    // First request: a 200 whose content is empty with reasoning_content and
+    // finish_reason "length" — triggers the one-shot reasoning-disabled
+    // fallback. Every later request: 500. With maxRetries: 0 the total is
+    // exactly 2 attempts (initial + one fallback, no retries); a regression
+    // in forwarding maxRetries to the recursive call would add the default
+    // two retries (4 attempts).
+    let count = 0;
+    const server = await new Promise<Server>((resolve) => {
+      const s = createServer((_req: IncomingMessage, res: ServerResponse) => {
+        count += 1;
+        if (count === 1) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              choices: [
+                {
+                  message: { content: "", reasoning_content: "thinking..." },
+                  finish_reason: "length",
+                },
+              ],
+            }),
+          );
+          return;
+        }
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "stub failure" }));
+      });
+      s.listen(0, "127.0.0.1", () => resolve(s));
+    });
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("stub server has no port");
+
+    await assert.rejects(
+      callHttpBackend(
+        "openai",
+        apiInfoFor(`http://127.0.0.1:${address.port}`),
+        "test-key",
+        "gpt-4o-mini",
+        "sys",
+        "user",
+        undefined,
+        "high",
+        undefined,
+        undefined,
+        false,
+        0,
+      ),
+      /Secondary model request failed/,
+    );
+    assert.equal(count, 2, "fallback + maxRetries: 0 must total exactly 2 attempts");
+  });
+
+  it("invalid maxRetries values normalize to the default (3 attempts)", async () => {
+    // Includes over-cap values: the exponential backoff would overflow.
+    for (const invalid of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 11, 1000]) {
+      const { url, attempts } = await startFailingServer();
+      await assert.rejects(
+        callHttpBackend(
+          "openai",
+          apiInfoFor(url),
+          "test-key",
+          "gpt-4o-mini",
+          "sys",
+          "user",
+          undefined,
+          "off",
+          undefined,
+          undefined,
+          false,
+          invalid,
+        ),
+        /Secondary model request failed/,
+      );
+      assert.equal(attempts(), 3, `invalid maxRetries ${invalid} must fall back to 2 retries`);
+    }
   });
 });

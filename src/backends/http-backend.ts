@@ -166,6 +166,7 @@ async function callOpenAiCompatibleApi(
   cwd?: string,
   sessionId?: string,
   structuredOutput = false,
+  maxRetries?: number,
 ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> {
   const url = buildOpenAiUrl(apiInfo, apiKey);
 
@@ -217,12 +218,16 @@ async function callOpenAiCompatibleApi(
 
   logHttpDebug("OpenAI-compatible HTTP request", provider, model, url, headers, body);
 
-  const response = await fetchWithRetry(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
+  const response = await fetchWithRetry(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    },
+    maxRetries,
+  );
 
   if (!response.ok) {
     const text = await response.text().catch(() => "(no body)");
@@ -286,6 +291,7 @@ async function callOpenAiCompatibleApi(
       cwd,
       sessionId,
       structuredOutput,
+      maxRetries,
     );
   }
 
@@ -328,6 +334,7 @@ async function callAnthropicApi(
   modelInfoOverride?: Partial<ReturnType<typeof resolveModelInfo>>,
   sessionId?: string,
   structuredOutput = false,
+  maxRetries?: number,
 ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> {
   const url = `${apiInfo.baseUrl}/messages`;
 
@@ -384,12 +391,16 @@ async function callAnthropicApi(
 
   logHttpDebug("Anthropic HTTP request", provider, model, url, headers, body);
 
-  const response = await fetchWithRetry(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
+  const response = await fetchWithRetry(
+    url,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    },
+    maxRetries,
+  );
 
   if (!response.ok) {
     const text = await response.text().catch(() => "(no body)");
@@ -606,6 +617,16 @@ function formatFetchError(err: unknown): string {
 }
 
 async function fetchWithRetry(url: string, init: RequestInit, maxRetries = 2, baseDelayMs = 500): Promise<Response> {
+  // Defensive normalization: garbage retry counts must not produce zero
+  // attempts (negative/NaN), inconsistent counts (fractional), endless
+  // retries (Infinity or absurdly large values — the exponential backoff
+  // would overflow). Only a finite non-negative integer ≤ 10 is honored;
+  // anything else falls back to the default of two retries. Config validation
+  // already filters these, but direct callers bypass it.
+  const MAX_RETRIES = 10;
+  if (!Number.isFinite(maxRetries) || maxRetries < 0 || !Number.isInteger(maxRetries) || maxRetries > MAX_RETRIES) {
+    maxRetries = 2;
+  }
   const attemptErrors: string[] = [];
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -663,6 +684,7 @@ export async function callHttpBackend(
   modelInfoOverride?: Partial<ReturnType<typeof resolveModelInfo>>,
   cwd?: string,
   structuredOutput?: boolean,
+  maxRetries?: number,
 ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> {
   const sessionId = cwd ? getPiSessionId(cwd) : undefined;
   if (apiInfo.style === "anthropic") {
@@ -678,6 +700,7 @@ export async function callHttpBackend(
       modelInfoOverride,
       sessionId,
       structuredOutput,
+      maxRetries,
     );
   }
   return callOpenAiCompatibleApi(
@@ -694,5 +717,6 @@ export async function callHttpBackend(
     cwd,
     sessionId,
     structuredOutput,
+    maxRetries,
   );
 }

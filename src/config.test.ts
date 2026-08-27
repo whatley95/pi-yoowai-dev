@@ -154,6 +154,70 @@ describe("resolveTaskModel", () => {
     assert.equal(result.maxRetryDelayMs, 1000);
     assert.equal(result.timeoutMs, 60000);
   });
+
+  it("maxRetries accepts 0 (disable retries) and rejects invalid values", () => {
+    // The task-override merge path forces mergeSecondary validation.
+    const merge = (value: number, fallback = 2): number | undefined => {
+      const result = resolveTaskModel({ ...baseConfig, taskModels: { review: { maxRetries: value } } }, "review");
+      return result.maxRetries ?? fallback;
+    };
+    // 0 must survive (it disables retries — the http backend reads it).
+    assert.equal(merge(0), 0);
+    assert.equal(merge(5), 5);
+    assert.equal(merge(10), 10, "the documented maximum is accepted");
+    // Negative, fractional, NaN, Infinity, and over-cap values fall back.
+    for (const invalid of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 11]) {
+      assert.equal(merge(invalid, 2), 2, `invalid maxRetries ${invalid} must fall back`);
+    }
+  });
+
+  it("loadYoowaiConfig validates base-secondary maxRetries (0 ok, invalid falls back)", () => {
+    const originalAgentDir = getAgentDir();
+    const emptyAgentDir = mkdtempSync(join(tmpdir(), "wai-config-retries-agent-"));
+    setAgentDirForTests(() => emptyAgentDir);
+    const dirs: string[] = [];
+    try {
+      const cwd = makeTempDir("wai-config-retries-");
+      dirs.push(cwd);
+      writeProjectSettings(cwd, {
+        secondary: { provider: "openai", id: "gpt-4o-mini", maxRetries: 0 },
+      });
+      assert.equal(loadYoowaiConfig(cwd).secondary.maxRetries, 0);
+      const cwdBad = makeTempDir("wai-config-retries-bad-");
+      dirs.push(cwdBad);
+      writeProjectSettings(cwdBad, {
+        secondary: { provider: "openai", id: "gpt-4o-mini", maxRetries: -1 },
+      });
+      assert.equal(loadYoowaiConfig(cwdBad).secondary.maxRetries, undefined);
+    } finally {
+      setAgentDirForTests(() => originalAgentDir);
+      try {
+        rmSync(emptyAgentDir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+      for (const dir of dirs) {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  });
+
+  it("task override maxRetries follows the same 0-ok validation", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: { review: { maxRetries: 0 } },
+    };
+    assert.equal(resolveTaskModel(config, "review").maxRetries, 0);
+    const bad: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: { review: { maxRetries: -3 } },
+    };
+    assert.equal(resolveTaskModel(bad, "review").maxRetries, undefined);
+  });
 });
 
 describe("resolveReviewTaskModel", () => {

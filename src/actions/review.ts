@@ -2,16 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { loadYoowaiConfig, resolveReviewTaskModel } from "../config.js";
 import { resolveProjectPath } from "../path-security.js";
-import {
-  getDiff,
-  splitDiffByFile,
-  splitDiffByHunk,
-  getVcsInfo,
-  resolveGitCommit,
-  resolveGitTree,
-  resolveEmptyTree,
-  type VcsInfo,
-} from "../diff-grabber.js";
+import { getDiff, splitDiffByFile, splitDiffByHunk, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js";
 import { loadFileContentsForReview, isReviewableFile, type FileContentEntry } from "../file-loader.js";
@@ -33,9 +24,7 @@ import {
   getProgress,
   markJudgeCompleted,
   getLastReviewedCommit,
-  setLastReviewedCommit,
   getPendingReviewCommit,
-  setPendingReviewCommit,
   getReviewedFiles,
   recordReviewedFiles,
   planStaleSuggestionDue,
@@ -50,6 +39,7 @@ import {
   toolLoopOptions,
   continuationMeta,
 } from "./shared.js";
+import { resolveRangeBase, updateRangeState, pinAttemptedRange } from "./range.js";
 import {
   getSessionContext,
   runWithConcurrencyLimit,
@@ -72,55 +62,6 @@ import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../typ
  *  tests can reference the exact message. */
 export const REVIEW_NO_MODEL_ERROR =
   "No secondary model configured. Set pi-yoowai.secondary, taskModels.review, or taskModels.reviewMin/reviewMed/reviewHigh in settings.json.";
-
-/** Update the incremental-diff range state AFTER a completed review.
- *  - pass: the baseline advances to HEAD (skipping the just-reviewed
- *    commits) and any pending anchor is cleared.
- *  - non-pass (whole-tree reviews only): the accepted baseline stays put, but
- *    a stable pending anchor keeps the reviewed range inside the next
- *    review's diff. Without it, a clean-tree review with no baseline would
- *    re-resolve HEAD~1 dynamically and drop the failed round once HEAD
- *    moves (e.g. a failed review of A, then commit B: HEAD~1 is A, so
- *    A..B excludes A).
- *  - inconclusive reviews are NOT failed rounds (verdict slip or truncation
- *    with no actionable issues): neither the baseline nor the pending anchor
- *    moves.
- *  - Scoped reviews only certify part of the tree and never touch the range
- *    state. */
-function updateReviewRangeState(
-  cwd: string,
-  vcsInfo: VcsInfo,
-  diffOptions: { since?: string; revision?: string; files?: string[]; exclude?: string[]; vcs?: "git" | "svn" },
-  review: Pick<ReviewResult, "verdict" | "inconclusive">,
-  opts?: { pinOnInconclusive?: boolean },
-): void {
-  if (vcsInfo.type !== "git" || !vcsInfo.revision) return;
-  // An explicit VCS override that is not git means this review is not a git
-  // review: never touch git range state for it.
-  if (diffOptions.vcs && diffOptions.vcs !== "git") return;
-  // Scoped reviews only certify part of the tree: they never touch the
-  // baseline or the pending anchor, regardless of verdict. (Scoped diffs are
-  // self-contained — they do not use the range — so a scoped coverage-
-  // inconclusive result loses nothing: it is simply not cached and the user
-  // is asked to re-run scoped.)
-  if (diffOptions.files?.length || diffOptions.exclude?.length) return;
-  // An inconclusive result is not a failed review round: nothing moves —
-  // UNLESS the inconclusive result came from truncated/omitted coverage, in
-  // which case the unreviewed portion must stay visible (pin the range).
-  if (review.inconclusive === true && !opts?.pinOnInconclusive) return;
-  if (review.verdict === "pass") {
-    setLastReviewedCommit(cwd, vcsInfo.revision);
-    setPendingReviewCommit(cwd, undefined);
-    return;
-  }
-  const anchor = diffOptions.since ?? diffOptions.revision;
-  // Resolve to an absolute commit OR tree SHA (the empty-tree root-commit
-  // base is a tree object). A relative anchor (e.g. a user-supplied
-  // `since: "HEAD~1"`) would re-resolve to a different commit once HEAD
-  // moves, recreating the blind spot the anchor exists to prevent.
-  const resolvedAnchor = anchor ? (resolveGitCommit(cwd, anchor) ?? resolveGitTree(cwd, anchor)) : undefined;
-  if (resolvedAnchor) setPendingReviewCommit(cwd, resolvedAnchor);
-}
 
 /** Decide whether a passing review advances the plan tracker, and by how
  *  many steps. Guards the guarded auto-completion contract:
@@ -211,77 +152,15 @@ export async function executeWaiReview(
     untracked: options.untracked ?? true,
   };
   const vcsInfo = getVcsInfo(cwd);
-  // An explicit VCS override must win over auto-detection for the range
-  // logic: git incremental SHAs must never feed an SVN diff or write git
-  // review state for an SVN review.
-  const gitReview = vcsInfo.type === "git" && (options.vcs ?? vcsInfo.type) === "git";
   const lastReviewed = getLastReviewedCommit(cwd);
-  // Persisted anchors may be stale or hand-edited garbage: verify they still
-  // resolve before using them as a diff base (the pending anchor may be a
-  // tree — the empty-tree root-commit base — so accept commits AND trees).
   const pendingAnchor = getPendingReviewCommit(cwd);
-  const pendingValid =
-    gitReview && pendingAnchor && (resolveGitCommit(cwd, pendingAnchor) ?? resolveGitTree(cwd, pendingAnchor))
-      ? pendingAnchor
-      : undefined;
-  const baselineValid = gitReview && lastReviewed && resolveGitCommit(cwd, lastReviewed) ? lastReviewed : undefined;
-  const canUseIncremental =
-    gitReview &&
-    !vcsInfo.dirty &&
-    !diffOptions.revision &&
-    !diffOptions.since &&
-    !diffOptions.files?.length &&
-    !diffOptions.exclude?.length;
-  if (canUseIncremental && (pendingValid ?? baselineValid)) {
-    // A pending anchor from a failed review wins over the accepted baseline:
-    // the failed range must stay the diff base until a pass clears it (they
-    // coincide in the common flow, but a restart or state edit can diverge
-    // them).
-    diffOptions.since = pendingValid ?? baselineValid;
-  } else if (!diffOptions.revision && !diffOptions.since) {
-    // Clean tree with no stored baseline (fresh plan/session after committed
-    // work): review the most recent commit instead of an empty `git diff
-    // HEAD`. A pending anchor from a failed review wins over the dynamic
-    // HEAD~1 (which would skip the failed round once HEAD moves); resolved to
-    // an absolute SHA so it stays stable. A root commit has no HEAD~1 and
-    // falls back to HEAD.
-    if (gitReview && !vcsInfo.dirty) {
-      // A pending anchor from a failed review wins over the dynamic HEAD~1
-      // (which would skip the failed round once HEAD moves). A root commit
-      // (no HEAD~1) diffs against the empty tree so it can actually be
-      // reviewed instead of producing an empty `git diff HEAD`.
-      const freshBase = pendingValid ?? resolveGitCommit(cwd, "HEAD~1") ?? resolveEmptyTree(cwd);
-      if (freshBase) {
-        diffOptions.since = freshBase;
-      } else {
-        diffOptions.revision = vcsInfo.revision ?? "HEAD";
-      }
-    } else {
-      // Dirty tree (or non-git): diff the working tree against the best
-      // known git base — pending anchor, accepted baseline, or HEAD — so
-      // committed-but-unreviewed changes stay visible while the tree is
-      // dirty (a bare `git diff HEAD` would hide them). SVN keeps HEAD.
-      diffOptions.revision = gitReview ? (pendingValid ?? baselineValid ?? vcsInfo.revision ?? "HEAD") : "HEAD";
-    }
-  }
-  // Absolutize the selected range base NOW (git reviews only): a relative
-  // base (user-supplied `since`/`revision`, or the "HEAD" literal) would
-  // re-resolve to a different commit if HEAD moves while the (possibly long)
-  // review runs, so a failed review could pin a range it never actually
-  // reviewed. The git diff call is identical either way. SVN range values are
-  // left untouched — converting them to git SHAs would break the svn diff.
-  if (gitReview) {
-    if (diffOptions.since) {
-      diffOptions.since =
-        resolveGitCommit(cwd, diffOptions.since) ?? resolveGitTree(cwd, diffOptions.since) ?? diffOptions.since;
-    }
-    if (diffOptions.revision) {
-      diffOptions.revision =
-        resolveGitCommit(cwd, diffOptions.revision) ??
-        resolveGitTree(cwd, diffOptions.revision) ??
-        diffOptions.revision;
-    }
-  }
+  // Shared range selection: validated anchors (pending may be a tree — the
+  // empty-tree root-commit base), clean/dirty fallbacks, root-commit empty
+  // tree, and base absolutization. Review uses the incremental policy: the
+  // failed round's anchor wins over the accepted baseline.
+  const range = resolveRangeBase(cwd, "incremental", vcsInfo, lastReviewed, pendingAnchor, options);
+  if (range.since !== undefined) diffOptions.since = range.since;
+  if (range.revision !== undefined) diffOptions.revision = range.revision;
   const { diff, truncated, changedFiles, vcs } = getDiff(cwd, diffOptions);
   const relatedContext =
     buildAstContext(cwd, changedFiles, { maxTokens: effectiveConfig.relatedContextMaxTokens ?? 1000 }) ||
@@ -418,7 +297,7 @@ export async function executeWaiReview(
       // A cached pass is still a completed review: keep the baseline in sync
       // so a baseline reset (new plan/session) cannot leave the next review
       // re-diffing already-reviewed commits.
-      updateReviewRangeState(cwd, vcsInfo, diffOptions, cached.review);
+      updateRangeState(cwd, vcsInfo, diffOptions, cached.review);
       recordReviewedFiles(cwd, changedFiles, cached.review.verdict);
       return {
         action: "review",
@@ -530,7 +409,7 @@ export async function executeWaiReview(
         filesWithDiff.length > 1 ? " Enable pi-yoowai.parallelReview for a per-file parallel diff-only review, or" : "";
       // The attempted range was not reviewed: pin it so a re-run at a higher
       // level (or with scoping) still sees the whole range.
-      updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
+      pinAttemptedRange(cwd, vcsInfo, diffOptions);
       return {
         action: "review",
         error: `The change is too large for a diff-only (${level} level) review: the diff needs ~${diffTokens.toLocaleString()} tokens but the model's available context budget is ~${remainingForDiff.toLocaleString()} tokens.${parallelHint} Re-run with wai_review_med or wai_review_high (they split large diffs automatically), or scope the review with files:[...].`,
@@ -548,7 +427,7 @@ export async function executeWaiReview(
       });
       if (oversizedFile) {
         progress(7, STAGES.review, "A single file's diff exceeds the model budget…");
-        updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
+        pinAttemptedRange(cwd, vcsInfo, diffOptions);
         return {
           action: "review",
           error: `The diff of \`${oversizedFile}\` (~${estimateTokens(fileDiffs[oversizedFile] ?? "").toLocaleString()} tokens) exceeds the model's per-file available context budget (~${remainingForDiff.toLocaleString()} tokens), so a parallel diff-only review would truncate it. Re-run with wai_review_med or wai_review_high (they split individual files into hunks), or scope the review with files:[...].`,
@@ -631,7 +510,7 @@ export async function executeWaiReview(
       if (config.costBudgetUsd !== undefined && config.costBudgetUsd >= 0) {
         const sessionCost = getSessionCost(cwd).costUsd;
         if (sessionCost + projectedCost > config.costBudgetUsd) {
-          updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
+          pinAttemptedRange(cwd, vcsInfo, diffOptions);
           return {
             action: "review",
             error: `Hunk-based review would exceed the configured cost budget (${formatCost(config.costBudgetUsd)}).`,
@@ -696,7 +575,7 @@ export async function executeWaiReview(
         // Every batch failed: the attempted range was NOT reviewed, so pin
         // it (scoped-aware) before returning — otherwise moving HEAD would
         // drop the whole range, reproducing the incremental-review blind spot.
-        updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
+        pinAttemptedRange(cwd, vcsInfo, diffOptions);
         return { action: "review", error: failures.join("; "), model: modelProfile };
       }
 
@@ -805,7 +684,7 @@ export async function executeWaiReview(
     if (config.costBudgetUsd !== undefined && config.costBudgetUsd >= 0) {
       const sessionCost = getSessionCost(cwd).costUsd;
       if (sessionCost + projectedCost > config.costBudgetUsd) {
-        updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
+        pinAttemptedRange(cwd, vcsInfo, diffOptions);
         return {
           action: "review",
           error: `Parallel review would exceed the configured cost budget (${formatCost(config.costBudgetUsd)}).`,
@@ -888,7 +767,7 @@ export async function executeWaiReview(
     if (successes.length === 0) {
       // Every batch failed: pin the attempted (scoped-aware) range so moving
       // HEAD cannot drop it before a successful retry.
-      updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
+      pinAttemptedRange(cwd, vcsInfo, diffOptions);
       return { action: "review", error: failures.join("; "), model: modelProfile };
     }
 
@@ -988,7 +867,7 @@ export async function executeWaiReview(
       // The single batch failed entirely: the attempted range was NOT
       // reviewed, so pin it (scoped-aware) before returning — otherwise
       // moving HEAD would drop the whole range.
-      updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
+      pinAttemptedRange(cwd, vcsInfo, diffOptions);
       return {
         action: "review",
         error: err instanceof Error ? err.message : String(err),
@@ -1028,7 +907,7 @@ export async function executeWaiReview(
   if (!review) {
     // The model call failed to produce a review: the attempted range was not
     // reviewed, so pin it before returning.
-    updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
+    pinAttemptedRange(cwd, vcsInfo, diffOptions);
     return { action: "review", error: "Review could not be produced", model: modelProfile };
   }
 
@@ -1176,7 +1055,7 @@ export async function executeWaiReview(
   // included) for prior-round context. Both run before the
   // plan-advance/auto-judge block so every pass return path (including the
   // auto-judge early return below) runs them exactly once.
-  updateReviewRangeState(
+  updateRangeState(
     cwd,
     vcsInfo,
     diffOptions,

@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
-import { getDiff } from "../diff-grabber.js";
+import { getDiff, getVcsInfo } from "../diff-grabber.js";
 import { buildCodemap } from "../codemap.js";
 import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { capActionInstructions } from "../instructions.js";
@@ -24,8 +24,11 @@ import {
   markStepsDoneByIds,
   setPlanProgress,
   getEditTracker,
+  getLastReviewedCommit,
+  getPendingReviewCommit,
 } from "../session-state.js";
 import { logEvent } from "../logger.js";
+import { resolveRangeBase } from "./range.js";
 import {
   STAGES,
   secondaryModelLabel,
@@ -73,10 +76,17 @@ export async function executeWaiJudge(
     !state.reviewedSteps[currentStepIndex];
 
   progress(1, STAGES.judge, "Collecting diff and conventions…");
+  // Holistic range: the final judgment covers everything since the last
+  // accepted review baseline (falling back to the last commit on a clean
+  // tree without a baseline, or the empty tree for root commits). A passing
+  // judge is a verdict, not a review: it never mutates the review range
+  // state.
+  const vcsInfo = getVcsInfo(cwd);
+  const range = resolveRangeBase(cwd, "holistic", vcsInfo, getLastReviewedCommit(cwd), getPendingReviewCommit(cwd), {});
   const { diff, truncated, changedFiles } = getDiff(cwd, {
     maxDiffChars: config.reviewMaxDiffChars,
     untracked: true,
-    revision: "HEAD",
+    ...range,
   });
 
   const conventions = loadConventions(cwd);
@@ -100,6 +110,13 @@ export async function executeWaiJudge(
     diff,
     description,
     modelProfile,
+    // The resolved range state is part of the key: two holistic ranges can
+    // produce identical diff TEXT while representing different accepted/
+    // pending review state, so a cached judgment must never replay across a
+    // range change.
+    range: { since: range.since ?? null, revision: range.revision ?? null },
+    lastReviewedCommit: getLastReviewedCommit(cwd) ?? null,
+    pendingReviewCommit: getPendingReviewCommit(cwd) ?? null,
     planProgress: state.plan ? `${state.completedSteps}/${state.totalSteps}` : "none",
     planTodo: state.plan?.todo,
     acceptanceCriteria: state.plan?.acceptanceCriteria,

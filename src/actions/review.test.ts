@@ -1155,19 +1155,19 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     // No baseline advancement; the pending anchor keeps the failed range in scope.
     assert.equal(getLastReviewedCommit(cwd), undefined, "an incomplete review must not advance the baseline");
     assert.equal(getPendingReviewCommit(cwd), head, "an incomplete review must pin the pending anchor");
+    // maxRetries: 0 is honored end-to-end: one failed request (a.ts) + two
+    // successful ones (b.ts, c.ts) per run.
+    assert.equal(bodies.length, 3, "exactly one request per batch with maxRetries: 0");
     // Only the successfully reviewed batches are recorded.
     assert.equal(getReviewedFiles(cwd)["a.ts"], undefined, "the failed file must not be recorded as pass");
     assert.equal(getReviewedFiles(cwd)["b.ts"]?.verdict, "pass");
     assert.equal(getReviewedFiles(cwd)["c.ts"]?.verdict, "pass");
 
     // The incomplete review must NOT be cached: an identical retry re-runs
-    // the model (bodies grow beyond the first run's calls) and still must
-    // not advance. (The failing batch costs 3 attempts — the http backend's
-    // own 5xx retry default — plus the two successful batches: 5 calls per
-    // run, so a second run means >5 total.)
+    // the model and still must not advance (3 more requests).
     const retry = await executeWaiReview(cwd, "incomplete parallel probe", ctx, {}, undefined, () => {});
     assert.equal(retry.review?.verdict, "needs-work");
-    assert.ok(bodies.length > 5, "the retry must not be served from the review cache");
+    assert.equal(bodies.length, 6, "the retry must not be served from the review cache");
     assert.equal(getLastReviewedCommit(cwd), undefined, "the retry must still not advance the baseline");
     assert.equal(getPendingReviewCommit(cwd), head, "the retry must keep the pending anchor");
   });
@@ -1506,6 +1506,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     const ctx = { cwd } as unknown as ExtensionContext;
     const first = await executeWaiReview(cwd, "single batch fail round", ctx, {}, undefined, () => {});
     assert.ok(first.error, "the batch must fail");
+    assert.equal(bodies.length, 1, "maxRetries: 0 → exactly one request per failed review");
     assert.equal(getLastReviewedCommit(cwd), undefined);
     assert.equal(getPendingReviewCommit(cwd), c0, "the attempted range must be pinned");
 
@@ -1514,8 +1515,9 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     commitAll(cwd); // C2
     const second = await executeWaiReview(cwd, "single batch retry round", ctx, {}, undefined, () => {});
     assert.ok(second.error);
-    // The http backend retries 5xx itself (maxRetries is SDK-only), so the
-    // retry review's request is the LAST body.
+    // maxRetries: 0 is now honored end-to-end (config → http backend): each
+    // failing review makes EXACTLY one request, proving the wiring.
+    assert.equal(bodies.length, 2, "maxRetries: 0 must disable the backend's own retries");
     const retryBody = bodies[bodies.length - 1];
     assert.ok(retryBody.includes("SINGLE_FAIL_MARKER_2"), "the failed commit must stay in the retry's range");
     assert.ok(retryBody.includes("SINGLE_FAIL_NEXT"), "the new commit must be in the retry's range");

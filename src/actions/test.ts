@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
-import { getDiff } from "../diff-grabber.js";
+import { getDiff, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { logEvent } from "../logger.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
@@ -23,8 +23,9 @@ import {
 } from "./shared.js";
 import { getSessionContext } from "./review-helpers.js";
 import { prepareActionDiff } from "./context-shared.js";
+import { resolveRangeBase } from "./range.js";
 import { buildCacheKey, getCachedTest, setCachedResult } from "../review-cache.js";
-import { getState } from "../session-state.js";
+import { getState, getLastReviewedCommit, getPendingReviewCommit } from "../session-state.js";
 import { planStepDescription } from "../types.js";
 import type { ProgressReporter } from "../progress.js";
 import type { WaiToolResult, Conventions } from "../types.js";
@@ -90,9 +91,23 @@ export async function executeWaiTest(
       : undefined;
 
   progress(1, STAGES.test, "Collecting diff…");
+  const vcsInfo = getVcsInfo(cwd);
+  // Shared range selection (incremental policy): on a clean tree this diffs
+  // committed work since the accepted baseline (or the last commit) instead
+  // of an empty `git diff`; untracked files are included by default.
+  const range = resolveRangeBase(
+    cwd,
+    "incremental",
+    vcsInfo,
+    getLastReviewedCommit(cwd),
+    getPendingReviewCommit(cwd),
+    options,
+  );
   const { diff, changedFiles } = getDiff(cwd, {
     ...options,
     maxDiffChars: config.reviewMaxDiffChars,
+    untracked: options.untracked ?? true,
+    ...range,
   });
   const sessionContext = getSessionContext(ctx);
 
