@@ -1,6 +1,6 @@
-import { loadState, saveState } from "./plan-store.js";
+import { loadState, saveState, normalizeReviewedFiles, MAX_REVIEWED_FILES } from "./plan-store.js";
 import { planStepDescription } from "./types.js";
-import type { YoowaiSessionState, PlanResult } from "./types.js";
+import type { YoowaiSessionState, PlanResult, ReviewVerdict } from "./types.js";
 
 const sessionStates = new Map<string, YoowaiSessionState>();
 
@@ -23,8 +23,14 @@ export function getState(cwd: string): YoowaiSessionState {
     state.unreviewedEditsTotal ??= 0;
     state.unreviewedEditsFlushed ??= 0;
     state.lastReviewedCommit ??= undefined;
+    state.pendingReviewCommit ??= undefined;
     sessionStates.set(cwd, state);
   }
+  // Normalize on EVERY access (not just cache-miss): the cached state is
+  // mutable, so a malformed reviewedFiles assigned after initial load must
+  // not reach recordReviewedFiles (which dereferences r.at) or the prompt
+  // context.
+  state.reviewedFiles = normalizeReviewedFiles(state.reviewedFiles);
   return state;
 }
 
@@ -45,6 +51,8 @@ export function setPlan(cwd: string, plan: PlanResult): void {
   state.unreviewedEditsFlushed = 0;
   state.lastSteerAt = undefined;
   state.lastReviewedCommit = undefined;
+  state.pendingReviewCommit = undefined;
+  state.reviewedFiles = undefined;
   state.planStaleSuggestedRound = undefined;
   saveState(cwd, state);
 }
@@ -55,6 +63,7 @@ export function markStepComplete(cwd: string, reviewed = false): void {
     state.completedSteps++;
     state.reviewedSteps[state.completedSteps - 1] = reviewed;
     state.editedFiles = [];
+    state.reviewedFiles = undefined;
     // A different step starts fresh: the stale-suggestion throttle marker
     // must not collide with the new step's round counter (both are 0).
     state.planStaleSuggestedRound = undefined;
@@ -74,6 +83,7 @@ export function markStepsComplete(cwd: string, count: number, reviewed = false):
   }
   if (advanced) {
     state.editedFiles = [];
+    state.reviewedFiles = undefined;
     // New step → reset the stale-suggestion throttle marker (fresh steps all
     // start at round 0, so a bare round number would collide across steps).
     state.planStaleSuggestedRound = undefined;
@@ -94,6 +104,7 @@ export function setPlanProgress(cwd: string, completed: number): void {
   // Any progress change moves to a different step: the stale-suggestion
   // throttle marker must not collide with the new step's round counter.
   state.planStaleSuggestedRound = undefined;
+  state.reviewedFiles = undefined;
   if (target > state.completedSteps) {
     while (state.completedSteps < target) {
       state.completedSteps++;
@@ -134,6 +145,7 @@ export function markStepsDoneByIds(cwd: string, ids: number[], reviewed = true):
     }
     if (advanced) {
       state.editedFiles = [];
+      state.reviewedFiles = undefined;
       state.planStaleSuggestedRound = undefined;
       saveState(cwd, state);
     }
@@ -271,6 +283,45 @@ export function setLastReviewedCommit(cwd: string, commit: string | undefined): 
   const state = getState(cwd);
   state.lastReviewedCommit = commit;
   saveState(cwd, state);
+}
+
+export function getPendingReviewCommit(cwd: string): string | undefined {
+  return getState(cwd).pendingReviewCommit;
+}
+
+export function setPendingReviewCommit(cwd: string, commit: string | undefined): void {
+  const state = getState(cwd);
+  state.pendingReviewCommit = commit;
+  saveState(cwd, state);
+}
+
+/** Record the files a completed review covered, with its verdict. Kept
+ *  bounded to the most recent entries (oldest evicted first). Reset together
+ *  with editedFiles on plan/step transitions; drives prior-round context
+ *  injection in later reviews of the same step. */
+export function recordReviewedFiles(cwd: string, files: string[], verdict: ReviewVerdict): void {
+  const state = getState(cwd);
+  if (!files || files.length === 0) return;
+  state.reviewedFiles ??= {};
+  // Monotonic timestamp: strictly newer than every existing entry so a later
+  // batch always survives eviction (Date.now() can collide across batches
+  // recorded within the same millisecond).
+  const now = Math.max(Date.now(), ...Object.values(state.reviewedFiles).map((r) => r.at + 1));
+  for (const file of files) {
+    state.reviewedFiles[file] = { verdict, at: now };
+  }
+  const entries = Object.entries(state.reviewedFiles);
+  if (entries.length > MAX_REVIEWED_FILES) {
+    // Stable sort: ties keep insertion order, so the oldest-inserted entries
+    // are evicted first.
+    entries.sort((a, b) => a[1].at - b[1].at);
+    state.reviewedFiles = Object.fromEntries(entries.slice(-MAX_REVIEWED_FILES));
+  }
+  saveState(cwd, state);
+}
+
+export function getReviewedFiles(cwd: string): Record<string, { verdict: ReviewVerdict; at: number }> {
+  return getState(cwd).reviewedFiles ?? {};
 }
 
 export function dropSessionState(cwd: string): void {

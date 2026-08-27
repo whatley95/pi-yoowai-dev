@@ -832,6 +832,36 @@ describe("prompt caching", () => {
     assert.notStrictEqual(a, b);
   });
 
+  it("renders priorRoundContext after memory and adds the anti-reflag rule", () => {
+    const files = [{ file: "src/a.ts", content: "const x = 1;", mode: "full" as const }];
+    const prior =
+      "- src/name-input.ts — last review verdict: pass\n\n--- src/name-input.ts ---\nexport function NameInput() {}";
+    const withPrior = buildAdaptiveReviewPrompt("desc", "diff", files, {
+      memoryContext: "past issue in src/a.ts",
+      priorRoundContext: prior,
+      relatedContext: "--- src/other.ts ---\nother",
+    });
+
+    // Rendered between <memory> and <related_files>.
+    const memoryIdx = withPrior.user.indexOf("<memory>");
+    const priorIdx = withPrior.user.indexOf("<prior_review_context>");
+    const relatedIdx = withPrior.user.indexOf("<related_files>");
+    assert.ok(memoryIdx >= 0 && priorIdx > memoryIdx && relatedIdx > priorIdx);
+    assert.ok(withPrior.user.includes("src/name-input.ts — last review verdict: pass"));
+
+    // System rule guards against re-flagging earlier-round logic.
+    assert.ok(
+      withPrior.system.includes(
+        "Prior-round context lists files reviewed earlier in this step that are NOT part of the current diff",
+      ),
+    );
+
+    // Absent without the option.
+    const withoutPrior = buildAdaptiveReviewPrompt("desc", "diff", files, {});
+    assert.ok(!withoutPrior.user.includes("<prior_review_context>"));
+    assert.ok(!withoutPrior.system.includes("Prior-round context lists files"));
+  });
+
   it("caches static scan prompts", () => {
     const a = buildScanPrompt();
     const b = buildScanPrompt();

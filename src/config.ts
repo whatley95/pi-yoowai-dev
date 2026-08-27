@@ -155,6 +155,7 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     autoPreReviewCommands: false,
     designRefMaxTokens: 800,
     instructionsMaxTokens: 800,
+    priorReviewMaxTokens: 800,
     entryRenderer: true,
     shortcuts: true,
     planWidget: true,
@@ -243,6 +244,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   "autoPreReviewCommands",
   "designRefMaxTokens",
   "instructionsMaxTokens",
+  "priorReviewMaxTokens",
   "maxContinuations",
   "entryRenderer",
   "shortcuts",
@@ -541,6 +543,13 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
       o.instructionsMaxTokens >= 0
         ? o.instructionsMaxTokens
         : (base.instructionsMaxTokens ?? 800),
+    priorReviewMaxTokens:
+      typeof o.priorReviewMaxTokens === "number" &&
+      Number.isInteger(o.priorReviewMaxTokens) &&
+      Number.isFinite(o.priorReviewMaxTokens) &&
+      o.priorReviewMaxTokens >= 0
+        ? o.priorReviewMaxTokens
+        : (base.priorReviewMaxTokens ?? 800),
     entryRenderer: typeof o.entryRenderer === "boolean" ? o.entryRenderer : base.entryRenderer,
     shortcuts: typeof o.shortcuts === "boolean" ? o.shortcuts : base.shortcuts,
     planWidget: typeof o.planWidget === "boolean" ? o.planWidget : base.planWidget,

@@ -13,6 +13,10 @@ import {
   markJudgeCompleted,
   getLastReviewedCommit,
   setLastReviewedCommit,
+  recordReviewedFiles,
+  getReviewedFiles,
+  setPendingReviewCommit,
+  getPendingReviewCommit,
   markStepsDoneByIds,
   setPlanProgress,
   recordFileEdit,
@@ -21,6 +25,7 @@ import {
   recordUnreviewedTurn,
   flushSessionState,
   planStaleSuggestionDue,
+  dropSessionState,
 } from "./session-state.js";
 import type { PlanResult } from "./types.js";
 
@@ -75,6 +80,129 @@ test("lastReviewedCommit is tracked", () => {
   assert.equal(getLastReviewedCommit(cwd), "abc123");
   setPlan(cwd, plan);
   assert.equal(getLastReviewedCommit(cwd), undefined);
+});
+
+test("recordReviewedFiles tracks files with verdicts and resets on step transitions", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  assert.deepEqual(getReviewedFiles(cwd), {});
+
+  recordReviewedFiles(cwd, ["src/a.ts", "src/b.ts"], "pass");
+  const reviewed = getReviewedFiles(cwd);
+  assert.equal(reviewed["src/a.ts"].verdict, "pass");
+  assert.equal(reviewed["src/b.ts"].verdict, "pass");
+
+  // A later review overwrites the verdict of a previously reviewed file.
+  recordReviewedFiles(cwd, ["src/a.ts"], "needs-work");
+  assert.equal(getReviewedFiles(cwd)["src/a.ts"].verdict, "needs-work");
+  assert.equal(getReviewedFiles(cwd)["src/b.ts"].verdict, "pass");
+
+  // Step transitions reset the record so the next step starts clean.
+  markStepComplete(cwd, true);
+  assert.deepEqual(getReviewedFiles(cwd), {});
+});
+
+test("recordReviewedFiles ignores empty file lists and caps at 100 entries, keeping the most recent", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  recordReviewedFiles(cwd, [], "pass");
+  assert.deepEqual(getReviewedFiles(cwd), {});
+
+  for (let i = 0; i < 50; i++) {
+    recordReviewedFiles(cwd, [`src/old${i}.ts`], "pass");
+  }
+  for (let i = 0; i < 60; i++) {
+    recordReviewedFiles(cwd, [`src/new${i}.ts`], "needs-work");
+  }
+  const reviewed = getReviewedFiles(cwd);
+  assert.equal(Object.keys(reviewed).length, 100);
+  // All 10 evictions came from the older batch; the survivors keep their verdicts.
+  assert.equal(Object.keys(reviewed).filter((f) => f.startsWith("src/old")).length, 40);
+  assert.equal(Object.keys(reviewed).filter((f) => f.startsWith("src/new")).length, 60);
+  for (const f of Object.keys(reviewed)) {
+    assert.equal(reviewed[f].verdict, f.startsWith("src/new") ? "needs-work" : "pass");
+  }
+});
+
+test("reviewedFiles survives a save/load round trip through plan-store", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  recordReviewedFiles(cwd, ["src/a.ts"], "pass");
+  recordReviewedFiles(cwd, ["src/b.ts"], "needs-work");
+  setPendingReviewCommit(cwd, "abc123");
+
+  // Drop the in-memory state and reload from disk (what a new session does).
+  dropSessionState(cwd);
+  const state = getState(cwd);
+  assert.equal(state.reviewedFiles?.["src/a.ts"].verdict, "pass");
+  assert.equal(state.reviewedFiles?.["src/b.ts"].verdict, "needs-work");
+  assert.equal(Object.keys(state.reviewedFiles ?? {}).length, 2);
+  assert.equal(getPendingReviewCommit(cwd), "abc123");
+  assert.equal(getLastReviewedCommit(cwd), undefined);
+});
+
+test("getState normalizes malformed reviewedFiles on every access", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  recordReviewedFiles(cwd, ["src/a.ts"], "pass");
+
+  // Hand-constructed garbage: invalid verdicts, non-finite timestamps, and
+  // non-object entries must be discarded instead of throwing later.
+  const state = getState(cwd);
+  (state as { reviewedFiles?: unknown }).reviewedFiles = {
+    "src/a.ts": { verdict: "pass", at: 5 },
+    "src/bogus.ts": { verdict: "maybe", at: 6 },
+    "src/nan.ts": { verdict: "pass", at: Number.NaN },
+    "src/null.ts": null,
+  };
+
+  const normalized = getReviewedFiles(cwd);
+  assert.deepEqual(Object.keys(normalized), ["src/a.ts"]);
+});
+
+test("saveState caps reviewedFiles beyond MAX_REVIEWED_FILES", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  const now = Date.now();
+  const state = getState(cwd);
+  const big: Record<string, { verdict: "pass" | "needs-work" | "blocked"; at: number }> = {};
+  for (let i = 0; i < 120; i++) {
+    big[`src/f${i}.ts`] = { verdict: "pass", at: now + i };
+  }
+  state.reviewedFiles = big;
+  // Persist the mutated state, then reload from disk (what a new session does).
+  flushSessionState(cwd);
+  dropSessionState(cwd);
+  const loaded = getState(cwd);
+  assert.equal(
+    Object.keys(loaded.reviewedFiles ?? {}).length,
+    100,
+    "persisted reviewedFiles must be capped at MAX_REVIEWED_FILES",
+  );
+  // The 100 newest entries survive (f20..f119).
+  assert.ok(loaded.reviewedFiles?.["src/f119.ts"], "the newest entry must survive");
+  assert.equal(loaded.reviewedFiles?.["src/f19.ts"], undefined, "the oldest entries must be evicted");
+});
+
+test("reviewedFiles resets on markStepsComplete, markStepsDoneByIds, setPlanProgress, and setPlan", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  recordReviewedFiles(cwd, ["src/a.ts"], "pass");
+
+  markStepsComplete(cwd, 1, true);
+  recordReviewedFiles(cwd, ["src/b.ts"], "pass");
+  assert.deepEqual(Object.keys(getReviewedFiles(cwd)), ["src/b.ts"]);
+
+  markStepsDoneByIds(cwd, [1, 2], true);
+  assert.deepEqual(getReviewedFiles(cwd), {});
+  recordReviewedFiles(cwd, ["src/c.ts"], "pass");
+
+  setPlanProgress(cwd, 0);
+  assert.deepEqual(getReviewedFiles(cwd), {});
+  recordReviewedFiles(cwd, ["src/d.ts"], "pass");
+
+  setPlan(cwd, { summary: "next task", todo: ["new step"], acceptanceCriteria: [] });
+  assert.deepEqual(getReviewedFiles(cwd), {});
 });
 
 test("getProgress skips steps whose dependencies are not yet completed", () => {

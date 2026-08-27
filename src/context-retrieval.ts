@@ -117,3 +117,62 @@ function generateCompactOutline(content: string): string {
   }
   return outline.join("\n");
 }
+
+export interface FileOutlinesResult {
+  /** Per-file outline blocks joined with blank lines (no semantic header — the caller supplies it). */
+  context: string;
+  tokenEstimate: number;
+  /** Files whose outlines made it into the result (missing/unreadable/non-reviewable ones are skipped). */
+  files: string[];
+}
+
+/** Build token-bounded compact outlines for an explicit list of files (the
+ *  given files themselves, not their import neighbors). Used to give the
+ *  reviewer context on files that were covered by earlier review rounds but
+ *  are absent from the current incremental diff. Stops at maxTokens; files
+ *  whose outline would exceed the remaining budget are skipped.
+ *
+ *  `perFileOverheadTokens` reserves additional tokens per INCLUDED file for
+ *  caller-side per-file lines (e.g. verdict lines) so the assembled block
+ *  stays complete: every included file has both its overhead line and its
+ *  outline, and no entry is cut mid-way. A function receives the file path so
+ *  the caller can measure the exact rendered line (e.g. a verdict line whose
+ *  length varies with the path). */
+export function buildFileOutlines(
+  cwd: string,
+  files: string[],
+  maxTokens: number,
+  perFileOverheadTokens: number | ((file: string) => number) = 0,
+): FileOutlinesResult {
+  const contexts: string[] = [];
+  let totalTokens = 0;
+  const included: string[] = [];
+
+  for (const file of files) {
+    if (totalTokens >= maxTokens) break;
+    if (!isReviewableFile(file)) continue;
+    const safePath = resolveProjectPath(cwd, file);
+    if (!safePath) continue;
+    try {
+      const content = readFileSync(safePath, "utf-8");
+      const outline = generateCompactOutline(content);
+      if (outline.trim().length === 0) continue;
+      // Count the complete rendered entry (header + outline) plus the
+      // caller's per-file overhead (e.g. a verdict line) so the consumed
+      // budget is cumulative and every included file's full entry fits.
+      const entryText = `--- ${file} ---\n${outline}`;
+      const overhead =
+        typeof perFileOverheadTokens === "function" ? perFileOverheadTokens(file) : perFileOverheadTokens;
+      const entryTokens = estimateTokens(entryText) + overhead;
+      if (totalTokens + entryTokens > maxTokens) continue;
+      contexts.push(entryText);
+      totalTokens += entryTokens;
+      included.push(file);
+    } catch {
+      // ignore unreadable files
+    }
+  }
+
+  if (contexts.length === 0) return { context: "", tokenEstimate: 0, files: [] };
+  return { context: contexts.join("\n\n"), tokenEstimate: totalTokens, files: included };
+}

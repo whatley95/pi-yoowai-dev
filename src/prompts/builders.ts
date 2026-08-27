@@ -176,6 +176,7 @@ export function buildReviewUserContext(args: {
   conventionsText?: string;
   preReviewOutput?: string;
   memoryContext?: string;
+  priorRoundContext?: string;
   relatedContext?: string;
   codemap?: string;
   designRefText?: string;
@@ -195,6 +196,7 @@ export function buildReviewUserContext(args: {
     conventionsText,
     preReviewOutput,
     memoryContext,
+    priorRoundContext,
     relatedContext,
     codemap,
     designRefText,
@@ -212,6 +214,9 @@ export function buildReviewUserContext(args: {
     : "";
   const preReviewBlock = preReviewOutput ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>` : "";
   const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
+  const priorRoundBlock = priorRoundContext
+    ? `\n\n<prior_review_context>\n${priorRoundContext}\n</prior_review_context>`
+    : "";
   const relatedBlock = relatedContext ? `\n\n<related_files>\n${relatedContext}\n</related_files>` : "";
   const codemapBlock = codemap ? `\n\n<project_symbol_map>\n${codemap}\n</project_symbol_map>` : "";
   const designRefBlock = designRefText ? `\n\n<design_rules>\n${designRefText}\n</design_rules>` : "";
@@ -239,7 +244,7 @@ export function buildReviewUserContext(args: {
       ? `\n\n<focus_files>\nFiles edited as part of the current plan step (primary review target, but the full diff still matters for cross-file impact): ${focusFiles.join(", ")}\n</focus_files>`
       : "";
 
-  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${relatedBlock}${codemapBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
+  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${priorRoundBlock}${relatedBlock}${codemapBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
 }
 
 function buildAdaptiveReviewPromptImpl(
@@ -254,6 +259,7 @@ function buildAdaptiveReviewPromptImpl(
     conventionsText?: string;
     preReviewOutput?: string;
     memoryContext?: string;
+    priorRoundContext?: string;
     relatedContext?: string;
     codemap?: string;
     designRefText?: string;
@@ -274,6 +280,7 @@ function buildAdaptiveReviewPromptImpl(
     conventionsText,
     preReviewOutput,
     memoryContext,
+    priorRoundContext,
     relatedContext,
     codemap,
     designRefText,
@@ -332,7 +339,7 @@ ${planRules}
 - Respect the project conventions shown above; do NOT flag a pattern as wrong if it matches the conventions
 ${designRefText ? "- Apply the design rules shown above when reviewing UI code; do not flag a pattern that follows them.\n" : ""}- Pay attention to pre-review command output (lint/test/typecheck). Failures there are real issues ONLY for files changed in this diff; ignore pre-existing warnings in unrelated files.
 - Memory shows past issues in the same files. If a past issue appears again, flag it as regression.
-- CRITICAL: Only flag issues you can see evidence for. If a property, method, template, or style exists in the provided full file contents, do NOT flag it as missing. When unsure, prefer "pass" or "low" severity over guessing.
+${priorRoundContext ? "- Prior-round context lists files reviewed earlier in this step that are NOT part of the current diff. Their logic was implemented and reviewed in earlier rounds — do NOT flag it as missing unless you see concrete evidence it is broken.\n" : ""}- CRITICAL: Only flag issues you can see evidence for. If a property, method, template, or style exists in the provided full file contents, do NOT flag it as missing. When unsure, prefer "pass" or "low" severity over guessing.
 ${diffScopeRules({
   diffScope:
     "When reviewing a code change (a diff is provided), only flag issues in files that are part of that change. Do NOT flag pre-existing problems in unrelated files.",
@@ -355,6 +362,7 @@ ${EVIDENCE_RULES}`,
       conventionsText,
       preReviewOutput,
       memoryContext,
+      priorRoundContext,
       relatedContext,
       codemap,
       designRefText,

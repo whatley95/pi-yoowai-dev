@@ -12,6 +12,8 @@ import {
   processDiff,
   DEFAULT_MAX_DIFF_CHARS,
   getGitDiff,
+  resolveGitCommit,
+  resolveEmptyTree,
 } from "./diff-grabber.js";
 import { gitSpawnEnv } from "./git-env.js";
 
@@ -220,6 +222,50 @@ describe("diff-grabber helpers", () => {
       } catch {
         // best-effort cleanup
       }
+    }
+  });
+
+  it("resolveGitCommit peels revisions to commit SHAs and rejects non-commits", { skip: !hasGit }, () => {
+    const cwd = mkdtempSync(join(tmpdir(), "wai-dg-resolve-"));
+    try {
+      execFileSync("git", ["init"], { cwd, ...gitOpts() });
+      execFileSync("git", ["config", "user.email", "t@t.co"], { cwd, ...gitOpts() });
+      execFileSync("git", ["config", "user.name", "t"], { cwd, ...gitOpts() });
+      writeFileSync(join(cwd, "a.ts"), "export const a = 1;\n");
+      execFileSync("git", ["add", "."], { cwd, ...gitOpts() });
+      execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], { cwd, ...gitOpts() });
+      const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd, ...gitOpts() })
+        .toString()
+        .trim();
+      const tree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd, ...gitOpts() })
+        .toString()
+        .trim();
+
+      // Relative and absolute commit revisions resolve; the tree does not.
+      assert.equal(resolveGitCommit(cwd, "HEAD"), commit);
+      assert.equal(resolveGitCommit(cwd, "HEAD~0"), commit);
+      assert.equal(resolveGitCommit(cwd, tree), undefined, "a tree SHA must not resolve as a commit");
+      assert.equal(resolveGitCommit(cwd, "nope"), undefined);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveEmptyTree materializes the empty-tree SHA usable as a diff base", { skip: !hasGit }, () => {
+    const cwd = mkdtempSync(join(tmpdir(), "wai-dg-empty-"));
+    try {
+      execFileSync("git", ["init"], { cwd, ...gitOpts() });
+      const empty = resolveEmptyTree(cwd);
+      assert.ok(empty, "the empty tree must resolve");
+      // The object must exist (hash-object -w) and be diffable.
+      execFileSync("git", ["cat-file", "-e", `${empty}^{tree}`], { cwd, ...gitOpts() });
+      writeFileSync(join(cwd, "a.ts"), "export const rootMarker = 1;\n");
+      execFileSync("git", ["add", "."], { cwd, ...gitOpts() });
+      execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "root"], { cwd, ...gitOpts() });
+      const diff = execFileSync("git", ["diff", `${empty}..HEAD`], { cwd, ...gitOpts() }).toString();
+      assert.ok(diff.includes("rootMarker"), "the root commit must be diffable against the empty tree");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 });

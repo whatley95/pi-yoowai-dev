@@ -2,9 +2,38 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { Value } from "@sinclair/typebox/value";
 import { getSessionConfigDir, getSessionConfigPath } from "./session-scope.js";
 import { logEvent } from "./logger.js";
-import type { YoowaiSessionState, PlanResult } from "./types.js";
+import type { YoowaiSessionState, PlanResult, ReviewVerdict } from "./types.js";
 import { validatePlanResult } from "./prompts.js";
 import { PlanResultSchema } from "./schemas.js";
+
+/** Cap for the reviewedFiles record: oldest entries are evicted first. */
+export const MAX_REVIEWED_FILES = 100;
+
+export function isReviewVerdict(value: unknown): value is ReviewVerdict {
+  return value === "pass" || value === "needs-work" || value === "blocked";
+}
+
+/** Normalize a reviewedFiles record: keep only entries with a valid verdict
+ *  and a finite timestamp, cap at the most recent MAX_REVIEWED_FILES entries.
+ *  Shared by loadState (disk) and session-state (in-memory) so both stay
+ *  bounded and malformed legacy values cannot reach the prompt context. */
+export function normalizeReviewedFiles(
+  raw: unknown,
+): Record<string, { verdict: ReviewVerdict; at: number }> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const entries: Array<[string, { verdict: ReviewVerdict; at: number }]> = [];
+  for (const [file, rec] of Object.entries(raw)) {
+    if (!file || !rec || typeof rec !== "object" || Array.isArray(rec)) continue;
+    const verdict = (rec as { verdict?: unknown }).verdict;
+    const at = (rec as { at?: unknown }).at;
+    if (!isReviewVerdict(verdict)) continue;
+    if (typeof at !== "number" || !Number.isFinite(at)) continue;
+    entries.push([file, { verdict, at }]);
+  }
+  if (entries.length === 0) return undefined;
+  entries.sort((a, b) => b[1].at - a[1].at);
+  return Object.fromEntries(entries.slice(0, MAX_REVIEWED_FILES));
+}
 
 function getStateDir(cwd: string): string {
   return getSessionConfigDir(cwd, "plan.json");
@@ -31,7 +60,9 @@ export function loadState(cwd: string): YoowaiSessionState | null {
       logEvent(cwd, "warn", "Saved plan failed validation and was ignored", { plan: rawPlan, errors });
     }
     const reviewedSteps = Array.isArray(data.reviewedSteps) ? data.reviewedSteps.map((v) => v === true) : [];
-    return {
+    const rawReviewedFiles = data.reviewedFiles;
+    const reviewedFiles = normalizeReviewedFiles(rawReviewedFiles);
+    const state: YoowaiSessionState = {
       plan: plan || undefined,
       completedSteps: typeof data.completedSteps === "number" ? data.completedSteps : 0,
       totalSteps: typeof data.totalSteps === "number" ? data.totalSteps : 0,
@@ -49,7 +80,26 @@ export function loadState(cwd: string): YoowaiSessionState | null {
         : [],
       planStaleSuggestedRound:
         typeof data.planStaleSuggestedRound === "number" ? data.planStaleSuggestedRound : undefined,
+      pendingReviewCommit:
+        typeof data.pendingReviewCommit === "string" && data.pendingReviewCommit.length > 0
+          ? data.pendingReviewCommit
+          : undefined,
+      lastReviewedCommit:
+        typeof data.lastReviewedCommit === "string" && data.lastReviewedCommit.length > 0
+          ? data.lastReviewedCommit
+          : undefined,
+      reviewedFiles,
     };
+    // Repair malformed legacy reviewedFiles on disk once, so repeated loads
+    // stop reprocessing bad data: trigger when the raw value is present but
+    // is not a plain object, or when normalization dropped entries.
+    const rawIsObject =
+      rawReviewedFiles !== null && typeof rawReviewedFiles === "object" && !Array.isArray(rawReviewedFiles);
+    const rawCount = rawIsObject ? Object.keys(rawReviewedFiles as Record<string, unknown>).length : 0;
+    if (rawReviewedFiles !== undefined && (!rawIsObject || rawCount !== Object.keys(reviewedFiles ?? {}).length)) {
+      saveState(cwd, state);
+    }
+    return state;
   } catch (err) {
     logEvent(cwd, "warn", "Failed to load wai plan state", { error: err instanceof Error ? err.message : String(err) });
     return null;
@@ -97,6 +147,9 @@ export function saveState(cwd: string, state: YoowaiSessionState): void {
           unreviewedEditsTotal: state.unreviewedEditsTotal ?? 0,
           unreviewedEditsFlushed: state.unreviewedEditsFlushed ?? 0,
           editedFiles: state.editedFiles ?? [],
+          reviewedFiles: normalizeReviewedFiles(state.reviewedFiles),
+          pendingReviewCommit: state.pendingReviewCommit,
+          lastReviewedCommit: state.lastReviewedCommit,
           planStaleSuggestedRound: state.planStaleSuggestedRound,
         },
         null,

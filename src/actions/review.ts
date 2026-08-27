@@ -1,10 +1,21 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
 import { loadYoowaiConfig, resolveReviewTaskModel } from "../config.js";
-import { getDiff, splitDiffByFile, splitDiffByHunk, getVcsInfo } from "../diff-grabber.js";
+import { resolveProjectPath } from "../path-security.js";
+import {
+  getDiff,
+  splitDiffByFile,
+  splitDiffByHunk,
+  getVcsInfo,
+  resolveGitCommit,
+  resolveGitTree,
+  resolveEmptyTree,
+  type VcsInfo,
+} from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js";
 import { loadFileContentsForReview, isReviewableFile, type FileContentEntry } from "../file-loader.js";
-import { buildRelatedContext } from "../context-retrieval.js";
+import { buildRelatedContext, buildFileOutlines } from "../context-retrieval.js";
 import { buildCodemap } from "../codemap.js";
 import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { capActionInstructions } from "../instructions.js";
@@ -23,6 +34,10 @@ import {
   markJudgeCompleted,
   getLastReviewedCommit,
   setLastReviewedCommit,
+  getPendingReviewCommit,
+  setPendingReviewCommit,
+  getReviewedFiles,
+  recordReviewedFiles,
   planStaleSuggestionDue,
 } from "../session-state.js";
 import { planStepDescription } from "../types.js";
@@ -57,6 +72,55 @@ import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../typ
  *  tests can reference the exact message. */
 export const REVIEW_NO_MODEL_ERROR =
   "No secondary model configured. Set pi-yoowai.secondary, taskModels.review, or taskModels.reviewMin/reviewMed/reviewHigh in settings.json.";
+
+/** Update the incremental-diff range state AFTER a completed review.
+ *  - pass: the baseline advances to HEAD (skipping the just-reviewed
+ *    commits) and any pending anchor is cleared.
+ *  - non-pass (whole-tree reviews only): the accepted baseline stays put, but
+ *    a stable pending anchor keeps the reviewed range inside the next
+ *    review's diff. Without it, a clean-tree review with no baseline would
+ *    re-resolve HEAD~1 dynamically and drop the failed round once HEAD
+ *    moves (e.g. a failed review of A, then commit B: HEAD~1 is A, so
+ *    A..B excludes A).
+ *  - inconclusive reviews are NOT failed rounds (verdict slip or truncation
+ *    with no actionable issues): neither the baseline nor the pending anchor
+ *    moves.
+ *  - Scoped reviews only certify part of the tree and never touch the range
+ *    state. */
+function updateReviewRangeState(
+  cwd: string,
+  vcsInfo: VcsInfo,
+  diffOptions: { since?: string; revision?: string; files?: string[]; exclude?: string[]; vcs?: "git" | "svn" },
+  review: Pick<ReviewResult, "verdict" | "inconclusive">,
+  opts?: { pinOnInconclusive?: boolean },
+): void {
+  if (vcsInfo.type !== "git" || !vcsInfo.revision) return;
+  // An explicit VCS override that is not git means this review is not a git
+  // review: never touch git range state for it.
+  if (diffOptions.vcs && diffOptions.vcs !== "git") return;
+  // Scoped reviews only certify part of the tree: they never touch the
+  // baseline or the pending anchor, regardless of verdict. (Scoped diffs are
+  // self-contained — they do not use the range — so a scoped coverage-
+  // inconclusive result loses nothing: it is simply not cached and the user
+  // is asked to re-run scoped.)
+  if (diffOptions.files?.length || diffOptions.exclude?.length) return;
+  // An inconclusive result is not a failed review round: nothing moves —
+  // UNLESS the inconclusive result came from truncated/omitted coverage, in
+  // which case the unreviewed portion must stay visible (pin the range).
+  if (review.inconclusive === true && !opts?.pinOnInconclusive) return;
+  if (review.verdict === "pass") {
+    setLastReviewedCommit(cwd, vcsInfo.revision);
+    setPendingReviewCommit(cwd, undefined);
+    return;
+  }
+  const anchor = diffOptions.since ?? diffOptions.revision;
+  // Resolve to an absolute commit OR tree SHA (the empty-tree root-commit
+  // base is a tree object). A relative anchor (e.g. a user-supplied
+  // `since: "HEAD~1"`) would re-resolve to a different commit once HEAD
+  // moves, recreating the blind spot the anchor exists to prevent.
+  const resolvedAnchor = anchor ? (resolveGitCommit(cwd, anchor) ?? resolveGitTree(cwd, anchor)) : undefined;
+  if (resolvedAnchor) setPendingReviewCommit(cwd, resolvedAnchor);
+}
 
 /** Decide whether a passing review advances the plan tracker, and by how
  *  many steps. Guards the guarded auto-completion contract:
@@ -147,22 +211,76 @@ export async function executeWaiReview(
     untracked: options.untracked ?? true,
   };
   const vcsInfo = getVcsInfo(cwd);
+  // An explicit VCS override must win over auto-detection for the range
+  // logic: git incremental SHAs must never feed an SVN diff or write git
+  // review state for an SVN review.
+  const gitReview = vcsInfo.type === "git" && (options.vcs ?? vcsInfo.type) === "git";
   const lastReviewed = getLastReviewedCommit(cwd);
+  // Persisted anchors may be stale or hand-edited garbage: verify they still
+  // resolve before using them as a diff base (the pending anchor may be a
+  // tree — the empty-tree root-commit base — so accept commits AND trees).
+  const pendingAnchor = getPendingReviewCommit(cwd);
+  const pendingValid =
+    gitReview && pendingAnchor && (resolveGitCommit(cwd, pendingAnchor) ?? resolveGitTree(cwd, pendingAnchor))
+      ? pendingAnchor
+      : undefined;
+  const baselineValid = gitReview && lastReviewed && resolveGitCommit(cwd, lastReviewed) ? lastReviewed : undefined;
   const canUseIncremental =
-    vcsInfo.type === "git" &&
+    gitReview &&
     !vcsInfo.dirty &&
-    lastReviewed &&
     !diffOptions.revision &&
     !diffOptions.since &&
     !diffOptions.files?.length &&
     !diffOptions.exclude?.length;
-  if (canUseIncremental) {
-    diffOptions.since = lastReviewed;
+  if (canUseIncremental && (pendingValid ?? baselineValid)) {
+    // A pending anchor from a failed review wins over the accepted baseline:
+    // the failed range must stay the diff base until a pass clears it (they
+    // coincide in the common flow, but a restart or state edit can diverge
+    // them).
+    diffOptions.since = pendingValid ?? baselineValid;
   } else if (!diffOptions.revision && !diffOptions.since) {
-    // Default to reviewing everything pending (staged + unstaged + untracked)
-    // instead of bare `git diff`, which hides staged changes and new files
-    // (e.g. after `git add` before review, or a "create file X" step).
-    diffOptions.revision = "HEAD";
+    // Clean tree with no stored baseline (fresh plan/session after committed
+    // work): review the most recent commit instead of an empty `git diff
+    // HEAD`. A pending anchor from a failed review wins over the dynamic
+    // HEAD~1 (which would skip the failed round once HEAD moves); resolved to
+    // an absolute SHA so it stays stable. A root commit has no HEAD~1 and
+    // falls back to HEAD.
+    if (gitReview && !vcsInfo.dirty) {
+      // A pending anchor from a failed review wins over the dynamic HEAD~1
+      // (which would skip the failed round once HEAD moves). A root commit
+      // (no HEAD~1) diffs against the empty tree so it can actually be
+      // reviewed instead of producing an empty `git diff HEAD`.
+      const freshBase = pendingValid ?? resolveGitCommit(cwd, "HEAD~1") ?? resolveEmptyTree(cwd);
+      if (freshBase) {
+        diffOptions.since = freshBase;
+      } else {
+        diffOptions.revision = vcsInfo.revision ?? "HEAD";
+      }
+    } else {
+      // Dirty tree (or non-git): diff the working tree against the best
+      // known git base — pending anchor, accepted baseline, or HEAD — so
+      // committed-but-unreviewed changes stay visible while the tree is
+      // dirty (a bare `git diff HEAD` would hide them). SVN keeps HEAD.
+      diffOptions.revision = gitReview ? (pendingValid ?? baselineValid ?? vcsInfo.revision ?? "HEAD") : "HEAD";
+    }
+  }
+  // Absolutize the selected range base NOW (git reviews only): a relative
+  // base (user-supplied `since`/`revision`, or the "HEAD" literal) would
+  // re-resolve to a different commit if HEAD moves while the (possibly long)
+  // review runs, so a failed review could pin a range it never actually
+  // reviewed. The git diff call is identical either way. SVN range values are
+  // left untouched — converting them to git SHAs would break the svn diff.
+  if (gitReview) {
+    if (diffOptions.since) {
+      diffOptions.since =
+        resolveGitCommit(cwd, diffOptions.since) ?? resolveGitTree(cwd, diffOptions.since) ?? diffOptions.since;
+    }
+    if (diffOptions.revision) {
+      diffOptions.revision =
+        resolveGitCommit(cwd, diffOptions.revision) ??
+        resolveGitTree(cwd, diffOptions.revision) ??
+        diffOptions.revision;
+    }
   }
   const { diff, truncated, changedFiles, vcs } = getDiff(cwd, diffOptions);
   const relatedContext =
@@ -189,6 +307,59 @@ export async function executeWaiReview(
     getPastIssuesForFiles(cwd, changedFiles, description),
     effectiveConfig.reviewMaxMemoryTokens ?? 800,
   );
+
+  // Prior-round context: files that completed reviews in this step but are
+  // NOT part of the current diff. An incremental review (clean tree,
+  // lastReviewedCommit..HEAD) would otherwise never see earlier rounds'
+  // files and re-flag their already-reviewed logic as missing. Token-capped
+  // by priorReviewMaxTokens (0 disables); the finalized context is hashed
+  // into the cache key so any change invalidates a stale cached review.
+  let priorRoundContext = "";
+  const priorReviewMaxTokens = effectiveConfig.priorReviewMaxTokens ?? 800;
+  if (priorReviewMaxTokens > 0) {
+    const reviewedFiles = getReviewedFiles(cwd);
+    const currentChanged = new Set(changedFiles);
+    const priorFiles = Object.entries(reviewedFiles)
+      .filter(
+        ([file]) =>
+          !currentChanged.has(file) && isReviewableFile(file) && existsSync(resolveProjectPath(cwd, file) ?? ""),
+      )
+      .map(([file, record]) => ({ file, verdict: record.verdict }));
+    if (priorFiles.length > 0) {
+      // Every included file also emits a verdict line and a header line: pass
+      // a per-file overhead reservation so entries stay COMPLETE (a listed
+      // file always has both its verdict line and its outline). The framing
+      // line is reserved from the cap up front.
+      // The framing line is reserved by MEASURING it, so the cap holds
+      // exactly: each entry is fitted atomically against the remaining
+      // budget inside buildFileOutlines (header + outline + exact verdict
+      // line), so the assembled block can never exceed priorReviewMaxTokens.
+      const framing =
+        "Previously reviewed this step (not in the current diff — implemented and reviewed in earlier rounds):\n";
+      const outlineBudget = Math.max(1, priorReviewMaxTokens - estimateTokens(framing));
+      // Per-file overhead = the EXACT rendered verdict line (the header is
+      // measured inside buildFileOutlines) plus a conservative 2-token
+      // separator reserve: the verdict-line join newlines, the "\n\n" between
+      // the verdict block and the outlines, and the outline-block separators
+      // (worst case ~0.75 tokens per included file). The measured framing is
+      // reserved up front, so the assembled block can never exceed
+      // priorReviewMaxTokens.
+      const verdictLineTokens = (file: string): number =>
+        estimateTokens(`- ${file} — last review verdict: ${reviewedFiles[file]?.verdict ?? "unknown"}`) + 2;
+      const outlines = buildFileOutlines(
+        cwd,
+        priorFiles.map((p) => p.file),
+        outlineBudget,
+        verdictLineTokens,
+      );
+      if (outlines.files.length > 0) {
+        const verdictLines = outlines.files
+          .map((file) => `- ${file} — last review verdict: ${reviewedFiles[file]?.verdict ?? "unknown"}`)
+          .join("\n");
+        priorRoundContext = `${framing}${verdictLines}\n\n${outlines.context}`;
+      }
+    }
+  }
 
   // Effective pre-review commands: explicit user config (any non-empty list)
   // wins; otherwise auto-detected from the reviewed project's package.json
@@ -223,6 +394,10 @@ export async function executeWaiReview(
     selfVerify: config.selfVerify,
     conventionsText,
     memoryContext,
+    // The finalized prior context itself (not a digest): buildCacheKey hashes
+    // the payload, so ANY change to the assembled context — outlines, verdict
+    // lines, truncation — invalidates the cached review.
+    priorRoundContext,
     codemap,
     designRefText,
     instructionsText,
@@ -240,6 +415,11 @@ export async function executeWaiReview(
     const cached = getCachedReview(cwd, cacheKey);
     if (cached) {
       progress(3, STAGES.review, "Using cached review result…");
+      // A cached pass is still a completed review: keep the baseline in sync
+      // so a baseline reset (new plan/session) cannot leave the next review
+      // re-diffing already-reviewed commits.
+      updateReviewRangeState(cwd, vcsInfo, diffOptions, cached.review);
+      recordReviewedFiles(cwd, changedFiles, cached.review.verdict);
       return {
         action: "review",
         review: cached.review,
@@ -340,13 +520,17 @@ export async function executeWaiReview(
         1000 -
         estimateTokens(codemap ?? "") -
         estimateTokens(designRefText ?? "") -
-        estimateTokens(instructionsText),
+        estimateTokens(instructionsText) -
+        estimateTokens(priorRoundContext),
     );
     const diffTokens = estimateTokens(diff);
     if (diffTokens > remainingForDiff && !shouldParallelize) {
       progress(7, STAGES.review, "Diff too large for a diff-only review…");
       const parallelHint =
         filesWithDiff.length > 1 ? " Enable pi-yoowai.parallelReview for a per-file parallel diff-only review, or" : "";
+      // The attempted range was not reviewed: pin it so a re-run at a higher
+      // level (or with scoping) still sees the whole range.
+      updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
       return {
         action: "review",
         error: `The change is too large for a diff-only (${level} level) review: the diff needs ~${diffTokens.toLocaleString()} tokens but the model's available context budget is ~${remainingForDiff.toLocaleString()} tokens.${parallelHint} Re-run with wai_review_med or wai_review_high (they split large diffs automatically), or scope the review with files:[...].`,
@@ -364,6 +548,7 @@ export async function executeWaiReview(
       });
       if (oversizedFile) {
         progress(7, STAGES.review, "A single file's diff exceeds the model budget…");
+        updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
         return {
           action: "review",
           error: `The diff of \`${oversizedFile}\` (~${estimateTokens(fileDiffs[oversizedFile] ?? "").toLocaleString()} tokens) exceeds the model's per-file available context budget (~${remainingForDiff.toLocaleString()} tokens), so a parallel diff-only review would truncate it. Re-run with wai_review_med or wai_review_high (they split individual files into hunks), or scope the review with files:[...].`,
@@ -381,6 +566,9 @@ export async function executeWaiReview(
   let usedHunkChunking = false;
   let continuationRounds = 0;
   let continuationTruncated = false;
+  // Set when a hunk/parallel batch had failed tasks: the merged result is
+  // incomplete and must not advance the baseline or record a pass verdict.
+  let reviewIncomplete = false;
 
   if (filesWithDiff.length === 1 && diffLikelyTruncated && strategy !== "diff-only") {
     progress(7, STAGES.review, "Diff is large; splitting into hunks for review…");
@@ -419,8 +607,10 @@ export async function executeWaiReview(
         conventionsText,
         preReviewOutput,
         description,
-        // Every model call also receives the injected instructions.
+        // Every model call also receives the injected instructions and the
+        // prior-round context (it is part of every batch prompt).
         instructionsText,
+        priorRoundContext,
       ].join("\n");
       const outputEstimate =
         modelConfig.thinking && modelConfig.thinking.toLowerCase() !== "off"
@@ -441,6 +631,7 @@ export async function executeWaiReview(
       if (config.costBudgetUsd !== undefined && config.costBudgetUsd >= 0) {
         const sessionCost = getSessionCost(cwd).costUsd;
         if (sessionCost + projectedCost > config.costBudgetUsd) {
+          updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
           return {
             action: "review",
             error: `Hunk-based review would exceed the configured cost budget (${formatCost(config.costBudgetUsd)}).`,
@@ -462,6 +653,7 @@ export async function executeWaiReview(
           conventionsText,
           preReviewOutput,
           memoryContext: fileMemoryContext,
+          priorRoundContext,
           relatedContext,
           codemap,
           designRefText,
@@ -501,6 +693,10 @@ export async function executeWaiReview(
       }
 
       if (successes.length === 0) {
+        // Every batch failed: the attempted range was NOT reviewed, so pin
+        // it (scoped-aware) before returning — otherwise moving HEAD would
+        // drop the whole range, reproducing the incremental-review blind spot.
+        updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
         return { action: "review", error: failures.join("; "), model: modelProfile };
       }
 
@@ -510,7 +706,7 @@ export async function executeWaiReview(
         undefined,
       );
       if (cost) cost = recordCostWithBudget(cwd, cost);
-      finalDiffTruncated = truncated;
+      finalDiffTruncated = truncated || successes.some((s) => s.review.truncated);
       finalDroppedFiles = [...fileResult.dropped, ...skippedDueToTruncation];
       continuationRounds = successes.reduce((sum, s) => sum + (s.rounds ?? 0), 0);
       continuationTruncated = successes.some((s) => s.truncated);
@@ -518,6 +714,11 @@ export async function executeWaiReview(
       if (failures.length > 0) {
         review.suggestions.unshift(`Review failed for ${failures.length} hunk(s): ${failures.join("; ")}`);
         review.consensus = false;
+        reviewIncomplete = true;
+        // The file was only partially reviewed: record it honestly so prior
+        // context cannot claim a pass, and keep the failed hunks in range via
+        // the pending anchor (the merged verdict must not advance anything).
+        recordReviewedFiles(cwd, [file], "needs-work");
       }
 
       logEvent(cwd, "info", "Hunk-based review completed", {
@@ -544,8 +745,10 @@ export async function executeWaiReview(
       conventionsText,
       preReviewOutput,
       description,
-      // Every model call also receives the injected instructions.
+      // Every model call also receives the injected instructions and the
+      // prior-round context (it is part of every batch prompt).
       instructionsText,
+      priorRoundContext,
     ].join("\n");
     const outputEstimate =
       modelConfig.thinking && modelConfig.thinking.toLowerCase() !== "off"
@@ -602,6 +805,7 @@ export async function executeWaiReview(
     if (config.costBudgetUsd !== undefined && config.costBudgetUsd >= 0) {
       const sessionCost = getSessionCost(cwd).costUsd;
       if (sessionCost + projectedCost > config.costBudgetUsd) {
+        updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
         return {
           action: "review",
           error: `Parallel review would exceed the configured cost budget (${formatCost(config.costBudgetUsd)}).`,
@@ -623,6 +827,7 @@ export async function executeWaiReview(
         conventionsText,
         preReviewOutput,
         memoryContext: p.fileMemoryContext,
+        priorRoundContext,
         relatedContext,
         codemap,
         designRefText,
@@ -640,6 +845,7 @@ export async function executeWaiReview(
         ...toolLoopOptions(loopConfig),
       });
       return {
+        file: p.file,
         review: result.review,
         usage: result.usage,
         dropped: p.fileResult.dropped,
@@ -649,6 +855,7 @@ export async function executeWaiReview(
     });
 
     let outcomes: ConcurrencyOutcome<{
+      file: string;
       review: ReviewResult;
       usage: UsageCost;
       dropped: string[];
@@ -662,6 +869,7 @@ export async function executeWaiReview(
     }
 
     const successes: {
+      file: string;
       review: ReviewResult;
       usage: UsageCost;
       dropped: string[];
@@ -678,6 +886,9 @@ export async function executeWaiReview(
     }
 
     if (successes.length === 0) {
+      // Every batch failed: pin the attempted (scoped-aware) range so moving
+      // HEAD cannot drop it before a successful retry.
+      updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
       return { action: "review", error: failures.join("; "), model: modelProfile };
     }
 
@@ -695,6 +906,18 @@ export async function executeWaiReview(
     if (failures.length > 0) {
       review.suggestions.unshift(`Review failed for ${failures.length} file(s): ${failures.join("; ")}`);
       review.consensus = false;
+      reviewIncomplete = true;
+      // Only the successful batches were actually reviewed: record them with
+      // their own verdicts so prior context cannot claim a pass for files
+      // whose batches failed. The failed files stay in range via the pending
+      // anchor (the merged verdict must not advance anything).
+      for (const s of successes) {
+        recordReviewedFiles(
+          cwd,
+          [s.file],
+          s.review.truncated === true || s.truncated === true ? "needs-work" : s.review.verdict,
+        );
+      }
     }
 
     logEvent(cwd, "info", "Parallel review completed", {
@@ -743,6 +966,7 @@ export async function executeWaiReview(
         conventionsText,
         preReviewOutput,
         memoryContext,
+        priorRoundContext,
         relatedContext,
         codemap,
         designRefText,
@@ -761,6 +985,10 @@ export async function executeWaiReview(
         ...toolLoopOptions(loopConfig),
       });
     } catch (err) {
+      // The single batch failed entirely: the attempted range was NOT
+      // reviewed, so pin it (scoped-aware) before returning — otherwise
+      // moving HEAD would drop the whole range.
+      updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
       return {
         action: "review",
         error: err instanceof Error ? err.message : String(err),
@@ -798,6 +1026,9 @@ export async function executeWaiReview(
   }
 
   if (!review) {
+    // The model call failed to produce a review: the attempted range was not
+    // reviewed, so pin it before returning.
+    updateReviewRangeState(cwd, vcsInfo, diffOptions, { verdict: "needs-work" });
     return { action: "review", error: "Review could not be produced", model: modelProfile };
   }
 
@@ -819,13 +1050,30 @@ export async function executeWaiReview(
   }
   recordIssues(cwd, review.issues);
 
+  // Merge the model's own truncation signal into the diff-truncation flag for
+  // every path (the single-batch path computes finalDiffTruncated before the
+  // model call; hunk/parallel already fold batch flags in). A truncated pass
+  // must hit the downgrade below, whatever the cause.
+  // Merge every truncation signal into the diff-truncation flag for every
+  // path (the single-batch path computes finalDiffTruncated before the model
+  // call; hunk/parallel already fold batch flags in; self-verification may
+  // set review.truncated after that). A truncated pass must hit the downgrade
+  // below, whatever the cause.
+  if (review.truncated || continuationTruncated) finalDiffTruncated = true;
+
   // A non-pass verdict with ZERO issues is not actionable: either the model
   // response was truncated and salvage recovered only a bare verdict, or the
   // verdict contradicts its own findings (issues empty, suggestions positive).
   // It is not a pass (no evidence of clean), but it must not count as a failed
   // review round or tell the user to fix nonexistent issues — mark it
-  // inconclusive.
-  if ((review.verdict === "needs-work" || review.verdict === "blocked") && review.issues.length === 0) {
+  // inconclusive. Batch-failure reviews are NOT verdict slips: the
+  // reviewIncomplete handling below re-marks them, so skip them here (their
+  // suggestion must not claim the round was inconclusive).
+  if (
+    !reviewIncomplete &&
+    (review.verdict === "needs-work" || review.verdict === "blocked") &&
+    review.issues.length === 0
+  ) {
     review.inconclusive = true;
     review.suggestions.push(
       review.suggestions.length > 0
@@ -865,7 +1113,42 @@ export async function executeWaiReview(
     );
   }
 
-  setCachedResult(cwd, "review", cacheKey, { review, model: modelProfile, cost });
+  // A PASS on a truncated diff is not evidence of a clean change: the model
+  // never saw part of the change, so advancing the baseline would permanently
+  // skip unreviewed content. Downgrade to an inconclusive needs-work (no
+  // baseline advance, no plan advance, no caching) and tell the user to
+  // re-run scoped.
+  if (review.verdict === "pass" && finalDiffTruncated) {
+    review.verdict = "needs-work";
+    review.consensus = false;
+    review.stepComplete = false;
+    review.inconclusive = true;
+    review.suggestions.push(
+      "The diff was truncated, so the pass verdict cannot be trusted — re-run the review scoped with files:[...] (or with a larger budget) to cover the omitted part of the change.",
+    );
+  }
+
+  // An incomplete batch review is NOT a pass, whatever the surviving batches
+  // said: downgrade the public verdict (callers gating on `verdict` must not
+  // see success), block plan advancement, and refuse to cache it (a cached
+  // pass would replay the merged verdict on retry and advance the
+  // baseline / record passes for never-reviewed coverage). Batch failures
+  // are definite failed rounds, so any earlier inconclusive marker is cleared
+  // (the escalation counter must count the round).
+  if (reviewIncomplete) {
+    review.verdict = "needs-work";
+    review.stepComplete = false;
+    review.consensus = false;
+    review.inconclusive = false;
+  }
+
+  // Incomplete and inconclusive reviews are never cached: a retry must
+  // re-run the model (the inconclusive suggestion explicitly recommends a
+  // re-run), and the cache-hit path (which applies the cached verdict to
+  // baseline + recording) must never see a merged or verdict-slip result.
+  if (!reviewIncomplete && !review.inconclusive) {
+    setCachedResult(cwd, "review", cacheKey, { review, model: modelProfile, cost });
+  }
 
   // Propose-only staleness: never touch the plan; surface the update
   // suggestion once per review round (auto-review on settle must not repeat
@@ -885,6 +1168,26 @@ export async function executeWaiReview(
       model: modelConfig.id,
     });
   }
+
+  // Incremental-diff range state: a pass advances the baseline to HEAD and
+  // clears the pending anchor; a non-pass (or an incomplete batch review)
+  // keeps the baseline and pins a pending anchor so the failed changes stay
+  // inside the next review's diff. The reviewed files are recorded (verdict
+  // included) for prior-round context. Both run before the
+  // plan-advance/auto-judge block so every pass return path (including the
+  // auto-judge early return below) runs them exactly once.
+  updateReviewRangeState(
+    cwd,
+    vcsInfo,
+    diffOptions,
+    // Incomplete batch reviews always count as failed rounds even when the
+    // surviving batches were inconclusive: the batches themselves failed.
+    reviewIncomplete ? { verdict: "needs-work" } : review,
+    // An inconclusive result caused by truncated/omitted coverage must still
+    // pin the range so the unreviewed portion stays visible.
+    { pinOnInconclusive: review.inconclusive === true && (finalDiffTruncated || finalDroppedFiles.length > 0) },
+  );
+  if (!reviewIncomplete) recordReviewedFiles(cwd, changedFiles, review.verdict);
 
   // Guarded auto-completion: consensus (pass with zero issues) advances as
   // before; an explicit stepComplete signal advances exactly the current step.
@@ -964,9 +1267,6 @@ export async function executeWaiReview(
   }
 
   progress(10, STAGES.review, "Finalizing review…");
-  if (vcsInfo.type === "git" && vcsInfo.revision && review.verdict !== "blocked") {
-    setLastReviewedCommit(cwd, vcsInfo.revision);
-  }
   return {
     action: "review",
     review,

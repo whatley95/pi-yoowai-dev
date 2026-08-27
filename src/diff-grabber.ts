@@ -32,6 +32,57 @@ export function getVcsInfo(cwd: string): VcsInfo {
   return { type: "unknown" };
 }
 
+/** Resolve a revision to an absolute commit SHA, or undefined when it does
+ *  not resolve to a commit. Peeled with ^{commit}: tree/blob revisions fail,
+ *  while annotated tags are peeled and accepted only when they ultimately
+ *  reference a commit. Used to turn relative fallback ranges (e.g. HEAD~1)
+ *  into stable baseline anchors. */
+export function resolveGitCommit(cwd: string, rev: string): string | undefined {
+  return resolveGitObject(cwd, rev, "commit");
+}
+
+/** Resolve a revision to an absolute tree SHA, or undefined. Used together
+ *  with resolveGitCommit for pending range anchors: the empty tree (root
+ *  commit diff base) is a tree object, not a commit. */
+export function resolveGitTree(cwd: string, rev: string): string | undefined {
+  return resolveGitObject(cwd, rev, "tree");
+}
+
+function resolveGitObject(cwd: string, rev: string, type: "commit" | "tree"): string | undefined {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "--verify", "-q", "--end-of-options", `${rev}^{${type}}`], {
+      cwd,
+      env: gitSpawnEnv(),
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 3000,
+      windowsHide: true,
+    }).trim();
+    return sha.length > 0 ? sha : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The empty-tree SHA for the repo (materialized with -w so the object
+ *  exists even in a fresh repository), used to diff the root commit against
+ *  nothing (`git diff <empty-tree>..HEAD` on a single-commit repo). */
+export function resolveEmptyTree(cwd: string): string | undefined {
+  try {
+    const sha = execFileSync("git", ["hash-object", "-w", "-t", "tree", NULL_DEVICE], {
+      cwd,
+      env: gitSpawnEnv(),
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 3000,
+      windowsHide: true,
+    }).trim();
+    return sha.length > 0 ? sha : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function getGitInfo(cwd: string): VcsInfo {
   try {
     const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {

@@ -117,6 +117,8 @@ export interface YoowaiConfig {
   designRefMaxTokens?: number;
   /** Token budget for per-action instruction files (.pi/yoowai/instructions/<action>.md) injected into the secondary-model prompt for that action. Default 800; 0 disables. */
   instructionsMaxTokens?: number;
+  /** Token budget for the "previously reviewed this step" file outlines injected into review prompts when an incremental review cannot see earlier-round files. Default 800; 0 disables. */
+  priorReviewMaxTokens?: number;
   /** Render wai audit entries (plan, review, judge, etc.) with a custom TUI entry renderer. Default true. */
   entryRenderer?: boolean;
   /** Register keyboard shortcuts for common wai actions (review, done, status). Default true. */
@@ -295,6 +297,17 @@ export interface YoowaiSessionState {
   unreviewedEditsFlushed?: number;
   lastSteerAt?: number;
   lastReviewedCommit?: string;
+  /** Stable anchor for the next clean-tree review when the last review did
+   *  NOT pass and no baseline existed: keeps the failed round inside the
+   *  next diff's range (the dynamic HEAD~1 fallback would otherwise skip it
+   *  once HEAD moves). Cleared only when a whole-tree (unscoped) pass
+   *  advances the baseline, or when a new plan resets review state. */
+  pendingReviewCommit?: string;
+  /** Files covered by completed reviews in the current step, with the last
+   *  verdict each received. Drives prior-round context injection so a later
+   *  incremental review knows earlier-round files exist and were reviewed.
+   *  Reset on plan/step transitions. */
+  reviewedFiles?: Record<string, { verdict: ReviewVerdict; at: number }>;
   /** reviewRounds[completedSteps] value when the last plan-stale suggestion was surfaced; suppresses repeats within the same review round. */
   planStaleSuggestedRound?: number;
 }
