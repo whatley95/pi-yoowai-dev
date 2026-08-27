@@ -246,6 +246,44 @@ export async function executeWaiReview(
   // commands. Explicitly empty preReviewCommands does NOT trigger auto mode.
   const effectivePreReviewCommands = resolveEffectivePreReviewCommands(cwd, config, level);
 
+  // Diff preparation runs BEFORE the cache key: when the combined diff hit the
+  // reviewMaxDiffChars cap it is sliced at a byte boundary that can fall
+  // MID-FILE — a boundary file's surviving slice is truthy but incomplete, and
+  // tail files are missing entirely. Refetch EVERY reviewable file
+  // individually (per-file diffs bypass the combined cap) and REPLACE the
+  // combined slices, so the per-file parallel review covers each changed file
+  // completely. Failed refetches drop the partial slice so the coverage math
+  // below sees the file as skipped. Only relevant when per-file batches will
+  // run. The per-file diffs are part of the cache key below, so an identical
+  // capped combined text with different per-file content cannot replay a
+  // stale cached verdict.
+  const strategy = effectiveConfig.reviewStrategy ?? "auto";
+  const explicitParallel = Boolean(config.parallelReview);
+  const fileDiffs = splitDiffByFile(diff, vcs);
+  const reviewableFiles = changedFiles.filter(isReviewableFile);
+  let perFileDiffsRebuilt = false;
+  let perFileDiffsTruncated = false;
+  // Files whose per-file diff itself hit the cap: their batches must still be
+  // told their diff is truncated, and they count against full coverage.
+  const perFileTruncated = new Set<string>();
+  const shouldRebuildPerFileDiffs =
+    truncated && reviewableFiles.length > 1 && (strategy !== "diff-only" || explicitParallel);
+  if (shouldRebuildPerFileDiffs) {
+    for (const file of reviewableFiles) {
+      const perFile = getDiff(cwd, { ...diffOptions, files: [file] });
+      if (perFile.changedFiles.includes(file) && perFile.diff) {
+        fileDiffs[file] = perFile.diff;
+        if (perFile.truncated) {
+          perFileDiffsTruncated = true;
+          perFileTruncated.add(file);
+        }
+      } else {
+        delete fileDiffs[file];
+      }
+    }
+    perFileDiffsRebuilt = true;
+  }
+
   // Cache key: every STABLE prompt input. Pre-review COMMANDS are keyed (not
   // their output — commands are deterministic given cwd, and this keeps a
   // cache hit from re-running them), along with codemap, design rules, related
@@ -256,6 +294,18 @@ export async function executeWaiReview(
   // memory) is identical regardless of the conversation that led here.
   const cacheKey = buildCacheKey("review", {
     diff,
+    // When the combined diff was capped, the reviewed artifact is the set of
+    // per-file diffs: key entries by identity, content, AND truncation state
+    // (a diff exactly equal to the cap and a longer diff sharing that capped
+    // prefix have identical text but different coverage), so identical capped
+    // combined TEXT cannot replay a stale cached verdict.
+    perFileDiffs: shouldRebuildPerFileDiffs
+      ? reviewableFiles.map((file) => ({
+          file,
+          diff: fileDiffs[file] ?? null,
+          truncated: perFileTruncated.has(file),
+        }))
+      : undefined,
     description,
     modelProfile,
     currentStep,
@@ -345,7 +395,6 @@ export async function executeWaiReview(
     progress(4, STAGES.review, "Preparing review context…");
   }
 
-  const strategy = effectiveConfig.reviewStrategy ?? "auto";
   const fullFileThresholdLines = config.reviewFullFileThresholdLines ?? 300;
   progress(5, STAGES.review, "Calculating token budget with pre-review output…");
   const budgetWithPreReview = calculateReviewBudget(
@@ -363,19 +412,12 @@ export async function executeWaiReview(
     modelConfig,
   );
   progress(6, STAGES.review, "Loading changed file contents…");
-  const fileDiffs = splitDiffByFile(diff, vcs);
-
-  const reviewableFiles = changedFiles.filter(isReviewableFile);
+  // fileDiffs/reviewableFiles/perFileDiffs* were prepared before the cache key.
   const filesWithDiff = reviewableFiles.filter((file) => fileDiffs[file] || !truncated);
   const skippedDueToTruncation = reviewableFiles.filter((file) => !fileDiffs[file] && truncated);
   const diffLikelyTruncated = estimateTokens(diff) > Math.max(0, budgetWithPreReview.availableInputTokens - 1000);
-  // Explicit parallelReview config is honored at every level, including
-  // diff-only (min): the user opted into per-file concurrent reviews. The
-  // AUTO-split trigger (diff too large for one call) stays med/high-only —
-  // min's default contract is still one cheap call per change.
-  const explicitParallel = Boolean(config.parallelReview);
   const shouldParallelize =
-    (explicitParallel || (diffLikelyTruncated && strategy !== "diff-only")) &&
+    (explicitParallel || ((diffLikelyTruncated || truncated) && strategy !== "diff-only")) &&
     filesWithDiff.length > 1 &&
     (strategy !== "diff-only" || explicitParallel);
   const maxConcurrency =
@@ -711,7 +753,10 @@ export async function executeWaiReview(
         codemap,
         designRefText,
         instructionsText,
-        truncated,
+        // After a successful rebuild each batch's diff is complete: only its
+        // own per-file cap should mark it truncated, not the original
+        // combined-diff cap.
+        truncated: shouldRebuildPerFileDiffs ? perFileTruncated.has(p.file) : truncated,
         droppedFiles: p.droppedForBudget,
         budget: p.fileBudget,
         modelConfig,
@@ -778,7 +823,14 @@ export async function executeWaiReview(
     }
     finalDroppedFiles = Array.from(new Set(successes.flatMap((s) => s.dropped).concat(skippedDueToTruncation)));
     if (finalDroppedFiles.length > 0) review.droppedFiles = finalDroppedFiles;
-    finalDiffTruncated = truncated || successes.some((s) => s.review.truncated);
+    // Coverage completeness: a capped COMBINED diff no longer means
+    // incomplete coverage when the rebuild covered every file individually
+    // (perFileDiffsRebuilt && nothing skipped && no per-file cap); a
+    // truncated batch response still does. Non-truncated diffs are always
+    // complete.
+    const coverageComplete =
+      !truncated || (perFileDiffsRebuilt && skippedDueToTruncation.length === 0 && !perFileDiffsTruncated);
+    finalDiffTruncated = !coverageComplete || successes.some((s) => s.review.truncated);
     continuationRounds = successes.reduce((sum, s) => sum + (s.rounds ?? 0), 0);
     continuationTruncated = successes.some((s) => s.truncated);
 

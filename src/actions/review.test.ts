@@ -1601,6 +1601,107 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     assert.ok(bodies[0].includes("MALFORMED_MARKER_2"), "the review must fall back to a valid range");
   });
 
+  it("a capped multi-file diff is split per file so no changed file is dropped", { skip: !hasGit }, async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "review-capped-split-repo-"));
+    tmpDirs.push(cwd);
+    initGitRepo(cwd);
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
+    writeFileSync(join(cwd, "a.txt"), "a1\n");
+    writeFileSync(join(cwd, "b.txt"), "b1\n");
+    writeFileSync(join(cwd, "c.txt"), "c1\n");
+    writeFileSync(join(cwd, "d.txt"), "d1\n");
+    commitAll(cwd);
+    // Each file gains ~800 chars with a unique marker; the combined diff
+    // (~3.2k chars) exceeds the 2000-char cap → truncated. Per-file diffs
+    // stay under the cap, so the parallel rebuild must cover everything.
+    const filler = "y".repeat(780);
+    writeFileSync(join(cwd, "a.txt"), `CAPPED_MARKER_A_111\n${filler}\n`);
+    writeFileSync(join(cwd, "b.txt"), `CAPPED_MARKER_B_222\n${filler}\n`);
+    writeFileSync(join(cwd, "c.txt"), `CAPPED_MARKER_C_333\n${filler}\n`);
+    writeFileSync(join(cwd, "d.txt"), `CAPPED_MARKER_D_444\n${filler}\n`);
+
+    const { url, bodies } = await startStubServer();
+    writeSettings(cwd, {
+      reviewLevel: "med",
+      reviewMaxDiffChars: 2000,
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        thinking: "off",
+        contextWindow: 8000,
+        maxOutputTokens: 1024,
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test-key",
+      },
+    });
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const result = await executeWaiReview(cwd, "capped split probe", ctx, {}, undefined, () => {});
+    assert.equal(result.review?.verdict, "pass");
+    assert.equal(bodies.length, 4, "one parallel batch per changed file");
+    // Every changed file's marker reaches SOME parallel request — the tail
+    // files are no longer silently dropped by the combined-diff cap.
+    const allBodies = bodies.join("");
+    for (const marker of ["CAPPED_MARKER_A_111", "CAPPED_MARKER_B_222", "CAPPED_MARKER_C_333", "CAPPED_MARKER_D_444"]) {
+      assert.ok(allBodies.includes(marker), `${marker} must reach a review batch`);
+    }
+    // Fully covered: no truncation downgrade, nothing dropped, no omission hint.
+    assert.ok(!result.review?.inconclusive, "a fully covered parallel review must not be inconclusive");
+    assert.ok(!result.review?.truncated, "a fully covered parallel review must not be flagged truncated");
+    assert.deepEqual(result.review?.droppedFiles ?? [], []);
+    assert.ok(!result.review?.suggestions.some((s) => s.includes("omitted")));
+    // Rebuilt batches must not be TOLD their (complete) diff is truncated.
+    assert.ok(
+      !allBodies.includes("diff was truncated"),
+      "complete per-file batches must not carry the truncation notice",
+    );
+  });
+
+  it("a cap that cuts MID-FILE refetches the boundary file completely", { skip: !hasGit }, async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "review-capped-boundary-repo-"));
+    tmpDirs.push(cwd);
+    initGitRepo(cwd);
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
+    writeFileSync(join(cwd, "a.txt"), "a1\n");
+    writeFileSync(join(cwd, "b.txt"), "b1\n");
+    writeFileSync(join(cwd, "c.txt"), "c1\n");
+    commitAll(cwd);
+    // Combined diff ~1400 chars with cap 1000: git slices mid-b.txt, so the
+    // boundary file's combined slice is truthy but INCOMPLETE — its tail
+    // marker would be lost without the per-file refetch.
+    writeFileSync(join(cwd, "a.txt"), `BOUNDARY_A\n` + "y".repeat(290) + "\n");
+    writeFileSync(join(cwd, "b.txt"), `head\n` + "y".repeat(700) + `\nBOUNDARY_B_TAIL_999\n`);
+    writeFileSync(join(cwd, "c.txt"), `BOUNDARY_C\n` + "y".repeat(290) + "\n");
+
+    const { url, bodies } = await startStubServer();
+    writeSettings(cwd, {
+      reviewLevel: "med",
+      reviewMaxDiffChars: 1000,
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        thinking: "off",
+        contextWindow: 8000,
+        maxOutputTokens: 1024,
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test-key",
+      },
+    });
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const result = await executeWaiReview(cwd, "capped boundary probe", ctx, {}, undefined, () => {});
+    assert.equal(result.review?.verdict, "pass");
+    assert.equal(bodies.length, 3, "one parallel batch per changed file");
+    const allBodies = bodies.join("");
+    assert.ok(allBodies.includes("BOUNDARY_A"), "file a must reach a batch");
+    assert.ok(allBodies.includes("BOUNDARY_B_TAIL_999"), "the boundary file's TAIL marker must reach a batch");
+    assert.ok(allBodies.includes("BOUNDARY_C"), "file c must reach a batch");
+    assert.ok(!result.review?.inconclusive, "complete per-file coverage must keep the pass");
+    assert.ok(!result.review?.truncated);
+  });
+
   it("a pass on a truncated diff is downgraded to inconclusive and never cached", { skip: !hasGit }, async () => {
     const cwd = mkdtempSync(join(tmpdir(), "review-truncated-pass-repo-"));
     tmpDirs.push(cwd);

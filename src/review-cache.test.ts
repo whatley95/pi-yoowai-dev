@@ -33,6 +33,29 @@ describe("review-cache", () => {
     assert.equal(a.length, 32);
   });
 
+  it("per-file diff keys distinguish identity, content, and truncation state", () => {
+    // A diff exactly equal to the cap and a longer diff sharing that capped
+    // prefix have identical TEXT but different coverage: the truncated one
+    // must not replay the complete one's cached verdict.
+    const complete = buildCacheKey("review", {
+      perFileDiffs: [{ file: "a.txt", diff: "same-prefix", truncated: false }],
+    });
+    const truncated = buildCacheKey("review", {
+      perFileDiffs: [{ file: "a.txt", diff: "same-prefix", truncated: true }],
+    });
+    assert.notEqual(complete, truncated, "truncation state must be part of the key");
+
+    const otherFile = buildCacheKey("review", {
+      perFileDiffs: [{ file: "b.txt", diff: "same-prefix", truncated: false }],
+    });
+    assert.notEqual(complete, otherFile, "file identity must be part of the key");
+
+    const missing = buildCacheKey("review", {
+      perFileDiffs: [{ file: "a.txt", diff: null, truncated: false }],
+    });
+    assert.notEqual(complete, missing, "null (failed refetch) must not collide with content");
+  });
+
   it("key changes when any stable prompt input changes (field sensitivity)", () => {
     const base = { diff: "abc", description: "x", codemap: "map", level: "med" };
     const baseKey = buildCacheKey("review", base);
