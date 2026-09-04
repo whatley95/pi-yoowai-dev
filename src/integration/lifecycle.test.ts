@@ -897,7 +897,7 @@ describe("lifecycle", () => {
       },
     };
 
-    const { pi, emitAgentSettled } = createFakePi();
+    const { pi, steers, emitAgentSettled } = createFakePi();
     registerLifecycleHandlers(pi, makeLoopStates(cwd), deps);
 
     await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, makeContext(cwd));
@@ -907,6 +907,97 @@ describe("lifecycle", () => {
     assert.deepEqual(calls, ["review", "judge"]);
     // The auto-review cleared the pending-edit counter.
     assert.strictEqual(getEditTracker(cwd).editsSinceLastReview, 0);
+    // Both verdicts were DELIVERED to the main agent as steers (the agent is
+    // idle waiting for input — the audit entry + toast alone were invisible).
+    const reviewSteer = steers.find((s) => s.message.startsWith("Auto-review (2 files)"));
+    assert.ok(reviewSteer, "a compact auto-review steer must be sent");
+    assert.deepEqual(reviewSteer?.options, { deliverAs: "steer" });
+    assert.match(reviewSteer?.message ?? "", /pass — no issues/);
+    const judgeSteer = steers.find((s) => s.message.startsWith("Auto-judge result:"));
+    assert.ok(judgeSteer, "the auto-judge verdict must be delivered as a steer");
+    assert.deepEqual(judgeSteer?.options, { deliverAs: "steer" });
+  });
+
+  it("delivers a failing auto-review as a full formatted steer", async () => {
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: true } }));
+    getState(cwd).editsSinceLastReview = 1;
+
+    const deps: LifecycleDeps = {
+      executeWaiReview: async () =>
+        ({
+          action: "review",
+          review: {
+            verdict: "needs-work",
+            issues: [{ severity: "high", file: "a.ts", line: 1, issue: "broken", suggestion: "fix" }],
+            suggestions: [],
+            consensus: false,
+          },
+        }) as WaiToolResult,
+    };
+
+    const { pi, steers, emitAgentSettled } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd), deps);
+
+    await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, makeContext(cwd));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const steer = steers.find((s) => s.message.startsWith("Auto-review result:"));
+    assert.ok(steer, "a full auto-review result must be delivered");
+    assert.deepEqual(steer?.options, { deliverAs: "steer" });
+    assert.ok((steer?.message ?? "").includes("needs-work"));
+    assert.ok((steer?.message ?? "").includes("broken"));
+  });
+
+  it("truncates the delivered auto-review body to 1200 characters", async () => {
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: true } }));
+    getState(cwd).editsSinceLastReview = 1;
+
+    const longIssue = "x".repeat(1500);
+    const deps: LifecycleDeps = {
+      executeWaiReview: async () =>
+        ({
+          action: "review",
+          review: {
+            verdict: "needs-work",
+            issues: [{ severity: "high", file: "a.ts", line: 1, issue: longIssue, suggestion: "fix" }],
+            suggestions: [],
+            consensus: false,
+          },
+        }) as WaiToolResult,
+    };
+
+    const { pi, steers, emitAgentSettled } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd), deps);
+
+    await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, makeContext(cwd));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const steer = steers.find((s) => s.message.startsWith("Auto-review result:"));
+    assert.ok(steer, "a full auto-review result must be delivered");
+    const body = steer.message.slice("Auto-review result:\n".length);
+    assert.ok(body.length <= 1200, `the delivered body must be capped at 1200 chars, got ${body.length}`);
+  });
+
+  it("sends no steer when the review trigger returns undefined (no pending edits)", async () => {
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: true } }));
+    getState(cwd).editsSinceLastReview = 0;
+
+    const calls: string[] = [];
+    const deps: LifecycleDeps = {
+      executeWaiReview: async () => {
+        calls.push("review");
+        return { action: "review" } as WaiToolResult;
+      },
+    };
+
+    const { pi, steers, emitAgentSettled } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd), deps);
+
+    await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, makeContext(cwd));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(calls, [], "no review may run without pending edits");
+    assert.equal(steers.length, 0, "no steer may be sent when nothing ran");
   });
 
   it("skips auto-review quietly on a cost-budget error and still runs auto-judge", async () => {

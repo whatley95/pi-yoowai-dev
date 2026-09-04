@@ -79,15 +79,15 @@ export async function triggerAutoJudge(
   ctx: ExtensionContext | ExtensionCommandContext,
   situation?: string,
   runJudge: JudgeRunner = executeWaiJudge,
-): Promise<void> {
-  if (judgingCwds.has(ctx.cwd)) return;
+): Promise<WaiToolResult | undefined> {
+  if (judgingCwds.has(ctx.cwd)) return undefined;
 
   const config = loadYoowaiConfig(ctx.cwd);
-  if (!config.autoJudge) return;
+  if (!config.autoJudge) return undefined;
 
   const state = getState(ctx.cwd);
   if (state.judgeCompleted || state.totalSteps === 0 || state.completedSteps < state.totalSteps) {
-    return;
+    return undefined;
   }
 
   judgingCwds.add(ctx.cwd);
@@ -114,10 +114,13 @@ export async function triggerAutoJudge(
     publishWaiResult(ctx, judgeResult);
     const text = formatResultText(judgeResult);
     ctx.ui.notify(text.slice(0, 500), judgeResult.error ? "error" : "info");
+    if (judgeResult.error) return undefined;
+    return judgeResult;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logEvent(ctx.cwd, "error", "Auto-judge failed", { error: message });
     ctx.ui.notify(`Auto-judge failed: ${message}`, "error");
+    return undefined;
   } finally {
     judgingCwds.delete(ctx.cwd);
     clearWaiStatus(ctx);
@@ -131,14 +134,14 @@ export async function triggerAutoJudge(
 export async function triggerAutoReview(
   ctx: ExtensionContext | ExtensionCommandContext,
   runReview: ReviewRunner = defaultReviewRunner,
-): Promise<void> {
-  if (reviewingCwds.has(ctx.cwd)) return;
+): Promise<WaiToolResult | undefined> {
+  if (reviewingCwds.has(ctx.cwd)) return undefined;
 
   const config = loadYoowaiConfig(ctx.cwd);
-  if (!config.autoReviewOnSettle) return;
+  if (!config.autoReviewOnSettle) return undefined;
 
   const pendingEdits = getEditTracker(ctx.cwd).editsSinceLastReview;
-  if (pendingEdits <= 0) return;
+  if (pendingEdits <= 0) return undefined;
 
   reviewingCwds.add(ctx.cwd);
   // Suppress context injection while the review runs so the injector does not
@@ -167,11 +170,11 @@ export async function triggerAutoReview(
       // the configured cost cap — log it and stay quiet.
       if (result.error.includes("budget")) {
         logEvent(ctx.cwd, "info", "Auto-review skipped: cost budget reached", { error: result.error });
-        return;
+        return undefined;
       }
       logEvent(ctx.cwd, "warn", "Auto-review failed", { error: result.error });
       ctx.ui.notify(`Auto-review failed: ${result.error}`, "error");
-      return;
+      return undefined;
     }
     resetEditsSinceReview(ctx.cwd);
     // Publish so the auto-review verdict is audited and the footer/widget
@@ -179,14 +182,34 @@ export async function triggerAutoReview(
     publishWaiResult(ctx, result);
     const text = formatResultText(result);
     ctx.ui.notify(text.slice(0, 500), "info");
+    return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logEvent(ctx.cwd, "error", "Auto-review failed", { error: message });
     ctx.ui.notify(`Auto-review failed: ${message}`, "error");
+    return undefined;
   } finally {
     reviewingCwds.delete(ctx.cwd);
     setWaiToolExecuting(ctx.cwd, false);
   }
+}
+
+/** Compact, agent-visible summary of an auto-review/auto-judge result: a
+ *  one-liner for a clean pass, otherwise the formatted result (truncated).
+ *  Delivered to the main agent as a steer so the verdict lands in the
+ *  conversation even though the agent was idle waiting for input. */
+function autoResultMessage(action: "review" | "judge", result: WaiToolResult, fileCount?: number): string {
+  if (result.error) {
+    return `Auto-${action} failed: ${result.error}`;
+  }
+  const verdict = action === "review" ? result.review?.verdict : result.judge?.verdict;
+  const issueCount = action === "review" ? (result.review?.issues?.length ?? 0) : (result.judge?.issues?.length ?? 0);
+  if (verdict === "pass" && issueCount === 0) {
+    return action === "review"
+      ? `Auto-review (${fileCount ?? "?"} files): pass — no issues`
+      : "Auto-judge result: pass — no issues";
+  }
+  return `Auto-${action} result:\n${formatResultText(result).slice(0, 1200)}`;
 }
 
 /** Flush session state to disk and append a session audit entry when edits
@@ -321,8 +344,19 @@ export function registerLifecycleHandlers(
     try {
       // Auto-review runs first: pending edits get reviewed before the judge
       // looks at the whole plan, and a passing review may complete the plan.
-      await triggerAutoReview(ctx, deps.executeWaiReview);
-      await triggerAutoJudge(ctx, undefined, deps.executeWaiJudge);
+      // Snapshot BEFORE the review: the trigger resets the pending-edit
+      // counter, and the compact pass message needs the original count.
+      const pendingEdits = getEditTracker(ctx.cwd).editsSinceLastReview;
+      const reviewOutcome = await triggerAutoReview(ctx, deps.executeWaiReview);
+      if (reviewOutcome) {
+        pi.sendUserMessage(autoResultMessage("review", reviewOutcome, pendingEdits), {
+          deliverAs: "steer",
+        });
+      }
+      const judgeResult = await triggerAutoJudge(ctx, undefined, deps.executeWaiJudge);
+      if (judgeResult) {
+        pi.sendUserMessage(autoResultMessage("judge", judgeResult), { deliverAs: "steer" });
+      }
       updateWaiStatus(ctx);
     } catch {
       // best-effort auto-review/auto-judge
