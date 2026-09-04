@@ -452,8 +452,24 @@ describe("loadYoowaiConfig docs", () => {
 
 describe("loadYoowaiConfig review enforcement", () => {
   const tmpDirs: string[] = [];
+  const originalAgentDir = getAgentDir();
+  let emptyAgentDir: string;
+
+  before(() => {
+    // Isolate from the real ~/.pi/agent/settings.json: these tests read the
+    // merged global config, so a user's own autoReviewOnSettle/autoJudge
+    // overrides must not leak into default-value assertions.
+    emptyAgentDir = mkdtempSync(join(tmpdir(), "config-enforce-agent-"));
+    setAgentDirForTests(() => emptyAgentDir);
+  });
 
   after(() => {
+    setAgentDirForTests(() => originalAgentDir);
+    try {
+      rmSync(emptyAgentDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
     for (const dir of tmpDirs) {
       try {
         rmSync(dir, { recursive: true, force: true });
