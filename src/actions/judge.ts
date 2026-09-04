@@ -28,7 +28,7 @@ import {
   getPendingReviewCommit,
 } from "../session-state.js";
 import { logEvent } from "../logger.js";
-import { resolveRangeBase } from "./range.js";
+import { resolveRangeBase, rebuiltDiff } from "./range.js";
 import {
   STAGES,
   secondaryModelLabel,
@@ -83,11 +83,53 @@ export async function executeWaiJudge(
   // state.
   const vcsInfo = getVcsInfo(cwd);
   const range = resolveRangeBase(cwd, "holistic", vcsInfo, getLastReviewedCommit(cwd), getPendingReviewCommit(cwd), {});
-  const { diff, truncated, changedFiles } = getDiff(cwd, {
+  const {
+    diff: rawDiff,
+    truncated,
+    changedFiles,
+  } = getDiff(cwd, {
     maxDiffChars: config.reviewMaxDiffChars,
     untracked: true,
     ...range,
   });
+  // A capped combined diff is sliced (tail files dropped): rebuild the
+  // complete diff per file so the budget gate below sees the TRUE size — the
+  // change is either judged completely or fails closed with guidance, never
+  // silently as a fragment. A per-file cap stays flagged as truncated.
+  let diff = rawDiff;
+  let diffTruncated = false;
+  let omittedRefetches: string[] = [];
+  if (truncated) {
+    const rebuilt = rebuiltDiff(
+      cwd,
+      { maxDiffChars: config.reviewMaxDiffChars, untracked: true, ...range },
+      changedFiles,
+    );
+    diff = rebuilt.diff;
+    diffTruncated = rebuilt.perFileTruncated;
+    omittedRefetches = rebuilt.omitted;
+  }
+  if (omittedRefetches.length > 0) {
+    // A per-file refetch failed (git error): the judgment would be based on
+    // partial coverage — fail closed so the caller can retry. (Judge takes no
+    // file scope, so the guidance is retry-only.)
+    return {
+      action: "judge",
+      error: `Could not refetch the diff for: ${omittedRefetches.join(", ")}. Retry once the working tree is in a stable state.`,
+      model: modelProfile,
+    };
+  }
+  if (diffTruncated) {
+    // A SINGLE file's diff alone exceeds the cap: judge has no hunk/parallel
+    // splitting, so it cannot judge the file completely — fail closed with
+    // guidance instead of judging a fragment (same contract as test/security;
+    // judge takes no file scope, so the guidance is raise-the-cap-only).
+    return {
+      action: "judge",
+      error: `A changed file's diff exceeds pi-yoowai.reviewMaxDiffChars, so it cannot be judged completely. Raise the cap or split the work into smaller scopes.`,
+      model: modelProfile,
+    };
+  }
 
   const conventions = loadConventions(cwd);
   const conventionsText = conventions ? formatConventions(conventions) : "";
@@ -217,7 +259,6 @@ export async function executeWaiJudge(
     return { action: "judge", error: prepared.error, model: modelProfile };
   }
   const finalDiff = prepared.diff;
-  const finalDiffTruncated = truncated;
   const finalDroppedFiles = fileResult.dropped;
 
   const { system, user } = buildJudgePrompt(description, {
@@ -232,7 +273,6 @@ export async function executeWaiJudge(
     instructionsText,
     diff: finalDiff,
     fileContents: fileResult.entries.map((f) => ({ file: f.file, content: f.content, mode: f.mode })),
-    truncated: finalDiffTruncated,
     droppedFiles: finalDroppedFiles,
     budgetNote: `Context window: ${budgetWithPreReview.contextWindow.toLocaleString()} tokens. Reserved output: ${budgetWithPreReview.reservedOutputTokens.toLocaleString()}. Available for context: ${budgetWithPreReview.availableInputTokens.toLocaleString()}.`,
     nativeJson,
@@ -341,8 +381,7 @@ export async function executeWaiJudge(
     );
   }
 
-  if (finalDiffTruncated || finalDroppedFiles.length > 0) {
-    judge.truncated = finalDiffTruncated;
+  if (finalDroppedFiles.length > 0) {
     judge.droppedFiles = finalDroppedFiles;
     judge.contextLimited = true;
     judge.suggestions.push(

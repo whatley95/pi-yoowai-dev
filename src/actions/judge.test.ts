@@ -64,6 +64,9 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
     execFileSync("git", ["init"], { cwd, ...gitOpts() });
     execFileSync("git", ["config", "user.email", "wai-test@example.com"], { cwd, ...gitOpts() });
     execFileSync("git", ["config", "user.name", "wai test"], { cwd, ...gitOpts() });
+    // .pi/ is gitignored (as in real projects) so runtime state files written
+    // by the tool never appear as untracked entries in range-based diffs.
+    writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
     writeFileSync(join(cwd, "a.txt"), "hello\n");
     execFileSync("git", ["add", "."], { cwd, ...gitOpts() });
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], { cwd, ...gitOpts() });
@@ -279,5 +282,101 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
     assert.ok(bodies[0].includes("JUDGE_MARKER_333"), "committed work must reach the judge");
     assert.equal(getLastReviewedCommit(cwd), undefined, "a judge must not advance the review baseline");
     assert.equal(getPendingReviewCommit(cwd), undefined, "a judge must not pin review range state");
+  });
+
+  it("a capped multi-file diff is rebuilt and judged completely", { skip: !hasGit }, async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "judge-rebuild-repo-"));
+    tmpDirs.push(cwd);
+    execFileSync("git", ["init"], { cwd, ...gitOpts() });
+    execFileSync("git", ["config", "user.email", "wai-test@example.com"], { cwd, ...gitOpts() });
+    execFileSync("git", ["config", "user.name", "wai test"], { cwd, ...gitOpts() });
+    writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
+    writeFileSync(join(cwd, "a.txt"), "a1\n");
+    writeFileSync(join(cwd, "b.txt"), "b1\n");
+    writeFileSync(join(cwd, "c.txt"), "c1\n");
+    execFileSync("git", ["add", "."], { cwd, ...gitOpts() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], { cwd, ...gitOpts() });
+    const filler = "z".repeat(3900);
+    writeFileSync(join(cwd, "a.txt"), `JUDGE_REBUILD_A\n${filler}\n`);
+    writeFileSync(join(cwd, "b.txt"), `JUDGE_REBUILD_B\n${filler}\n`);
+    writeFileSync(join(cwd, "c.txt"), `${filler}\nJUDGE_REBUILD_C\n`);
+    execFileSync("git", ["add", "."], { cwd, ...gitOpts() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "round1"], { cwd, ...gitOpts() });
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+
+    const { url, bodies } = await startStubServer();
+    writeSettings(cwd, {
+      reviewLevel: "min",
+      reviewMaxDiffChars: 10000,
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        thinking: "off",
+        contextWindow: 16000,
+        maxOutputTokens: 1024,
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test-key",
+      },
+    });
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const result = await executeWaiJudge(cwd, "judge rebuild probe", undefined, () => {}, ctx.sessionManager);
+    assert.equal(result.judge?.verdict, "pass");
+    assert.ok(
+      bodies.some(
+        (body) =>
+          body.includes("JUDGE_REBUILD_A") && body.includes("JUDGE_REBUILD_B") && body.includes("JUDGE_REBUILD_C"),
+      ),
+      "a single judge request must carry all markers (the complete rebuilt diff)",
+    );
+  });
+
+  it("an over-budget rebuilt diff fails closed instead of judging a fragment", { skip: !hasGit }, async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "judge-rebuild-fail-repo-"));
+    tmpDirs.push(cwd);
+    execFileSync("git", ["init"], { cwd, ...gitOpts() });
+    execFileSync("git", ["config", "user.email", "wai-test@example.com"], { cwd, ...gitOpts() });
+    execFileSync("git", ["config", "user.name", "wai test"], { cwd, ...gitOpts() });
+    writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
+    for (const name of ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]) {
+      writeFileSync(join(cwd, name), name + "\n");
+    }
+    execFileSync("git", ["add", "."], { cwd, ...gitOpts() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], { cwd, ...gitOpts() });
+    const filler = "z".repeat(8900);
+    for (const name of ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]) {
+      writeFileSync(join(cwd, name), `JUDGE_FAIL_${name.toUpperCase()}\n${filler}\n`);
+    }
+    execFileSync("git", ["add", "."], { cwd, ...gitOpts() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "round1"], { cwd, ...gitOpts() });
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+
+    const { url, bodies } = await startStubServer();
+    writeSettings(cwd, {
+      reviewLevel: "min",
+      reviewMaxDiffChars: 10000,
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        thinking: "off",
+        contextWindow: 16000,
+        maxOutputTokens: 1024,
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test-key",
+      },
+    });
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const result = await executeWaiJudge(
+      cwd,
+      "judge rebuild fail-closed probe",
+      undefined,
+      () => {},
+      ctx.sessionManager,
+    );
+    assert.ok(result.error, "expected an error result");
+    assert.match(result.error, /too large/);
+    assert.match(result.error, /files:\[\.\.\.\]/);
+    assert.equal(bodies.length, 0, "no model call may happen for an over-budget change");
   });
 });

@@ -25,7 +25,7 @@ import {
 } from "./shared.js";
 import { getSessionContext } from "./review-helpers.js";
 import { prepareActionDiff } from "./context-shared.js";
-import { resolveRangeBase } from "./range.js";
+import { resolveRangeBase, rebuiltDiff } from "./range.js";
 import { buildCacheKey, getCachedSecurity, setCachedResult } from "../review-cache.js";
 import { getState, getLastReviewedCommit, getPendingReviewCommit } from "../session-state.js";
 import { planStepDescription } from "../types.js";
@@ -78,6 +78,8 @@ export async function executeWaiSecurity(
   const conventionsText = conventions ? formatConventions(conventions) : "";
 
   let diff: string;
+  let diffTruncated = false;
+  let omittedRefetches: string[] = [];
   let changedFiles: string[];
 
   if (options.fullProject) {
@@ -109,8 +111,41 @@ export async function executeWaiSecurity(
       untracked: options.untracked ?? true,
       ...range,
     });
-    diff = diffResult.diff;
+    // A capped combined diff is sliced (tail files dropped): rebuild the
+    // complete diff per file so the budget gate below sees the TRUE size.
+    if (diffResult.truncated) {
+      const rebuilt = rebuiltDiff(
+        cwd,
+        { ...options, maxDiffChars: config.reviewMaxDiffChars, untracked: options.untracked ?? true, ...range },
+        diffResult.changedFiles,
+      );
+      diff = rebuilt.diff;
+      diffTruncated = rebuilt.perFileTruncated;
+      omittedRefetches = rebuilt.omitted;
+    } else {
+      diff = diffResult.diff;
+    }
     changedFiles = diffResult.changedFiles;
+    if (diffTruncated) {
+      // A SINGLE file's diff alone exceeds the cap: this action has no
+      // hunk/parallel splitting, so it cannot audit the file completely.
+      // Fail closed with guidance instead of auditing a partial file.
+      return {
+        action: "security",
+        error: `A changed file's diff exceeds pi-yoowai.reviewMaxDiffChars, so it cannot be audited completely. Raise the cap or scope the call with files:[...].`,
+        model: modelProfile,
+      };
+    }
+    if (omittedRefetches.length > 0) {
+      // A per-file refetch failed (git error): coverage is incomplete, so do
+      // not audit a partial change — the caller should retry after the
+      // working tree/VCS issue is resolved.
+      return {
+        action: "security",
+        error: `Could not refetch the diff for: ${omittedRefetches.join(", ")}. Retry once the working tree is in a stable state, or scope the call with files:[...].`,
+        model: modelProfile,
+      };
+    }
   }
 
   // Cache key: every stable prompt input (diff for diff mode, the project-scan

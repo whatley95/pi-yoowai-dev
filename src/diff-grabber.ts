@@ -179,10 +179,10 @@ export function getGitDiff(
   const maxDiffChars = options.maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
 
   if (revision || since) {
+    let combined: string;
     try {
       const args = buildGitRevisionArgs(revision, since, pathArgs);
-      const diff = runVcsDiff(cwd, ["git", ...args]);
-      return processDiff(diff, "git", maxDiffChars);
+      combined = runVcsDiff(cwd, ["git", ...args]);
     } catch (err) {
       logEvent(cwd, "debug", "Git diff attempt failed", {
         error: err instanceof Error ? err.message : String(err),
@@ -195,6 +195,28 @@ export function getGitDiff(
         vcs: "git",
       };
     }
+    // Range-based diffs skip `git diff`'s working-tree logic, so appending
+    // untracked (never-committed) files must be done explicitly when
+    // requested — otherwise new files are silently invisible to every
+    // incremental range review. Enumeration is best-effort: a failure must
+    // not discard the already-fetched tracked range diff (mirrors the
+    // non-range path).
+    if (options.untracked) {
+      try {
+        const untrackedFiles = listGitUntrackedFiles(cwd, options.files, options.exclude);
+        if (untrackedFiles.length > 0) {
+          const untracked = runGitUntrackedDiff(cwd, untrackedFiles);
+          if (untracked.trim()) {
+            combined = combined.trim() ? `${combined}${combined.endsWith("\n") ? "" : "\n"}${untracked}` : untracked;
+          }
+        }
+      } catch (err) {
+        logEvent(cwd, "debug", "Untracked diff enumeration failed; keeping tracked range diff", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return processDiff(combined, "git", maxDiffChars);
   }
 
   let combinedDiff = "";

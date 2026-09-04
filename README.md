@@ -581,7 +581,7 @@ Context compression is applied automatically in reviews: conventions and past is
 
 **Smart context retrieval:** `wai.review` follows relative imports in changed files and includes compact outlines of referenced files (up to 5 files, 1000 tokens) so the model sees related APIs without loading the entire codebase.
 
-**Large-diff handling:** When a combined diff exceeds `reviewMaxDiffChars` (default 200k chars) with multiple changed files, `wai.review` fetches each changed file's diff individually and reviews them per file in parallel — every changed file gets covered instead of silently dropping the tail of the capped diff. A single file whose diff alone still exceeds the cap is reported honestly (hunk-split at med/high, or a guidance error at diff-only).
+**Large-diff handling:** When a combined diff exceeds `reviewMaxDiffChars` (default 200k chars) with multiple changed files, `wai.review` fetches each changed file's diff individually and reviews them per file in parallel — every changed file gets covered instead of silently dropping the tail of the capped diff. A single file whose diff alone still exceeds the cap is reported honestly (hunk-split at med/high, or a guidance error at diff-only). `wai.test`, `wai.security`, and `wai.judge` rebuild the complete diff the same way so their model-budget gate sees the true size — the change is either analyzed in full or fails closed with `files:[...]`/budget guidance, never reviewed as a fragment.
 
 **Deep AST context retrieval:** When a `tsconfig.json` is present, `wai.review` uses the TypeScript compiler API to resolve imported symbols to their actual declarations and includes only those precise signatures (up to 1000 tokens). Falls back to regex-based import following if no `tsconfig.json` is found.
 

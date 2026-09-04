@@ -400,6 +400,9 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     const cwd = mkdtempSync(join(tmpdir(), "review-guard-repo-"));
     tmpDirs.push(cwd);
     initGitRepo(cwd);
+    // .pi/ is gitignored (as in real projects) so runtime state files written
+    // by the tool never appear as untracked entries in range-based diffs.
+    writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
     writeFileSync(join(cwd, "a.txt"), "hello\n");
     commitAll(cwd);
     writeFileSync(join(cwd, "a.txt"), change);

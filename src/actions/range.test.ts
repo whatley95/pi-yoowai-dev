@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getVcsInfo, resolveGitCommit, resolveEmptyTree } from "../diff-grabber.js";
 import { gitSpawnEnv } from "../git-env.js";
-import { resolveRangeBase, updateRangeState, pinAttemptedRange } from "./range.js";
+import { resolveRangeBase, updateRangeState, pinAttemptedRange, rebuiltDiff } from "./range.js";
 import {
   getLastReviewedCommit,
   getPendingReviewCommit,
@@ -165,6 +165,84 @@ describe("resolveRangeBase", () => {
     const range = resolveRangeBase(repo.cwd, "incremental", vcs, undefined, undefined, { since: "HEAD~1" });
     assert.equal(range.since, repo.revParse("HEAD~1"));
     assert.equal(resolveGitCommit(repo.cwd, range.since!), range.since);
+  });
+});
+
+describe("rebuiltDiff", () => {
+  it("concatenates per-file diffs in changedFiles order and detects per-file truncation", { skip: !hasGit }, () => {
+    const repo = makeRepo();
+    tmpDirs.push(repo.cwd);
+    repo.commit({ "a.txt": "a1\n", "b.txt": "b1\n" });
+    repo.commit({ "a.txt": "A_MARKER\n", "b.txt": "B_MARKER\n" });
+    const result = rebuiltDiff(repo.cwd, { maxDiffChars: 200000, since: "HEAD~1" }, ["a.txt", "b.txt"]);
+    assert.ok(result.diff.includes("A_MARKER"), "a.txt's diff must be included");
+    assert.ok(result.diff.includes("B_MARKER"), "b.txt's diff must be included");
+    assert.ok(
+      result.diff.indexOf("A_MARKER") < result.diff.indexOf("B_MARKER"),
+      "changedFiles order must be preserved",
+    );
+    assert.equal(result.perFileTruncated, false);
+  });
+
+  it("omits missing files and reports them in the omitted list", { skip: !hasGit }, () => {
+    const repo = makeRepo();
+    tmpDirs.push(repo.cwd);
+    repo.commit({ "a.txt": "a1\n" });
+    repo.commit({ "a.txt": "A_MARKER\n" });
+    const result = rebuiltDiff(repo.cwd, { maxDiffChars: 200000, since: "HEAD~1" }, ["a.txt", "missing.txt"]);
+    assert.ok(result.diff.includes("A_MARKER"));
+    assert.ok(!result.diff.includes("missing.txt"), "a failed refetch must be omitted");
+    assert.equal(result.perFileTruncated, false);
+    assert.deepEqual(result.omitted, ["missing.txt"], "omitted files must be reported");
+  });
+
+  it(
+    "a capped multi-file rebuild includes a never-committed (untracked) file when untracked:true is passed",
+    { skip: !hasGit },
+    () => {
+      const repo = makeRepo();
+      tmpDirs.push(repo.cwd);
+      repo.commit({ "a.txt": "a1\n", "b.txt": "b1\n", "c.txt": "c1\n" });
+      // Enough tracked content to exceed the low cap on the combined diff, so
+      // this is a REAL capped rebuild, plus a never-committed file.
+      const filler = "y".repeat(700);
+      repo.commit({
+        "a.txt": `TRACKED_A\n${filler}\n`,
+        "b.txt": `TRACKED_B\n${filler}\n`,
+        "c.txt": `TRACKED_C\n${filler}\n`,
+      });
+      writeFileSync(join(repo.cwd, "newfile.ts"), "UNTRACKED_MARKER\n");
+      const result = rebuiltDiff(repo.cwd, { maxDiffChars: 2000, since: "HEAD~1", untracked: true }, [
+        "a.txt",
+        "b.txt",
+        "c.txt",
+        "newfile.ts",
+      ]);
+      assert.ok(result.diff.includes("newfile.ts"), "the untracked file's PATH must be in the rebuilt diff");
+      assert.ok(result.diff.includes("UNTRACKED_MARKER"), "the untracked file's content must be included");
+      assert.ok(
+        result.diff.includes("TRACKED_A") && result.diff.includes("TRACKED_B") && result.diff.includes("TRACKED_C"),
+        "all tracked files must be in the rebuilt diff",
+      );
+      // Without untracked:true, the never-committed file is not part of the diff.
+      const withoutUntracked = rebuiltDiff(repo.cwd, { maxDiffChars: 2000, since: "HEAD~1" }, [
+        "a.txt",
+        "b.txt",
+        "c.txt",
+        "newfile.ts",
+      ]);
+      assert.ok(!withoutUntracked.diff.includes("UNTRACKED_MARKER"));
+    },
+  );
+
+  it("reports perFileTruncated when an individual file's diff is capped", { skip: !hasGit }, () => {
+    const repo = makeRepo();
+    tmpDirs.push(repo.cwd);
+    repo.commit({ "a.txt": "a1\n" });
+    const filler = "y".repeat(4000);
+    repo.commit({ "a.txt": `A_HEAD\n${filler}\nA_TAIL\n` });
+    const result = rebuiltDiff(repo.cwd, { maxDiffChars: 1000, since: "HEAD~1" }, ["a.txt"]);
+    assert.equal(result.perFileTruncated, true, "a per-file cap must be reported");
   });
 });
 

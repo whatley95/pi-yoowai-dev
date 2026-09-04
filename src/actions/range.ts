@@ -1,4 +1,11 @@
-import { resolveGitCommit, resolveGitTree, resolveEmptyTree, type VcsInfo } from "../diff-grabber.js";
+import {
+  getDiff,
+  resolveGitCommit,
+  resolveGitTree,
+  resolveEmptyTree,
+  type DiffResult,
+  type VcsInfo,
+} from "../diff-grabber.js";
 import { setLastReviewedCommit, setPendingReviewCommit } from "../session-state.js";
 import type { ReviewResult } from "../types.js";
 
@@ -99,6 +106,47 @@ export function resolveRangeBase(
     }
   }
   return out;
+}
+
+/** When a combined diff was capped by reviewMaxDiffChars, its slice can cut
+ *  MID-FILE and drop tail files entirely. Rebuild the complete diff by
+ *  fetching each changed file individually (per-file diffs bypass the
+ *  combined cap) and concatenating in changedFiles order. Single-call actions
+ *  (test/security/judge) use this so their model-budget gate can fail closed
+ *  honestly on the TRUE size instead of silently reviewing a fragment.
+ *  Files whose refetch THROWS or returns a documented failure placeholder are
+ *  reported in `omitted` — callers must treat a non-empty omitted list as
+ *  incomplete coverage, not as a complete rebuild. */
+export function rebuiltDiff(
+  cwd: string,
+  diffOptions: RangeScope & { maxDiffChars?: number; untracked?: boolean; vcs?: "git" | "svn" },
+  changedFiles: string[],
+): { diff: string; perFileTruncated: boolean; omitted: string[] } {
+  const parts: string[] = [];
+  let perFileTruncated = false;
+  const omitted: string[] = [];
+  for (const file of changedFiles) {
+    let perFile: DiffResult;
+    try {
+      perFile = getDiff(cwd, { ...diffOptions, files: [file] });
+    } catch {
+      omitted.push(file);
+      continue;
+    }
+    // A refetch is a failure when git returns nothing or one of the
+    // documented failure placeholders (a broken range/path); successful
+    // per-file diffs are accepted by content, not by the changedFiles list
+    // (renames report a different path in the header).
+    const isFailure =
+      !perFile.diff || perFile.diff.startsWith("(no changes") || perFile.diff.startsWith("(could not retrieve");
+    if (isFailure) {
+      omitted.push(file);
+      continue;
+    }
+    parts.push(perFile.diff);
+    if (perFile.truncated) perFileTruncated = true;
+  }
+  return { diff: parts.join("\n"), perFileTruncated, omitted };
 }
 
 /** Update the incremental-diff range state AFTER a completed review.
