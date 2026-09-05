@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -108,6 +108,241 @@ export interface Config {
     assert.equal(greet?.kind, "function");
     assert.equal(greet?.exported, true);
     assert.ok(greet?.line && greet.line > 0);
+  });
+
+  it("indexes import edges and reverse dependents", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "api.ts"), "export function getToken(): string { return 't'; }", "utf-8");
+    writeFileSync(
+      join(cwd, "src", "auth.ts"),
+      "import { getToken } from './api';\nexport const authed = getToken();",
+      "utf-8",
+    );
+    writeFileSync(
+      join(cwd, "src", "dashboard.ts"),
+      "import { getToken } from './api.js';\nexport const d = getToken();",
+      "utf-8",
+    );
+
+    const index = buildProjectIndex(cwd);
+    const api = index.files.find((f) => f.file === "src/api.ts");
+    const auth = index.files.find((f) => f.file === "src/auth.ts");
+    const dashboard = index.files.find((f) => f.file === "src/dashboard.ts");
+    assert.ok(api && auth && dashboard);
+
+    // Literal imports are preserved, deduped, sorted.
+    assert.deepEqual(auth.imports, ["./api"]);
+    assert.deepEqual(dashboard.imports, ["./api.js"]);
+    // Reverse dependents resolved to project files (including the .js → .ts
+    // convention used by dashboard.ts).
+    assert.deepEqual(api.dependents, ["src/auth.ts", "src/dashboard.ts"]);
+    // Package imports (non-relative) never become project dependents.
+    writeFileSync(join(cwd, "src", "vendor.ts"), "import { z } from 'zod';\nexport const v = z;\n", "utf-8");
+    const index2 = buildProjectIndex(cwd);
+    const vendor = index2.files.find((f) => f.file === "src/vendor.ts");
+    assert.deepEqual(vendor?.imports, ["zod"]);
+    // The rebuild preserves api.ts's reverse dependents.
+    assert.deepEqual(index2.files.find((f) => f.file === "src/api.ts")?.dependents, [
+      "src/auth.ts",
+      "src/dashboard.ts",
+    ]);
+  });
+
+  it("refreshes reverse edges on edit/add/delete and reuses unchanged entries", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "b.ts"), "export const b = 2;", "utf-8");
+    const first = buildProjectIndex(cwd);
+    const reused = first.stats?.reused ?? 0;
+
+    // c.ts imports both; rebuild → both gain c as a dependent, unchanged
+    // entries stay reused.
+    writeFileSync(
+      join(cwd, "src", "c.ts"),
+      "import { a } from './a';\nimport { b } from './b';\nexport const c = a + b;",
+      "utf-8",
+    );
+    const second = buildProjectIndex(cwd);
+    const a2 = second.files.find((f) => f.file === "src/a.ts");
+    const b2 = second.files.find((f) => f.file === "src/b.ts");
+    assert.deepEqual(a2?.dependents, ["src/c.ts"]);
+    assert.deepEqual(b2?.dependents, ["src/c.ts"]);
+    assert.ok((second.stats?.reused ?? 0) >= reused, "unchanged files must be reused");
+
+    // Deleting b.ts removes the reverse edge.
+    rmSync(join(cwd, "src", "b.ts"));
+    const third = buildProjectIndex(cwd);
+    assert.ok(!third.files.some((f) => f.file === "src/b.ts"));
+    const a3 = third.files.find((f) => f.file === "src/a.ts");
+    assert.deepEqual(a3?.dependents, ["src/c.ts"]);
+  });
+
+  it("clears stale reverse edges when the sole importer is deleted", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "b.ts"), "import { a } from './a';\nexport const b = a;", "utf-8");
+    const first = buildProjectIndex(cwd);
+    assert.deepEqual(first.files.find((f) => f.file === "src/a.ts")?.dependents, ["src/b.ts"]);
+
+    // Delete the only importer; a.ts keeps its cached entry (unchanged on
+    // disk) but its dependents must be cleared on the rebuild.
+    rmSync(join(cwd, "src", "b.ts"));
+    const second = buildProjectIndex(cwd);
+    assert.ok(!second.files.some((f) => f.file === "src/b.ts"));
+    const a = second.files.find((f) => f.file === "src/a.ts");
+    assert.equal(a?.dependents?.length ?? 0, 0, "stale dependents must be cleared");
+  });
+
+  it("does not create edges for imports escaping the project root", () => {
+    mkdirSync(join(cwd, "src", "sub"), { recursive: true });
+    writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "sub", "x.ts"), "import { a } from '../../target';\nexport const x = a;", "utf-8");
+    // No root-level target.ts exists — but even so, normalization must not
+    // map '../../target' to a project file via dropped '..' segments.
+    const index = buildProjectIndex(cwd);
+    const a = index.files.find((f) => f.file === "src/a.ts");
+    assert.equal(a?.dependents?.length ?? 0, 0);
+  });
+
+  it("resolves directory imports to index.tsx/index.jsx", () => {
+    mkdirSync(join(cwd, "src", "widgets"), { recursive: true });
+    writeFileSync(join(cwd, "src", "widgets", "index.tsx"), "export const w = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "main.tsx"), "import { w } from './widgets';\nvoid w;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    const w = index.files.find((f) => f.file === "src/widgets/index.tsx");
+    assert.deepEqual(w?.dependents, ["src/main.tsx"]);
+  });
+
+  it("resolves a root-level index via './'-style imports", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "index.ts"), "export const root = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "main.ts"), "import { root } from '../';\nvoid root;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    const root = index.files.find((f) => f.file === "index.ts");
+    assert.deepEqual(root?.dependents, ["src/main.ts"]);
+  });
+
+  it("collects static require() imports from .js/.cjs files", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "legacy.js"), "module.exports = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "main.cjs"), "const { x } = require('./legacy.js');\nmodule.exports = x;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    const legacy = index.files.find((f) => f.file === "src/legacy.js");
+    const main = index.files.find((f) => f.file === "src/main.cjs");
+    assert.deepEqual(main?.imports, ["./legacy.js"]);
+    assert.deepEqual(legacy?.dependents, ["src/main.cjs"]);
+  });
+
+  it("keeps explicit .ts specifiers exact (no fallback to .js)", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "dep.js"), "module.exports = 1;", "utf-8");
+    // dep.ts does NOT exist; an explicit './dep.ts' import must not create a
+    // false edge to dep.js.
+    writeFileSync(join(cwd, "src", "main.ts"), "import x from './dep.ts';\nvoid x;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    const dep = index.files.find((f) => f.file === "src/dep.js");
+    assert.equal(dep?.dependents?.length ?? 0, 0, "explicit .ts specifiers must not resolve to .js");
+  });
+
+  it("collects import-equals require() declarations", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "legacy.ts"), "export const legacy = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "main.ts"), "import legacy = require('./legacy');\nvoid legacy;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    const main = index.files.find((f) => f.file === "src/main.ts");
+    const legacy = index.files.find((f) => f.file === "src/legacy.ts");
+    assert.deepEqual(main?.imports, ["./legacy"]);
+    assert.deepEqual(legacy?.dependents, ["src/main.ts"]);
+  });
+
+  it("rejects malformed imported dependency entries in persisted indexes", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    saveProjectIndex(cwd, index);
+    // Corrupt the persisted index: an imports field that is not a string array.
+    const path = join(cwd, ".pi", "yoowai", "index.json");
+    const saved = JSON.parse(readFileSync(path, "utf-8"));
+    saved.files[0].imports = { bad: true };
+    writeFileSync(path, JSON.stringify(saved), "utf-8");
+    const loaded = loadProjectIndex(cwd);
+    assert.equal(loaded, null, "malformed imports must fail validation, not throw");
+  });
+
+  it("resolves to .d.ts declaration files", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "types.d.ts"), "export type X = string;", "utf-8");
+    writeFileSync(join(cwd, "src", "types.js"), "module.exports = {};", "utf-8");
+    writeFileSync(
+      join(cwd, "src", "main.ts"),
+      "import type { X } from './types';\nconst x: X = 'a';\nvoid x;",
+      "utf-8",
+    );
+    const index = buildProjectIndex(cwd);
+    const types = index.files.find((f) => f.file === "src/types.d.ts");
+    assert.deepEqual(types?.dependents, ["src/main.ts"], "extensionless imports must prefer the .d.ts declaration");
+  });
+
+  it("prefers index.ts over index.js for directory imports", () => {
+    mkdirSync(join(cwd, "src", "components"), { recursive: true });
+    writeFileSync(join(cwd, "src", "components", "index.ts"), "export const c = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "components", "index.js"), "module.exports = {};", "utf-8");
+    writeFileSync(join(cwd, "src", "main.ts"), "import { c } from './components';\nvoid c;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    const ts = index.files.find((f) => f.file === "src/components/index.ts");
+    const js = index.files.find((f) => f.file === "src/components/index.js");
+    assert.deepEqual(ts?.dependents, ["src/main.ts"]);
+    assert.equal(js?.dependents?.length ?? 0, 0, "the TypeScript index file must win the collision");
+  });
+
+  it("prefers the TypeScript source for './dep.js' imports (NodeNext convention)", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "dep.ts"), "export const d = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "dep.js"), "module.exports = {};", "utf-8");
+    writeFileSync(join(cwd, "src", "main.ts"), "import { d } from './dep.js';\nvoid d;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    const ts = index.files.find((f) => f.file === "src/dep.ts");
+    const js = index.files.find((f) => f.file === "src/dep.js");
+    assert.deepEqual(ts?.dependents, ["src/main.ts"], "the TS source must win the .js-specifier collision");
+    assert.equal(js?.dependents?.length ?? 0, 0);
+  });
+
+  it("maps '.jsx' specifiers to the TSX source only", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "dep.ts"), "export const d = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "dep.tsx"), "export const x = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "main.ts"), "import { x } from './dep.jsx';\nvoid x;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    const tsx = index.files.find((f) => f.file === "src/dep.tsx");
+    const ts = index.files.find((f) => f.file === "src/dep.ts");
+    assert.deepEqual(tsx?.dependents, ["src/main.ts"], "'.jsx' must resolve to the .tsx source");
+    assert.equal(ts?.dependents?.length ?? 0, 0);
+  });
+
+  it("keeps other explicit extensions (.mjs/.cjs) exact-only", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "dep.mjs.ts"), "export const d = 1;", "utf-8");
+    // dep.mjs does NOT exist; './dep.mjs' must not fall back to dep.mjs.ts.
+    writeFileSync(join(cwd, "src", "main.ts"), "import { d } from './dep.mjs';\nvoid d;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    const fake = index.files.find((f) => f.file === "src/dep.mjs.ts");
+    assert.equal(fake?.dependents?.length ?? 0, 0, "other explicit extensions must be exact-only");
+  });
+
+  it("rebuilds legacy entries that lack import edges", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;", "utf-8");
+    writeFileSync(join(cwd, "src", "b.ts"), "import { a } from './a';\nexport const b = a;", "utf-8");
+    const index = buildProjectIndex(cwd);
+    // Simulate a legacy entry: same content, no imports field.
+    for (const f of index.files) {
+      delete (f as { imports?: string[] }).imports;
+    }
+    // Rebuild with the (mtime/size-equal) legacy entries present.
+    const rebuilt = buildProjectIndex(cwd);
+    const a = rebuilt.files.find((f) => f.file === "src/a.ts");
+    // The legacy cache guard re-parses entries missing the imports field.
+    assert.deepEqual(a?.dependents, ["src/b.ts"]);
   });
 
   it("save and load round-trips the index", () => {

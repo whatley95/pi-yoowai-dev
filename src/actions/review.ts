@@ -12,6 +12,7 @@ import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { capActionInstructions } from "../instructions.js";
 import { buildAstContext } from "../ast-context.js";
 import { getPastIssuesForFiles, recordIssues } from "../review-memory.js";
+import { findLearnedFacts } from "../wai-learn.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
 import { resolveEffectivePreReviewCommands, resolveEffectiveToolLoop } from "./context-shared.js";
 import { calculateReviewBudget, estimateTokens, truncateToTokenBudget, type ReviewBudget } from "../token-budget.js";
@@ -187,6 +188,19 @@ export async function executeWaiReview(
     effectiveConfig.reviewMaxMemoryTokens ?? 800,
   );
 
+  // Known decisions: facts recorded with kind:"decision" are surfaced to the
+  // reviewer as do-not-re-flag context (implemented earlier on purpose — not
+  // accidental drift). Capped at 600 tokens including the heading; empty when
+  // no decisions exist.
+  const decisionsRecords = findLearnedFacts(cwd, undefined, "decision");
+  const decisionsContext =
+    decisionsRecords.length > 0
+      ? `Known project decisions — do NOT re-flag as missing or wrong without evidence they were overturned:\n${decisionsRecords
+          .map((d) => `- ${d.fact}`)
+          .join("\n")}`
+      : "";
+  const decisionsText = decisionsContext ? truncateToTokenBudget(decisionsContext, 600) : "";
+
   // Prior-round context: files that completed reviews in this step but are
   // NOT part of the current diff. An incremental review (clean tree,
   // lastReviewedCommit..HEAD) would otherwise never see earlier rounds'
@@ -327,6 +341,7 @@ export async function executeWaiReview(
     // the payload, so ANY change to the assembled context — outlines, verdict
     // lines, truncation — invalidates the cached review.
     priorRoundContext,
+    decisionsText,
     codemap,
     designRefText,
     instructionsText,
@@ -574,6 +589,7 @@ export async function executeWaiReview(
           conventionsText,
           preReviewOutput,
           memoryContext: fileMemoryContext,
+          decisionsContext: decisionsText,
           priorRoundContext,
           relatedContext,
           codemap,
@@ -748,6 +764,7 @@ export async function executeWaiReview(
         conventionsText,
         preReviewOutput,
         memoryContext: p.fileMemoryContext,
+        decisionsContext: decisionsText,
         priorRoundContext,
         relatedContext,
         codemap,
@@ -897,6 +914,7 @@ export async function executeWaiReview(
         conventionsText,
         preReviewOutput,
         memoryContext,
+        decisionsContext: decisionsText,
         priorRoundContext,
         relatedContext,
         codemap,

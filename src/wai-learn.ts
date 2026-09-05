@@ -14,6 +14,9 @@ export interface LearnedFact {
   fact: string;
   category?: string;
   source?: string;
+  /** "fact" (default) or "decision" — decisions are surfaced to reviewers
+   *  as do-not-re-flag context; plain facts are general project knowledge. */
+  kind?: "fact" | "decision";
   timestamp: string;
 }
 
@@ -58,6 +61,7 @@ function isValidLearnedStore(value: unknown): value is LearnedStore {
     if (!f || typeof f !== "object" || Array.isArray(f)) return false;
     const fact = f as Record<string, unknown>;
     if (typeof fact.fact !== "string") return false;
+    if (fact.kind !== undefined && fact.kind !== "fact" && fact.kind !== "decision") return false;
   }
   return true;
 }
@@ -78,6 +82,7 @@ function saveLearned(cwd: string, store: LearnedStore): void {
 
 export interface RecordFactOptions {
   category?: string;
+  kind?: "fact" | "decision";
   source?: string;
 }
 
@@ -86,6 +91,10 @@ export function recordLearnedFact(cwd: string, fact: string, options: RecordFact
   const entry: LearnedFact = {
     fact: fact.trim(),
     category: options.category?.trim() || undefined,
+    // Write-time validation: only fact/decision are persisted (a stray value
+    // must not poison the store — the loader rejects it, but the entry would
+    // already be on disk).
+    kind: options.kind === "decision" || options.kind === "fact" ? options.kind : undefined,
     source: options.source?.trim() || undefined,
     timestamp: new Date().toISOString(),
   };
@@ -101,11 +110,12 @@ export function loadLearnedFacts(cwd: string): LearnedFact[] {
   return loadLearned(cwd).facts;
 }
 
-export function findLearnedFacts(cwd: string, query?: string): LearnedFact[] {
+export function findLearnedFacts(cwd: string, query?: string, kind?: "fact" | "decision"): LearnedFact[] {
   const facts = loadLearnedFacts(cwd);
-  if (!query) return facts.slice().reverse();
+  const filtered = kind ? facts.filter((f) => (f.kind ?? "fact") === kind) : facts;
+  if (!query) return filtered.slice().reverse();
   const q = query.toLowerCase();
-  return facts
+  return filtered
     .filter(
       (f) =>
         f.fact.toLowerCase().includes(q) ||

@@ -395,7 +395,7 @@ The `wai_index` tool is a fast, read-only lookup for stored wai context. It does
 | `wai_index({ topic: "memory", query: "race condition" })` | Memory entries matching a keyword                                                  |
 | `wai_index({ topic: "cost" })`                            | Estimated session spend                                                            |
 | `wai_index({ topic: "logs" })`                            | Recent wai log entries                                                             |
-| `wai_index({ topic: "index" })`                           | Project symbol index (built by `wai scan --deep` or `wai_index({ update: true })`) |
+| `wai_index({ topic: "index" })`                           | Project symbol index (built by `wai scan --deep` or `wai_index({ update: true })`; entries include each file's `imports` and reverse `dependents` — which project files import it — so the main agent can check blast radius before editing) |
 | `wai_index({ topic: "learned" })`                         | Facts recorded with `wai_learn`                                                    |
 | `wai_index({ update: true })`                             | Rebuild the symbol index before returning results                                  |
 
@@ -422,6 +422,7 @@ Record a persistent project fact that wai will remember across sessions.
 | Call                                                                          | What it does                                                                   |
 | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | `wai_learn({ fact: "Auth is handled by Clerk" })`                             | Stores a fact                                                                  |
+| `wai_learn({ fact: "Never update the lockfile manually", kind: "decision" })` | Stores a DECISION — injected into review prompts as `do NOT re-flag` context so prior intentional choices are not flagged as regressions |
 | `wai_learn({ fact: "Use camelCase for functions", category: "conventions" })` | Stores a categorized fact                                                      |
 | `wai_learn({ verify: true })`                                                 | Check all stored facts against the current codebase (heuristic, no model call) |
 | `wai_learn({ verify: true, query: "auth" })`                                  | Verify only facts matching a keyword                                           |

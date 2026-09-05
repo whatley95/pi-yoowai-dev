@@ -949,7 +949,8 @@ export default async function (pi: ExtensionAPI) {
     }
     const category = typeof r.category === "string" ? r.category : undefined;
     const source = typeof r.source === "string" ? r.source : undefined;
-    recordLearnedFact(ctx.cwd, r.fact, { category, source });
+    const kind = r.kind === "decision" || r.kind === "fact" ? r.kind : undefined;
+    recordLearnedFact(ctx.cwd, r.fact, { category, source, kind });
     const related = findLearnedFacts(ctx.cwd, r.fact).slice(0, 10);
     return {
       content: [
@@ -993,6 +994,12 @@ export default async function (pi: ExtensionAPI) {
       category: Type.Optional(
         Type.String({
           description: "Optional category for grouping facts.",
+        }),
+      ),
+      kind: Type.Optional(
+        Type.Union([Type.Literal("fact"), Type.Literal("decision")], {
+          description:
+            "Optional kind: 'fact' (default) or 'decision' — decisions are injected into review prompts as do-NOT-re-flag context.",
         }),
       ),
       source: Type.Optional(

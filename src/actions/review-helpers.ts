@@ -167,6 +167,7 @@ export interface ReviewBatchInput {
   conventionsText: string;
   preReviewOutput: string;
   memoryContext: string;
+  decisionsContext?: string;
   priorRoundContext?: string;
   relatedContext?: string;
   codemap?: string;
@@ -207,6 +208,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
     conventionsText,
     preReviewOutput,
     memoryContext,
+    decisionsContext,
     priorRoundContext,
     relatedContext,
     codemap,
@@ -238,7 +240,8 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       estimateTokens(codemap ?? "") -
       estimateTokens(designRefText ?? "") -
       estimateTokens(instructionsText ?? "") -
-      estimateTokens(priorRoundContext ?? ""),
+      estimateTokens(priorRoundContext ?? "") -
+      estimateTokens(decisionsContext ?? ""),
   );
   const diffTokens = estimateTokens(diff);
   const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
@@ -256,6 +259,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       conventionsText,
       preReviewOutput,
       memoryContext,
+      decisionsText: decisionsContext,
       priorRoundContext,
       relatedContext,
       codemap,

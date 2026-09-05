@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConventions } from "./conventions.js";
+import { buildProjectIndex, saveProjectIndex } from "./project-index.js";
 import { recordCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { saveState } from "./plan-store.js";
@@ -76,6 +77,31 @@ describe("wai-index", () => {
     assert.ok(result.cost, "should include cost");
     assert.equal(result.cost?.calls, 1);
     assert.ok(result.logs && result.logs.length > 0, "should include logs");
+  });
+
+  it("exposes index edges (imports/dependents) via the index topic", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "api.ts"), "export function getToken(): string { return 't'; }", "utf-8");
+    writeFileSync(
+      join(cwd, "src", "auth.ts"),
+      "import { getToken } from './api';\nimport { z } from 'zod';\nimport { getToken as g2 } from './api';\nexport const authed = getToken();\nvoid z;\nvoid g2;",
+      "utf-8",
+    );
+    const index = buildProjectIndex(cwd);
+    saveProjectIndex(cwd, index);
+
+    const result = executeWaiIndex(cwd, { topic: "index" });
+    assert.equal(result.topic, "index");
+    const api = (
+      result.index as { files: Array<{ file: string; imports?: string[]; dependents?: string[] }> }
+    )?.files?.find((f) => f.file === "src/api.ts");
+    assert.ok(api, "the index topic must expose src/api.ts");
+    assert.deepEqual(api.dependents, ["src/auth.ts"], "wai_index must expose reverse dependents");
+    const auth = (result.index as { files: Array<{ file: string; imports?: string[] }> })?.files?.find(
+      (f) => f.file === "src/auth.ts",
+    );
+    // Deduped (two './api' references collapse) and package imports preserved.
+    assert.deepEqual(auth?.imports, ["./api", "zod"], "wai_index must expose unique imports incl. packages");
   });
 
   it("filters by topic", () => {

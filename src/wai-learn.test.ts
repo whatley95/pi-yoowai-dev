@@ -22,6 +22,35 @@ describe("wai-learn", () => {
     cwd = mkdtempSync(join(tmpdir(), "wai-learn-test-"));
   });
 
+  it("rejects invalid kinds (recorded as plain facts)", () => {
+    // The public tool passes only 'fact' | 'decision'; a stray invalid kind
+    // must not poison the store — it records as a plain fact (kind undefined).
+    const entry = recordLearnedFact(cwd, "Some note.", { kind: "bogus" as never });
+    assert.equal(entry.kind, undefined);
+    assert.equal(findLearnedFacts(cwd, undefined, "decision").length, 0);
+    assert.equal(findLearnedFacts(cwd).length, 1);
+  });
+
+  it("records decisions and filters by kind", () => {
+    recordLearnedFact(cwd, "Use camelCase.", { category: "conventions" });
+    recordLearnedFact(cwd, "Never update the lockfile manually.", { kind: "decision", source: "review" });
+
+    const decisions = findLearnedFacts(cwd, undefined, "decision");
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]?.kind, "decision");
+    assert.equal(decisions[0]?.fact, "Never update the lockfile manually.");
+    assert.equal(decisions[0]?.source, "review");
+
+    const facts = findLearnedFacts(cwd, undefined, "fact");
+    assert.equal(facts.length, 1);
+    assert.equal(facts[0]?.kind, undefined, "plain facts keep kind undefined (legacy-compatible)");
+
+    // All kinds together (no filter), newest first.
+    const all = findLearnedFacts(cwd);
+    assert.equal(all.length, 2);
+    assert.equal(all[0]?.kind, "decision", "newest first");
+  });
+
   it("records and loads facts", () => {
     recordLearnedFact(cwd, "Use camelCase.", { category: "conventions" });
     recordLearnedFact(cwd, "Auth uses Clerk.", { category: "auth", source: "README.md" });

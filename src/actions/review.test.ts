@@ -20,6 +20,8 @@ import {
   dropSessionState,
 } from "../session-state.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
+import { recordLearnedFact } from "../wai-learn.js";
+import { estimateTokens } from "../token-budget.js";
 import { gitSpawnEnv } from "../git-env.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ReviewResult, ReviewIssue, YoowaiConfig } from "../types.js";
@@ -1704,6 +1706,57 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     assert.ok(!result.review?.inconclusive, "complete per-file coverage must keep the pass");
     assert.ok(!result.review?.truncated);
   });
+
+  it(
+    "injects recorded decisions into the review prompt (decisions only, 600-token cap)",
+    { skip: !hasGit },
+    async () => {
+      const cwd = mkdtempSync(join(tmpdir(), "review-decisions-repo-"));
+      tmpDirs.push(cwd);
+      initGitRepo(cwd);
+      mkdirSync(join(cwd, ".pi"), { recursive: true });
+      writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
+      writeFileSync(join(cwd, "a.txt"), "a1\n");
+      commitAll(cwd);
+      writeFileSync(join(cwd, "a.txt"), "DECISION_PROBE_MARKER\n");
+      commitAll(cwd);
+      recordLearnedFact(cwd, "Never update the lockfile manually.", { kind: "decision", source: "review" });
+      recordLearnedFact(cwd, "Use camelCase for functions.", { category: "conventions" });
+      for (let i = 0; i < 12; i++) {
+        recordLearnedFact(cwd, `Prior decision ${i}: ${"x".repeat(120)}`, { kind: "decision" });
+      }
+
+      const { url, bodies } = await startStubServer();
+      writeSettings(cwd, {
+        reviewLevel: "min",
+        secondary: {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          contextWindow: 8000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: url,
+          apiKey: "test-key",
+        },
+      });
+      const ctx = { cwd } as unknown as ExtensionContext;
+      const result = await executeWaiReview(cwd, "decisions probe", ctx, {}, undefined, () => {});
+      assert.equal(result.review?.verdict, "pass");
+      const body = JSON.parse(bodies[0]) as { messages?: Array<{ role: string; content: string }> };
+      const user = body.messages?.find((m) => m.role === "user")?.content ?? "";
+      assert.ok(user.includes("<decisions>"), "the decisions block must reach the review");
+      assert.ok(user.includes("Never update the lockfile manually."), "a recorded decision must appear");
+      assert.ok(!user.includes("Use camelCase for functions."), "plain facts must NOT appear in the decisions block");
+      // The production limiter caps the inner payload (heading + entries) at
+      // 600 tokens; the <decisions> wrapper tags are not part of that payload.
+      const inner = user.slice(user.indexOf("<decisions>") + "<decisions>".length, user.indexOf("</decisions>"));
+      assert.ok(
+        estimateTokens(inner) <= 600,
+        `the decisions payload must stay within the 600-token cap, got ${estimateTokens(inner)}`,
+      );
+    },
+  );
 
   it("a pass on a truncated diff is downgraded to inconclusive and never cached", { skip: !hasGit }, async () => {
     const cwd = mkdtempSync(join(tmpdir(), "review-truncated-pass-repo-"));

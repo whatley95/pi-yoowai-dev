@@ -4,6 +4,7 @@ import type * as TS from "typescript";
 import { filterSourceFiles, listTrackedFiles } from "./conventions.js";
 import { listGitUntrackedFiles } from "./diff-grabber.js";
 import { captureImportFailure, type ImportFailureDetail } from "./import-diagnostics.js";
+import { resolveProjectPath } from "./path-security.js";
 import { logEvent } from "./logger.js";
 import { getProjectConfigPath } from "./pi-paths.js";
 import type { Conventions } from "./types.js";
@@ -50,6 +51,10 @@ export interface SymbolInfo {
 export interface FileIndex {
   file: string;
   symbols: SymbolInfo[];
+  /** Literal relative/package import paths as written (deduped, sorted). */
+  imports?: string[];
+  /** Project files that import this file (reverse edge; resolved, deduped, sorted). */
+  dependents?: string[];
   mtime?: number;
   /** Byte size at index time; compared alongside mtime so edits that land
    *  within the filesystem's mtime granularity but change size are caught. */
@@ -131,6 +136,12 @@ function isValidProjectIndex(value: unknown): value is ProjectIndex {
     if (!Array.isArray(file.symbols)) return false;
     if (file.mtime !== undefined && typeof file.mtime !== "number") return false;
     if (file.size !== undefined && typeof file.size !== "number") return false;
+    // Optional edge fields must be arrays of strings when present, so a
+    // malformed persisted index fails validation instead of throwing later.
+    for (const key of ["imports", "dependents"]) {
+      const field = file[key];
+      if (field !== undefined && (!Array.isArray(field) || !field.every((s) => typeof s === "string"))) return false;
+    }
   }
   if (v.stats && typeof v.stats === "object" && !Array.isArray(v.stats)) {
     const s = v.stats as Record<string, unknown>;
@@ -204,11 +215,107 @@ export function buildProjectIndex(cwd: string): ProjectIndex {
     }
   }
 
+  // Reverse dependency edges: for each file, resolve its literal imports to
+  // PROJECT files (relative resolution with .ts/.tsx/.js/.jsx/index candidates
+  // plus the .js → .ts import convention), then attach dependents (files that
+  // import this one) to every target. Rebuilt across the CURRENT index on
+  // every build (cheap — N×avg-imports path checks), so edge freshness does
+  // not depend on cached entries.
+  const byFile = new Map<string, FileIndex>();
+  for (const f of index.files) byFile.set(f.file, f);
+  // Start every current entry with NO dependents: a target whose sole
+  // importer was edited or deleted must not retain a stale reverse edge.
+  for (const f of index.files) delete f.dependents;
+  const dependentsOf = new Map<string, string[]>();
+  for (const f of index.files) {
+    for (const imp of f.imports ?? []) {
+      const target = resolveImportTarget(f.file, imp);
+      if (!target) continue;
+      for (const candidate of target) {
+        // Segment-aware escape check: only truly escaping paths (".." or
+        // "../…") are rejected, so e.g. "..internal.ts" stays valid.
+        if (candidate === ".." || candidate.startsWith("../")) continue;
+        if (!byFile.has(candidate)) continue;
+        const list = dependentsOf.get(candidate) ?? [];
+        if (!list.includes(f.file)) list.push(f.file);
+        dependentsOf.set(candidate, list);
+        break;
+      }
+    }
+  }
+  for (const [target, list] of dependentsOf) {
+    const entry = byFile.get(target);
+    if (entry) entry.dependents = list.sort();
+  }
+
   // Record whether this build had TypeScript available, so loaders can tell a
   // broken empty index from a legitimately empty one.
   index.stats!.tsUnavailable = getTs(cwd) === null;
 
   return index;
+}
+
+/** Candidate project-relative paths for a literal import specifier, in
+ *  resolution order: bare path, extensions, index files, and the .js → .ts
+ *  convention used in NodeNext projects. The caller picks the first candidate
+ *  present in the current index, so resolution is deterministic and project
+ *  layout-agnostic (no src/ assumption). */
+export function resolveImportTarget(fromFile: string, spec: string): string[] | undefined {
+  // True relative form only: '.', '..', './…', '../…' — bare package
+  // specifiers like '.foo' or '..pkg' must resolve against node_modules, not
+  // the importing file.
+  if (!(spec === "." || spec === ".." || spec.startsWith("./") || spec.startsWith("../"))) return undefined;
+  const dir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
+  const slash = spec.replace(/\\/g, "/");
+  // Normalize './' and '../' segments so candidates match index keys exactly.
+  const base = normalizeRel(dir ? `${dir}/${slash}` : slash);
+  // Paths still escaping the project root cannot be indexed files.
+  if (base === ".." || base.startsWith("../")) return undefined;
+  const prefix = base ? `${base}/` : "";
+  // Explicit-extension specifiers are kept EXACT (a './dep.ts' import must
+  // not fall back to dep.js); .js/.jsx specifiers also offer the .ts/.tsx
+  // convention (NodeNext). Extensionless specifiers expand as usual.
+  if (/\.tsx?$/.test(base)) return [base];
+  if (base.endsWith(".jsx")) {
+    // NodeNext: '.jsx' probes the TSX source first, then the literal .jsx.
+    return [base.replace(/\.jsx$/, ".tsx"), base];
+  }
+  if (base.endsWith(".js")) {
+    // NodeNext for '.js': dep.ts, dep.tsx, dep.d.ts, then the literal dep.js.
+    return [base.replace(/\.js$/, ".ts"), base.replace(/\.js$/, ".tsx"), base.replace(/\.js$/, ".d.ts"), base];
+  }
+  // Any OTHER explicit extension (.mjs, .cjs, .json, ...) is exact-only:
+  // './dep.mjs' must never fall back to dep.mjs.ts.
+  if (/\.[a-z0-9]+$/i.test(base)) return [base];
+  return [
+    base,
+    `${base}.ts`,
+    `${base}.tsx`,
+    `${base}.d.ts`,
+    `${base}.js`,
+    `${base}.jsx`,
+    `${prefix}index.ts`,
+    `${prefix}index.tsx`,
+    `${prefix}index.d.ts`,
+    `${prefix}index.js`,
+    `${prefix}index.jsx`,
+  ];
+}
+
+export function normalizeRel(p: string): string {
+  const parts: string[] = [];
+  for (const seg of p.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      // Preserve unmatched leading .. segments: dropping them would create
+      // false edges (e.g. '../../x' from src/a.ts must NOT resolve to 'x').
+      if (parts.length > 0 && parts[parts.length - 1] !== "..") parts.pop();
+      else parts.push("..");
+    } else {
+      parts.push(seg);
+    }
+  }
+  return parts.join("/");
 }
 
 function getExtension(file: string): string {
@@ -223,23 +330,101 @@ function buildFileIndex(cwd: string, filePath: string, relPath: string, cached?:
     const stats = statSync(filePath);
     const mtime = stats.mtimeMs;
     const size = stats.size;
-    if (cached && cached.mtime === mtime && cached.size === size) {
+    if (cached && cached.mtime === mtime && cached.size === size && cached.imports) {
       return cached;
     }
     const content = readFileSync(filePath, "utf-8");
     if (content.length > MAX_FILE_BYTES) {
-      return { file: relPath, symbols: [], mtime, size };
+      return { file: relPath, symbols: [], imports: [], mtime, size };
     }
     const ts = getTs(cwd);
     if (!ts) return undefined;
     const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true, getScriptKind(ts, relPath));
-    return { file: relPath, symbols: extractSymbols(ts, sourceFile), mtime, size };
+    return {
+      file: relPath,
+      symbols: extractSymbols(ts, sourceFile),
+      imports: extractImports(ts, sourceFile),
+      mtime,
+      size,
+    };
   } catch (err) {
     logEvent(cwd, "warn", "Failed to index file", {
       file: relPath,
       error: err instanceof Error ? err.message : String(err),
     });
     return undefined;
+  }
+}
+
+/** Line of the first AST import/export/require/import-equals site in
+ *  dependentFile whose specifier resolves to targetFile — using the SAME
+ *  candidate selection as edge building (first candidate present in byFile),
+ *  so the reported location always matches the constructed edge. AST-based:
+ *  comments, template literals, and plain strings can never match. Returns 0
+ *  when no site is found. */
+export function findImportSite(
+  cwd: string,
+  dependentFile: string,
+  targetFile: string,
+  byFile: Map<string, FileIndex>,
+): number {
+  try {
+    const ts = getTs(cwd);
+    const safePath = resolveProjectPath(cwd, dependentFile);
+    if (!ts || !safePath) return 0;
+    const content = readFileSync(safePath, "utf-8");
+    const sourceFile = ts.createSourceFile(
+      safePath,
+      content,
+      ts.ScriptTarget.Latest,
+      true,
+      getScriptKind(ts, dependentFile),
+    );
+    let result = 0;
+    const visit = (node: TS.Node): void => {
+      if (result !== 0) return;
+      let spec: string | undefined;
+      if (
+        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+        node.moduleSpecifier &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        spec = node.moduleSpecifier.text;
+      } else if (
+        ts.isImportEqualsDeclaration(node) &&
+        ts.isExternalModuleReference(node.moduleReference) &&
+        ts.isStringLiteral(node.moduleReference.expression)
+      ) {
+        spec = node.moduleReference.expression.text;
+      } else if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "require" &&
+        node.arguments.length > 0 &&
+        ts.isStringLiteral(node.arguments[0])
+      ) {
+        spec = node.arguments[0].text;
+      }
+      if (spec) {
+        const candidates = resolveImportTarget(dependentFile, spec);
+        if (candidates) {
+          for (const candidate of candidates) {
+            if (candidate === ".." || candidate.startsWith("../")) break;
+            if (!byFile.has(candidate)) continue;
+            // First indexed candidate resolved — the same rule as edge building.
+            if (candidate === targetFile) {
+              result = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+            }
+            break;
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return result;
+  } catch {
+    return 0;
   }
 }
 
@@ -254,6 +439,43 @@ function getScriptKind(ts: typeof import("typescript"), fileName: string): TS.Sc
 function isExported(ts: typeof import("typescript"), node: TS.Node): boolean {
   const modifiers = (node as TS.HasModifiers).modifiers;
   return modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+}
+
+/** Literal module specifiers from import/export declarations (deduped, sorted).
+ *  Parsed from the same AST pass as symbols; reusable unchanged across index
+ *  builds like symbols. */
+function extractImports(ts: typeof import("typescript"), sourceFile: TS.SourceFile): string[] {
+  const imports = new Set<string>();
+  const visit = (node: TS.Node): void => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      imports.add(node.moduleSpecifier.text);
+    }
+    // import legacy = require("./legacy") — ImportEquals + ExternalModuleReference.
+    if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      ts.isStringLiteral(node.moduleReference.expression)
+    ) {
+      imports.add(node.moduleReference.expression.text);
+    }
+    // Static require("./x") calls in .js/.cjs files.
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "require" &&
+      node.arguments.length > 0 &&
+      ts.isStringLiteral(node.arguments[0])
+    ) {
+      imports.add(node.arguments[0].text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return Array.from(imports).sort();
 }
 
 function extractSymbols(ts: typeof import("typescript"), sourceFile: TS.SourceFile): SymbolInfo[] {

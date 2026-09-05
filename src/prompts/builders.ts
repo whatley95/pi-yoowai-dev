@@ -176,6 +176,7 @@ export function buildReviewUserContext(args: {
   conventionsText?: string;
   preReviewOutput?: string;
   memoryContext?: string;
+  decisionsText?: string;
   priorRoundContext?: string;
   relatedContext?: string;
   codemap?: string;
@@ -196,6 +197,7 @@ export function buildReviewUserContext(args: {
     conventionsText,
     preReviewOutput,
     memoryContext,
+    decisionsText,
     priorRoundContext,
     relatedContext,
     codemap,
@@ -214,6 +216,7 @@ export function buildReviewUserContext(args: {
     : "";
   const preReviewBlock = preReviewOutput ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>` : "";
   const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
+  const decisionsBlock = decisionsText ? `\n\n<decisions>\n${decisionsText}\n</decisions>` : "";
   const priorRoundBlock = priorRoundContext
     ? `\n\n<prior_review_context>\n${priorRoundContext}\n</prior_review_context>`
     : "";
@@ -244,7 +247,7 @@ export function buildReviewUserContext(args: {
       ? `\n\n<focus_files>\nFiles edited as part of the current plan step (primary review target, but the full diff still matters for cross-file impact): ${focusFiles.join(", ")}\n</focus_files>`
       : "";
 
-  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${priorRoundBlock}${relatedBlock}${codemapBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
+  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${decisionsBlock}${priorRoundBlock}${relatedBlock}${codemapBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
 }
 
 function buildAdaptiveReviewPromptImpl(
@@ -259,6 +262,7 @@ function buildAdaptiveReviewPromptImpl(
     conventionsText?: string;
     preReviewOutput?: string;
     memoryContext?: string;
+    decisionsText?: string;
     priorRoundContext?: string;
     relatedContext?: string;
     codemap?: string;
@@ -280,6 +284,7 @@ function buildAdaptiveReviewPromptImpl(
     conventionsText,
     preReviewOutput,
     memoryContext,
+    decisionsText,
     priorRoundContext,
     relatedContext,
     codemap,
@@ -362,6 +367,7 @@ ${EVIDENCE_RULES}`,
       conventionsText,
       preReviewOutput,
       memoryContext,
+      decisionsText,
       priorRoundContext,
       relatedContext,
       codemap,

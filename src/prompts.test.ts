@@ -832,6 +832,23 @@ describe("prompt caching", () => {
     assert.notStrictEqual(a, b);
   });
 
+  it("renders decisionsText as a do-not-re-flag block after memory", () => {
+    const files = [{ file: "src/a.ts", content: "const x = 1;", mode: "full" as const }];
+    const withDecisions = buildAdaptiveReviewPrompt("desc", "diff", files, {
+      memoryContext: "past issue",
+      decisionsText:
+        "Known project decisions — do NOT re-flag as missing or wrong without evidence they were overturned:\n- never update lockfile manually",
+    });
+    const memoryIdx = withDecisions.user.indexOf("<memory>");
+    const decisionsIdx = withDecisions.user.indexOf("<decisions>");
+    assert.ok(memoryIdx >= 0 && decisionsIdx > memoryIdx, "<decisions> must render after <memory>");
+    assert.ok(withDecisions.user.includes("do NOT re-flag as missing or wrong"));
+    assert.ok(withDecisions.user.includes("never update lockfile manually"));
+
+    const without = buildAdaptiveReviewPrompt("desc", "diff", files, {});
+    assert.ok(!without.user.includes("<decisions>"), "absent without decisionsText");
+  });
+
   it("renders priorRoundContext after memory and adds the anti-reflag rule", () => {
     const files = [{ file: "src/a.ts", content: "const x = 1;", mode: "full" as const }];
     const prior =

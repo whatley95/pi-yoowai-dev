@@ -7,6 +7,7 @@ import type { ExtensionAPI, ContextEvent, ExtensionContext } from "@earendil-wor
 import { registerContextInjector, setWaiToolExecuting } from "./context-injector.js";
 import { setPlan, recordFileEdit, setPlanProgress } from "../session-state.js";
 import { recordIssues } from "../review-memory.js";
+import { recordLearnedFact } from "../wai-learn.js";
 import { saveConventions } from "../conventions.js";
 
 type FakePi = {
@@ -131,6 +132,79 @@ describe("context-injector", () => {
     assert.ok(lastUser.content.startsWith("first"));
     assert.ok(lastUser.content.includes("Refactor auth"));
     assert.ok(lastUser.content.includes("Node/TS"));
+  });
+
+  it("includes learned facts and decisions in the injected context", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Move login logic"], acceptanceCriteria: [] });
+    recordLearnedFact(cwd, "auth uses token refresh", { category: "auth" });
+    recordLearnedFact(cwd, "never update lockfile manually", { kind: "decision" });
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    const content = typeof lastUser?.content === "string" ? lastUser.content : "";
+    assert.ok(content.includes("<project_knowledge>"));
+    assert.ok(content.includes("auth uses token refresh"));
+    assert.ok(content.includes("[decision] never update lockfile manually"), "decisions carry a [decision] marker");
+  });
+
+  it("omits the project-knowledge block when no facts are recorded", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Move login logic"], acceptanceCriteria: [] });
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    const content = typeof lastUser?.content === "string" ? lastUser.content : "";
+    assert.ok(!content.includes("<project_knowledge>"), "no facts → no knowledge block");
+  });
+
+  it("drops project knowledge first when the context exceeds its budget", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Move login logic"], acceptanceCriteria: [] });
+    // A big learned store + conventions, with a tiny contextInjectMaxTokens.
+    for (let i = 0; i < 30; i++) {
+      recordLearnedFact(cwd, `fact ${i}: ${"x".repeat(80)}`);
+    }
+    saveConventions(cwd, {
+      stack: "Node/TS",
+      naming: "camelCase",
+      structure: "src/",
+      patterns: [],
+      entryPoints: [],
+      scripts: [],
+      generatedAt: new Date().toISOString(),
+    });
+    const configDir = join(cwd, ".pi");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(
+      join(configDir, "settings.json"),
+      JSON.stringify({
+        "pi-yoowai": {
+          autoInjectContext: true,
+          contextInjectMaxTokens: 40,
+          secondary: { provider: "openai", id: "gpt-4o-mini" },
+        },
+      }),
+      "utf-8",
+    );
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    const content = typeof lastUser?.content === "string" ? lastUser.content : "";
+    assert.ok(
+      !content.includes("<project_knowledge>"),
+      "project knowledge must be dropped first under budget pressure",
+    );
+    assert.ok(content.includes("Refactor auth"), "the plan must survive budget pressure");
   });
 
   it("does nothing when autoInjectContext is false", () => {

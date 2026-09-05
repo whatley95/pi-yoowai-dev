@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ContextEvent } from "@earendil-works/pi-coding-agent";
 import { loadYoowaiConfig } from "../config.js";
 import { loadConventions } from "../conventions.js";
+import { findLearnedFacts } from "../wai-learn.js";
 import { isUiFile } from "../design-ref.js";
 import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
@@ -62,6 +63,20 @@ function buildContextBlock(cwd: string): string {
   const parts: string[] = [];
   if (planSummary) parts.push(planSummary);
   if (conventionsText) parts.push(`<project_conventions>\n${conventionsText}\n</project_conventions>`);
+  // Learned knowledge: newest-first facts + decisions (compact, token-bounded)
+  // so the main agent starts each turn with project knowledge that persists
+  // across sessions — no model calls.
+  const learned = findLearnedFacts(cwd);
+  if (learned.length > 0) {
+    const factsText = learned
+      .slice(0, 20)
+      .map((f) => `- ${f.kind === "decision" ? "[decision] " : ""}${f.fact}`)
+      .join("\n");
+    const learnedBlock = `<project_knowledge>\n${truncateFacts(factsText, 400)}\n</project_knowledge>`;
+    if (learnedBlock.length > "<project_knowledge>\n\n</project_knowledge>".length) {
+      parts.push(learnedBlock);
+    }
+  }
   // Surface the load-bearing design rules when unreviewed edits touch UI
   // files so the main agent writes UI code against them before review.
   if (editState.editedFiles.some(isUiFile)) {
@@ -113,14 +128,33 @@ function buildContextBlock(cwd: string): string {
   return `\n\n<wai_context>\n${parts.join("\n\n")}\n</wai_context>`;
 }
 
+/** Token-bound a fact list on whole-line boundaries (facts are short; the
+ *  cap exists so a large learned store cannot crowd out higher-priority
+ *  context). */
+function truncateFacts(text: string, maxTokens: number): string {
+  if (estimateTokens(text) <= maxTokens) return text;
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  for (const line of lines) {
+    // Account for the joining newline: check the candidate WITH the next
+    // line included before keeping it.
+    const candidate = kept.length > 0 ? [...kept, line].join("\n") : line;
+    if (estimateTokens(candidate) > maxTokens) break;
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+
 function truncateBlock(block: string, maxTokens: number): string {
   if (estimateTokens(block) <= maxTokens) return block;
 
-  // Drop the least critical sections first: design rules, then conventions,
-  // while preserving plan, advisor notes, and reminders. Advisor notes stay
-  // above conventions/design rules because they are decision-relevant for the
-  // current edits (recent review issues in files being touched).
-  for (const tag of ["design_rules", "project_conventions"]) {
+  // Drop the least critical sections first: project knowledge (learned
+  // facts/decisions are useful but replaceable), then design rules, then
+  // conventions — preserving plan, advisor notes, and reminders. Advisor
+  // notes stay above conventions/design rules because they are
+  // decision-relevant for the current edits (recent review issues in files
+  // being touched).
+  for (const tag of ["project_knowledge", "design_rules", "project_conventions"]) {
     const match = block.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`));
     if (match) {
       const without = block.replace(match[0], "").replace(/\n\n+/g, "\n\n");

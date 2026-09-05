@@ -4,6 +4,7 @@ import {
   loadProjectIndex,
   saveProjectIndex,
   isIndexableFile,
+  findImportSite,
   type ProjectIndex,
 } from "./project-index.js";
 import { buildRelatedContext, findRelatedFiles } from "./context-retrieval.js";
@@ -49,7 +50,7 @@ export function buildCodemap(cwd: string, changedFiles: string[], maxTokens: num
       }
     }
     if (index && index.files.length > 0) {
-      const codemap = buildFromIndex(index, changedFiles, neighborFiles, maxTokens);
+      const codemap = buildFromIndex(cwd, index, changedFiles, neighborFiles, maxTokens);
       if (codemap) return codemap;
     }
     // Fallback: no usable index (non-TypeScript project, missing typescript,
@@ -125,6 +126,7 @@ function getOrBuildIndex(cwd: string): { index: ProjectIndex | null; justBuilt: 
 }
 
 function buildFromIndex(
+  cwd: string,
   index: ProjectIndex,
   changedFiles: string[],
   neighborFiles: string[],
@@ -151,23 +153,63 @@ function buildFromIndex(
       tokens += lineTokens;
     }
     if (truncated) break;
+    // Blast radius: for CHANGED files, an up-to-3 entry "used by" line with
+    // the actual import-site line numbers (bounded reads; deterministic
+    // order). Neighbor files show their own symbols only.
+    if (changedFiles.includes(file)) {
+      // Blast radius: up to three dependents with their actual AST import-site
+      // lines (findImportSite returns 0 when no site exists → omitted).
+      const usedBy: string[] = [];
+      for (const dep of (fileIndex.dependents ?? []).slice(0, 3)) {
+        const lineNo = findImportSite(cwd, dep, file, byFile);
+        // A missing site yields fewer than three entries (still bounded).
+        if (lineNo > 0) usedBy.push(`${dep}:${lineNo}`);
+      }
+      if (usedBy.length > 0) {
+        const line = `used by: ${usedBy.join(", ")}`;
+        const lineTokens = estimateTokens(line);
+        if (tokens + lineTokens > maxTokens) {
+          truncated = true;
+          break;
+        }
+        lines.push(line);
+        tokens += lineTokens;
+      }
+    }
   }
 
   if (lines.length === 0) return "";
-  return lines.join("\n") + (truncated ? `\n${TRUNCATION_NOTE}` : "");
+  const joined = lines.join("\n");
+  const withNote = truncated ? `${joined}\n${TRUNCATION_NOTE}` : joined;
+  // Final accounting against the COMPLETE rendered output (joining newlines
+  // and the truncation note included): if it still exceeds the budget, drop
+  // whole lines from the tail until it fits. The note is only appended when
+  // at least one content line remains — a note-only codemap is treated as
+  // empty. Never render beyond maxTokens.
+  if (estimateTokens(withNote) <= maxTokens) return withNote;
+  const trimmedLines = lines.slice();
+  while (trimmedLines.length > 0) {
+    trimmedLines.pop();
+    if (trimmedLines.length === 0) return "";
+    const candidate = `${trimmedLines.join("\n")}\n${TRUNCATION_NOTE}`;
+    if (estimateTokens(candidate) <= maxTokens) return candidate;
+  }
+  return "";
 }
 
-/** Truncate text to a token budget on whole-line boundaries. */
+/** Truncate text to a token budget on whole-line boundaries, accounting for
+ *  the COMPLETE rendered candidate (joining newlines + truncation note);
+ *  returns empty when no content line can carry the note. */
 function truncateLines(text: string, maxTokens: number): string {
   if (estimateTokens(text) <= maxTokens) return text;
   const lines = text.split("\n");
   const kept: string[] = [];
-  let tokens = 0;
   for (const line of lines) {
-    const lineTokens = estimateTokens(line);
-    if (tokens + lineTokens > maxTokens) break;
+    const candidate = kept.length > 0 ? `${kept.join("\n")}\n${line}` : line;
+    // Budget the EXACT rendered value (candidate + joining newline + note).
+    if (estimateTokens(`${candidate}\n${TRUNCATION_NOTE}`) > maxTokens) break;
     kept.push(line);
-    tokens += lineTokens;
   }
-  return kept.length > 0 ? `${kept.join("\n")}\n${TRUNCATION_NOTE}` : "";
+  if (kept.length === 0) return "";
+  return `${kept.join("\n")}\n${TRUNCATION_NOTE}`;
 }

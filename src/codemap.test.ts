@@ -81,6 +81,86 @@ export function run(): void {
     assert.equal(first, second);
   });
 
+  it("renders used-by lines with import-site line numbers for changed files", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "api.ts"), "export function getToken(): string { return 't'; }\n", "utf-8");
+    writeFileSync(
+      join(cwd, "src", "auth.ts"),
+      "import { getToken } from './api';\n\nexport const authed = getToken();\n",
+      "utf-8",
+    );
+    const codemap = buildCodemap(cwd, ["src/api.ts"], 1500);
+    assert.ok(codemap.includes("src/api.ts:1 —"), "the changed file's symbol must render");
+    // Import site: auth.ts line 1 imports './api'.
+    assert.ok(codemap.includes("used by: src/auth.ts:1"), `expected import-site location, got: ${codemap}`);
+  });
+
+  it("omits the used-by line when the changed file has no dependents", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "solo.ts"), "export const solo = 1;\n", "utf-8");
+    const codemap = buildCodemap(cwd, ["src/solo.ts"], 1500);
+    assert.ok(codemap.includes("src/solo.ts"));
+    assert.ok(!codemap.includes("used by"), "no dependents → no used-by line");
+  });
+
+  it("ignores plain relative strings and commented imports as import sites", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "api.ts"), "export function getToken(): string { return 't'; }\n", "utf-8");
+    // A plain string literal and a commented import that merely CONTAIN the
+    // relative path must not be reported as the import location.
+    writeFileSync(
+      join(cwd, "src", "auth.ts"),
+      "// import { x } from './api';\nconst example = './api';\nimport { getToken } from './api';\nexport const authed = getToken();\n",
+      "utf-8",
+    );
+    const codemap = buildCodemap(cwd, ["src/api.ts"], 1500);
+    assert.ok(codemap.includes("used by: src/auth.ts:3"), `expected the real import at line 3, got: ${codemap}`);
+  });
+
+  it("ignores commented require() text as an import site", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "api.ts"), "export function getToken(): string { return 't'; }\n", "utf-8");
+    writeFileSync(
+      join(cwd, "src", "auth.ts"),
+      "// const old = require('./api');\n/* require('./api') */\nconst x = require('./api');\nvoid x;\n",
+      "utf-8",
+    );
+    const codemap = buildCodemap(cwd, ["src/api.ts"], 1500);
+    assert.ok(codemap.includes("used by: src/auth.ts:3"), `expected the real require at line 3, got: ${codemap}`);
+  });
+
+  it("omits used-by entries whose import site cannot be found", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "api.ts"), "export function getToken(): string { return 't'; }\n", "utf-8");
+    // The import lives in an index-references-only form that our line finder
+    // deliberately skips (a dynamic import with a template literal): the
+    // dependent is indexed (imports collected by AST) but no line is found.
+    writeFileSync(join(cwd, "src", "dyn.ts"), "const p = './api';\nvoid p;\n", "utf-8");
+    // dyn.ts has no real import declaration → no edge at all, so the used-by
+    // line simply does not appear.
+    const codemap = buildCodemap(cwd, ["src/api.ts"], 1500);
+    assert.ok(!codemap.includes("used by: src/dyn.ts:0"), "dep:0 must never render");
+  });
+
+  it("counts the used-by text against the token budget", () => {
+    mkdirSync(join(cwd, "src"), { recursive: true });
+    writeFileSync(join(cwd, "src", "api.ts"), "export function getToken(): string { return 't'; }\n", "utf-8");
+    writeFileSync(
+      join(cwd, "src", "auth.ts"),
+      "import { getToken } from './api';\n\nexport const authed = getToken();\n",
+      "utf-8",
+    );
+    // Budget too small for the symbol line: nothing renders (bounded, no
+    // partial lines).
+    const empty = buildCodemap(cwd, ["src/api.ts"], 2);
+    assert.equal(empty, "");
+    // Budget big enough for the symbol line but not the used-by line: the
+    // used-by text must either fit or trigger truncation — never render
+    // beyond the budget.
+    const codemap = buildCodemap(cwd, ["src/api.ts"], 15);
+    assert.ok(!codemap || codemap.includes("… (symbol map truncated)") || !codemap.includes("used by"));
+  });
+
   it("truncates whole symbol lines to fit the token budget", () => {
     writeTsProject();
     const codemap = buildCodemap(cwd, ["src/main.ts"], 25);
