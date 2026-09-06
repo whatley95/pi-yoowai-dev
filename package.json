@@ -51,10 +51,10 @@
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": ">=0.75.0",
-    "@earendil-works/pi-ai": ">=0.75.0",
-    "@earendil-works/pi-coding-agent": ">=0.75.0",
-    "@earendil-works/pi-tui": ">=0.75.0",
+    "@earendil-works/pi-agent-core": ">=0.82.1",
+    "@earendil-works/pi-ai": ">=0.82.1",
+    "@earendil-works/pi-coding-agent": ">=0.82.1",
+    "@earendil-works/pi-tui": ">=0.82.1",
     "@sinclair/typebox": ">=0.34.0"
   },
   "peerDependenciesMeta": {
@@ -69,9 +69,9 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "^0.82.0",
-    "@earendil-works/pi-ai": "^0.82.0",
-    "@earendil-works/pi-coding-agent": "^0.82.0",
+    "@earendil-works/pi-agent-core": "^0.82.1",
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.82.1",
     "@earendil-works/pi-tui": "^0.82.1",
     "@eslint/js": "^10.0.1",
     "@sinclair/typebox": "^0.34.49",
