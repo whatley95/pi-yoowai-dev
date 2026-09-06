@@ -413,4 +413,38 @@ export function registerLifecycleHandlers(
       // best-effort flush
     }
   });
+
+  registerSessionCompactFailedHandler(pi);
+}
+
+/** session_compact_failed event payload (host >= 0.84.3). Older hosts never
+ *  emit it, so structural fields plus index signature keep this compatible
+ *  with the 0.75 peer minimum while remaining useful on current hosts. */
+interface CompactFailedEvent {
+  reason?: string;
+  source?: string;
+  error?: unknown;
+  retrying?: boolean;
+  attempt?: number;
+  [key: string]: unknown;
+}
+
+function registerSessionCompactFailedHandler(pi: ExtensionAPI): void {
+  // Guardedly typed registration: the event name is unknown to hosts < 0.84.3,
+  // so bind through a structural cast — on those hosts the handler never fires.
+  const onCompactionFailed = pi.on as unknown as (
+    event: string,
+    handler: (event: CompactFailedEvent, ctx: ExtensionContext) => void,
+  ) => void;
+  onCompactionFailed("session_compact_failed", async (event, ctx) => {
+    const detail = [
+      event.reason ? `reason: ${event.reason}` : null,
+      event.error ? `error: ${event.error instanceof Error ? event.error.message : String(event.error)}` : null,
+      event.source ? `source: ${event.source}` : null,
+      event.retrying ? `retrying (attempt ${typeof event.attempt === "number" ? event.attempt : "?"})` : null,
+    ]
+      .filter((x): x is string => x !== null)
+      .join("; ");
+    logEvent(ctx.cwd, "warn", `Session compaction failed${detail ? ` — ${detail}` : ""}`);
+  });
 }

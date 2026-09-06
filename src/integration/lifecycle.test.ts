@@ -49,6 +49,7 @@ type FakePi = {
   emitSessionBeforeSwitch: EmitSessionBeforeSwitch;
   emitSessionBeforeFork: EmitSessionBeforeFork;
   emitSessionCompact: EmitSessionCompact;
+  emitSessionCompactFailed: (event: unknown, ctx: ExtensionContext) => void;
 };
 
 function createFakePi(): FakePi {
@@ -87,6 +88,7 @@ function createFakePi(): FakePi {
     emitSessionBeforeSwitch: (event, ctx) => emit("session_before_switch", event, ctx),
     emitSessionBeforeFork: (event, ctx) => emit("session_before_fork", event, ctx),
     emitSessionCompact: (event, ctx) => emit("session_compact", event, ctx),
+    emitSessionCompactFailed: (event, ctx) => emit("session_compact_failed", event, ctx),
   };
 }
 
@@ -481,6 +483,29 @@ describe("lifecycle", () => {
 
     const saved = JSON.parse(readFileSync(join(cwd, ".pi", "yoowai", "plan.json"), "utf-8"));
     assert.strictEqual(saved.editsSinceLastReview, 4);
+  });
+
+  it("logs compaction failures on session_compact_failed (guardedly typed)", () => {
+    const { pi, emitSessionCompactFailed } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    emitSessionCompactFailed(
+      {
+        reason: "provider-error",
+        source: "anthropic",
+        retrying: true,
+        attempt: 2,
+        error: new Error("upstream 500"),
+      },
+      makeContext(cwd),
+    );
+
+    const log = readFileSync(join(cwd, ".pi", "yoowai", "wai.log"), "utf-8");
+    assert.match(log, /Session compaction failed/);
+    assert.match(log, /reason: provider-error/);
+    assert.match(log, /source: anthropic/);
+    assert.match(log, /retrying \(attempt 2\)/);
+    assert.match(log, /error: upstream 500/);
   });
 
   it("escalates the steer after K consecutive turn_ends with review pending", () => {
