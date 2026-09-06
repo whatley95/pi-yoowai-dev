@@ -180,6 +180,7 @@ export function buildReviewUserContext(args: {
   priorRoundContext?: string;
   relatedContext?: string;
   codemap?: string;
+  evidencePack?: string;
   designRefText?: string;
   truncated?: boolean;
   droppedFiles?: string[];
@@ -201,6 +202,7 @@ export function buildReviewUserContext(args: {
     priorRoundContext,
     relatedContext,
     codemap,
+    evidencePack,
     designRefText,
     truncated,
     droppedFiles,
@@ -222,6 +224,7 @@ export function buildReviewUserContext(args: {
     : "";
   const relatedBlock = relatedContext ? `\n\n<related_files>\n${relatedContext}\n</related_files>` : "";
   const codemapBlock = codemap ? `\n\n<project_symbol_map>\n${codemap}\n</project_symbol_map>` : "";
+  const evidencePackBlock = evidencePack ? `\n\n${evidencePack}` : "";
   const designRefBlock = designRefText ? `\n\n<design_rules>\n${designRefText}\n</design_rules>` : "";
 
   const fileContentsBlock =
@@ -247,7 +250,7 @@ export function buildReviewUserContext(args: {
       ? `\n\n<focus_files>\nFiles edited as part of the current plan step (primary review target, but the full diff still matters for cross-file impact): ${focusFiles.join(", ")}\n</focus_files>`
       : "";
 
-  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${decisionsBlock}${priorRoundBlock}${relatedBlock}${codemapBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
+  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${decisionsBlock}${priorRoundBlock}${relatedBlock}${codemapBlock}${evidencePackBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
 }
 
 function buildAdaptiveReviewPromptImpl(
@@ -266,6 +269,7 @@ function buildAdaptiveReviewPromptImpl(
     priorRoundContext?: string;
     relatedContext?: string;
     codemap?: string;
+    evidencePack?: string;
     designRefText?: string;
     truncated?: boolean;
     droppedFiles?: string[];
@@ -288,6 +292,7 @@ function buildAdaptiveReviewPromptImpl(
     priorRoundContext,
     relatedContext,
     codemap,
+    evidencePack,
     designRefText,
     truncated,
     droppedFiles,
@@ -371,6 +376,7 @@ ${EVIDENCE_RULES}`,
       priorRoundContext,
       relatedContext,
       codemap,
+      evidencePack,
       designRefText,
       truncated,
       droppedFiles,
@@ -673,6 +679,7 @@ function buildJudgePromptImpl(
     preReviewOutput?: string;
     memoryContext?: string;
     codemap?: string;
+    evidencePack?: string;
     designRefText?: string;
     diff?: string;
     fileContents?: FileContentContext[];
@@ -691,6 +698,7 @@ function buildJudgePromptImpl(
     preReviewOutput,
     memoryContext,
     codemap,
+    evidencePack,
     designRefText,
     diff,
     fileContents,
@@ -717,6 +725,7 @@ function buildJudgePromptImpl(
   const preReviewBlock = preReviewOutput ? `\n\n<pre_review_output>\n${preReviewOutput}\n</pre_review_output>` : "";
   const memoryBlock = memoryContext ? `\n\n<memory>\n${memoryContext}\n</memory>` : "";
   const codemapBlock = codemap ? `\n\n<project_symbol_map>\n${codemap}\n</project_symbol_map>` : "";
+  const evidencePackBlock = evidencePack ? `\n\n${evidencePack}` : "";
   const designRefBlock = designRefText ? `\n\n<design_rules>\n${designRefText}\n</design_rules>` : "";
 
   const diffBlock = diff ? `\n\n<diff>\n${diff}\n</diff>` : "";
@@ -782,7 +791,7 @@ Rules:
 - When the diff/file contents are truncated, do not treat missing context as a defect; judge only what is shown
 ${designRefText ? "- Apply the design rules shown above when reviewing UI code; do not flag a pattern that follows them.\n" : ""}${EVIDENCE_RULES}`,
 
-    user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}${historyBlock}${diffBlock}${fileContentsBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${codemapBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
+    user: `Judge this completed work:\n\n${description}${planBlock}${criteriaBlock}${historyBlock}${diffBlock}${fileContentsBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${evidencePackBlock}${codemapBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}`,
   };
 }
 

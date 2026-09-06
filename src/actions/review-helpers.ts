@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { buildReviewEvidencePack } from "./evidence-pack.js";
 import { callSecondaryModel } from "../secondary-model.js";
 import {
   buildAdaptiveReviewPrompt,
@@ -186,6 +187,7 @@ export interface ReviewBatchInput {
   maxToolIterations?: number;
   focusFiles?: string[];
   levelInstructions?: string;
+  evidencePackMaxTokens?: number;
 }
 
 export async function runReviewBatch(input: ReviewBatchInput): Promise<{
@@ -226,26 +228,52 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
     enableToolLoop,
     maxToolIterations,
     focusFiles,
+    evidencePackMaxTokens,
   } = input;
 
   const systemPromptEstimate = 1000;
-  // The codemap and design rules are counted within the input budget but
-  // yield to file contents: they are deducted from what remains for the
-  // diff, after files.
+  // The codemap, design rules, and evidence pack are counted within the input
+  // budget but yield to file contents: each is deducted from what remains for
+  // the diff, after files. The evidence pack also yields to codemap/design
+  // rules (its budget is capped by what those leave over).
+  const fileTokens = files.reduce((sum, f) => sum + f.tokenEstimate, 0);
+  const otherUsed =
+    estimateTokens(codemap ?? "") +
+    estimateTokens(designRefText ?? "") +
+    estimateTokens(instructionsText ?? "") +
+    estimateTokens(priorRoundContext ?? "") +
+    estimateTokens(decisionsContext ?? "") +
+    estimateTokens(relatedContext ?? "");
+  const maxPackTokens = evidencePackMaxTokens ?? 1200;
+  const packBudget = Math.max(
+    0,
+    Math.min(maxPackTokens, budget.availableInputTokens - systemPromptEstimate - fileTokens - otherUsed),
+  );
+  const evidencePack = buildReviewEvidencePack(cwd, {
+    budgetTokens: packBudget,
+    changedFiles: [...new Set(relevantPaths ?? files.map((f) => f.file))],
+  });
+  const evidenceText = evidencePack.text;
   const remainingForDiff = Math.max(
     0,
-    budget.availableInputTokens -
-      files.reduce((sum, f) => sum + f.tokenEstimate, 0) -
-      systemPromptEstimate -
-      estimateTokens(codemap ?? "") -
-      estimateTokens(designRefText ?? "") -
-      estimateTokens(instructionsText ?? "") -
-      estimateTokens(priorRoundContext ?? "") -
-      estimateTokens(decisionsContext ?? ""),
+    budget.availableInputTokens - fileTokens - systemPromptEstimate - otherUsed - estimateTokens(evidenceText),
   );
   const diffTokens = estimateTokens(diff);
-  const finalDiff = diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
-  const diffTruncated = truncated || finalDiff !== diff;
+  const diffTruncationNote = "\n... diff truncated";
+  let finalDiff = diff;
+  let diffTruncated = truncated;
+  if (diffTokens > remainingForDiff) {
+    // Truncation required: reserve the note; if even the note does not fit,
+    // emit only the largest content slice (or an empty diff).
+    const noteTokens = estimateTokens(diffTruncationNote);
+    const contentBudget = Math.max(0, remainingForDiff - noteTokens);
+    if (contentBudget === 0) {
+      finalDiff = noteTokens <= remainingForDiff ? diffTruncationNote : "";
+    } else {
+      finalDiff = diff.slice(0, contentBudget * 4) + diffTruncationNote;
+    }
+    diffTruncated = true;
+  }
 
   const { system, user } = buildAdaptiveReviewPrompt(
     description,
@@ -263,6 +291,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       priorRoundContext,
       relatedContext,
       codemap,
+      evidencePack: evidenceText,
       designRefText,
       instructionsText,
       truncated: diffTruncated,

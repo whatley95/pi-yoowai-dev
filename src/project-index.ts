@@ -29,8 +29,8 @@ try {
 }
 
 let warnedTsMissing = false;
-function getTs(cwd: string): typeof import("typescript") | null {
-  if (!tsModule && !warnedTsMissing) {
+function getTs(cwd: string, quiet = false): typeof import("typescript") | null {
+  if (!tsModule && !warnedTsMissing && !quiet) {
     warnedTsMissing = true;
     logEvent(cwd, "warn", "typescript not installed; project indexing disabled", {
       hint: "run `npm install` in the extension directory to enable symbol indexing",
@@ -93,14 +93,26 @@ function getIndexPath(cwd: string): string {
 }
 
 export function loadProjectIndex(cwd: string): ProjectIndex | null {
+  const { index } = loadProjectIndexResult(cwd, true);
+  return index;
+}
+
+/** Read-only variant: returns the same result WITHOUT logging (used by
+ *  deterministic evidence collection, which must never write wai.log). */
+export function loadProjectIndexQuiet(cwd: string): ProjectIndex | null {
+  const { index } = loadProjectIndexResult(cwd, false);
+  return index;
+}
+
+function loadProjectIndexResult(cwd: string, log: boolean): { index: ProjectIndex | null } {
   const path = getIndexPath(cwd);
-  if (!existsSync(path)) return null;
+  if (!existsSync(path)) return { index: null };
   try {
     const raw = readFileSync(path, "utf-8");
     const parsed = JSON.parse(raw) as unknown;
     if (!isValidProjectIndex(parsed)) {
-      logEvent(cwd, "warn", "Invalid project index shape; ignoring", { path });
-      return null;
+      if (log) logEvent(cwd, "warn", "Invalid project index shape; ignoring", { path });
+      return { index: null };
     }
     // A persisted index that scanned source files but indexed none was built
     // while the lazy `typescript` dependency was missing or broken (see
@@ -108,19 +120,23 @@ export function loadProjectIndex(cwd: string): ProjectIndex | null {
     // a legitimately empty index (all files skipped for size, or symbol-less)
     // must be kept, or it would be discarded and rebuilt on every load.
     if (parsed.stats && parsed.stats.scanned > 0 && parsed.stats.indexed === 0 && parsed.stats.tsUnavailable === true) {
-      logEvent(cwd, "warn", "Project index scanned files but indexed none (built without TypeScript?); ignoring", {
-        path,
-        scanned: parsed.stats.scanned,
-      });
-      return null;
+      if (log) {
+        logEvent(cwd, "warn", "Project index scanned files but indexed none (built without TypeScript?); ignoring", {
+          path,
+          scanned: parsed.stats.scanned,
+        });
+      }
+      return { index: null };
     }
-    return parsed;
+    return { index: parsed };
   } catch (err) {
-    logEvent(cwd, "warn", "Failed to load project index", {
-      error: err instanceof Error ? err.message : String(err),
-      path,
-    });
-    return null;
+    if (log) {
+      logEvent(cwd, "warn", "Failed to load project index", {
+        error: err instanceof Error ? err.message : String(err),
+        path,
+      });
+    }
+    return { index: null };
   }
 }
 
@@ -367,9 +383,10 @@ export function findImportSite(
   dependentFile: string,
   targetFile: string,
   byFile: Map<string, FileIndex>,
+  quiet = false,
 ): number {
   try {
-    const ts = getTs(cwd);
+    const ts = getTs(cwd, quiet);
     const safePath = resolveProjectPath(cwd, dependentFile);
     if (!ts || !safePath) return 0;
     const content = readFileSync(safePath, "utf-8");

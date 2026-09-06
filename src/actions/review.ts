@@ -604,6 +604,7 @@ export async function executeWaiReview(
           relevantPaths: [file],
           nativeJson,
           focusFiles: stepFocusFiles,
+          evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
           levelInstructions: reviewSettings.instructions,
           ...toolLoopOptions(loopConfig),
         });
@@ -782,6 +783,7 @@ export async function executeWaiReview(
         relevantPaths: [p.file],
         nativeJson,
         focusFiles: stepFocusFiles,
+        evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
         levelInstructions: reviewSettings.instructions,
         ...toolLoopOptions(loopConfig),
       });
@@ -930,6 +932,7 @@ export async function executeWaiReview(
         progress,
         nativeJson,
         focusFiles: stepFocusFiles,
+        evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
         levelInstructions: reviewSettings.instructions,
         ...toolLoopOptions(loopConfig),
       });

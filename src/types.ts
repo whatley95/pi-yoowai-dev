@@ -119,6 +119,8 @@ export interface YoowaiConfig {
   instructionsMaxTokens?: number;
   /** Token budget for the "previously reviewed this step" file outlines injected into review prompts when an incremental review cannot see earlier-round files. Default 800; 0 disables. */
   priorReviewMaxTokens?: number;
+  /** Token budget for the deterministic review EVIDENCE PACK (symbol lines, import/dependent sites, nearby tests, contract candidates). Counted within reviewMaxInputTokens and dropped BEFORE changed-file contents when the window is tight. Default 1200; 0 disables. */
+  evidencePackMaxTokens?: number;
   /** Render wai audit entries (plan, review, judge, etc.) with a custom TUI entry renderer. Default true. */
   entryRenderer?: boolean;
   /** Register keyboard shortcuts for common wai actions (review, done, status). Default true. */

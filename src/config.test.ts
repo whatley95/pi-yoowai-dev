@@ -944,8 +944,13 @@ describe("loadYoowaiConfig designRefMaxTokens", () => {
 
 describe("loadYoowaiConfig priorReviewMaxTokens", () => {
   const tmpDirs: string[] = [];
+  const emptyAgentDir = mkdtempSync(join(tmpdir(), "wai-config-frontier-agent-"));
+  const originalAgentDir = getAgentDir();
+  setAgentDirForTests(() => emptyAgentDir);
 
   after(() => {
+    setAgentDirForTests(() => originalAgentDir);
+    rmSync(emptyAgentDir, { recursive: true, force: true });
     for (const dir of tmpDirs) {
       try {
         rmSync(dir, { recursive: true, force: true });
@@ -962,20 +967,31 @@ describe("loadYoowaiConfig priorReviewMaxTokens", () => {
 
     const config = loadYoowaiConfig(cwd);
     assert.equal(config.priorReviewMaxTokens, 800);
+    assert.equal(config.evidencePackMaxTokens, 1200, "evidence pack defaults to 1200");
   });
 
   it("parses a positive integer and accepts 0 (disabled)", () => {
     const cwd = makeTempDir("config-priorreview-parse-");
     tmpDirs.push(cwd);
-    writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" }, priorReviewMaxTokens: 400 });
+    writeProjectSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      priorReviewMaxTokens: 400,
+      evidencePackMaxTokens: 600,
+    });
 
     const config = loadYoowaiConfig(cwd);
     assert.equal(config.priorReviewMaxTokens, 400);
+    assert.equal(config.evidencePackMaxTokens, 600);
 
     const cwd0 = makeTempDir("config-priorreview-zero-");
     tmpDirs.push(cwd0);
-    writeProjectSettings(cwd0, { secondary: { provider: "openai", id: "gpt-4o" }, priorReviewMaxTokens: 0 });
+    writeProjectSettings(cwd0, {
+      secondary: { provider: "openai", id: "gpt-4o" },
+      priorReviewMaxTokens: 0,
+      evidencePackMaxTokens: 0,
+    });
     assert.equal(loadYoowaiConfig(cwd0).priorReviewMaxTokens, 0);
+    assert.equal(loadYoowaiConfig(cwd0).evidencePackMaxTokens, 0);
   });
 
   it("falls back to the default for invalid values", () => {

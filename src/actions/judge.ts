@@ -8,6 +8,7 @@ import { capActionInstructions } from "../instructions.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
+import { buildReviewEvidencePack } from "./evidence-pack.js";
 import {
   buildJudgePrompt,
   validateJudgeResult,
@@ -139,6 +140,10 @@ export async function executeWaiJudge(
     ? formatDesignRulesForPrompt(cwd, config.designRefMaxTokens ?? 800)
     : "";
   const instructionsText = capActionInstructions(cwd, "judge", config.instructionsMaxTokens ?? 800);
+  const judgeEvidencePack = buildReviewEvidencePack(cwd, {
+    budgetTokens: config.evidencePackMaxTokens ?? 1200,
+    changedFiles,
+  });
 
   // Judge is the deepest verdict — auto-detected pre-review commands use the
   // high profile (typecheck+lint+test when autoPreReviewCommands is on); an
@@ -271,6 +276,7 @@ export async function executeWaiJudge(
     codemap,
     designRefText,
     instructionsText,
+    evidencePack: judgeEvidencePack.text,
     diff: finalDiff,
     fileContents: fileResult.entries.map((f) => ({ file: f.file, content: f.content, mode: f.mode })),
     droppedFiles: finalDroppedFiles,
