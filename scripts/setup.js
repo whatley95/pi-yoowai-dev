@@ -82,8 +82,11 @@ function question(rl, prompt) {
 }
 
 // Copy the vendored design reference topics into ~/.pi/agent/skills/ so Pi
-// can auto-trigger them as native skills. Refresh semantics: the known topic
-// directories are overwritten; nothing else under skills/ is touched.
+// can auto-trigger them as native skills. LEGACY FALLBACK: modern Pi hosts
+// (>= 0.82, resources_discover) load the packaged skills automatically via
+// the extension's startup discovery — this copy is only needed on hosts
+// without that hook. Refresh semantics: the known topic directories are
+// overwritten; nothing else under skills/ is touched; no deletion.
 function installDesignSkills() {
   const { agentDir } = resolveSettingsPath();
   const skillsDir = join(agentDir, "skills");
@@ -103,6 +106,8 @@ function installDesignSkills() {
     cpSync(license, join(skillsDir, "design-refs-LICENSE"));
   }
   console.log(`Installed/refreshed ${DESIGN_SKILL_TOPICS.length} design skills in ${skillsDir}`);
+  console.log("Note: Pi hosts with resources_discover (>= 0.82) load these skills from the package automatically;");
+  console.log("this copy is a legacy fallback — remove the copied dirs to let the packaged versions win. (setup does not delete.)");
   console.log("Re-run `npx pi-yoowai setup` after upgrades to refresh them.");
 }
 

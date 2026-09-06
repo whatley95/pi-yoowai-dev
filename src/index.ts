@@ -66,6 +66,7 @@ import { setAuditExtensionAPI } from "./integration/audit.js";
 import { publishWaiResult } from "./integration/publish.js";
 import { registerWaiEntryRenderer } from "./integration/entry-renderer.js";
 import { registerWaiShortcuts } from "./integration/shortcuts.js";
+import { registerDesignSkillDiscovery } from "./integration/skills.js";
 import { updateWaiPlanWidget, hideWaiPlanWidget } from "./integration/widget.js";
 import { registerWaiProvider, unregisterWaiProvider } from "./integration/provider.js";
 
@@ -1232,4 +1233,5 @@ export default async function (pi: ExtensionAPI) {
   registerLifecycleHandlers(pi, loopStates);
   await registerWaiEntryRenderer(pi);
   registerWaiShortcuts(pi);
+  registerDesignSkillDiscovery(pi);
 }

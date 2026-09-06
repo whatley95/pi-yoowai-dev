@@ -463,6 +463,12 @@ Read curated UI/animation design guidance vendored from [Emil Kowalski's skills]
 
 Call this when building, reviewing, or improving UI/animation code to get detailed design guidance beyond the distilled baseline rules that are injected automatically.
 
+#### Design skills auto-discovery
+
+The vendored design topics (Emil Kowalski's skills, MIT) are **auto-registered as native Pi skills** at extension startup: on hosts with `resources_discover` (Pi >= 0.82), the main agent's system prompt lists them, so Pi self-triggers the design guidance during UI work — no setup needed. The shipped `scripts/setup.js` skill-copy remains a **legacy fallback** for hosts without that hook (copied topics take precedence over the packaged ones — remove the copies to let the packaged versions win; setup never deletes).
+
+> Verified smoke (Pi 0.82.1 CLI, extension loaded from `./src/index.ts`, no setup copy): the session reports exactly the nine skills — `animate, animation-vocabulary, apple-design, emil-design-eng, find-animation-opportunities, improve-animations, pick-ui-library, prototype, review-animations`.
+
 ### `wai_vision` tool
 
 Analyze an image file (screenshot, UI mockup, diagram, error capture) or a PDF document with the secondary model.

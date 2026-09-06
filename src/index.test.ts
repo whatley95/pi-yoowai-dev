@@ -204,13 +204,18 @@ describe("wai extension registration", () => {
     commands: Array<{ name: string; description?: string }>;
     toolDefs: Array<{ name: string } & Record<string, unknown>>;
     commandDefs: Array<{ name: string; description?: string } & Record<string, unknown>>;
+    eventHandlers: Map<string, Array<(event: unknown, ctx: unknown) => unknown>>;
   } {
     const tools: Array<{ name: string; label?: string; description?: string }> = [];
     const toolDefs: Array<{ name: string } & Record<string, unknown>> = [];
     const commands: Array<{ name: string; description?: string }> = [];
     const commandDefs: Array<{ name: string; description?: string } & Record<string, unknown>> = [];
+    const eventHandlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
     const pi = {
-      on: () => {},
+      on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
+        if (!eventHandlers.has(event)) eventHandlers.set(event, []);
+        eventHandlers.get(event)!.push(handler);
+      },
       registerTool: (tool: { name: string; label?: string; description?: string } & Record<string, unknown>) => {
         tools.push(tool);
         toolDefs.push(tool);
@@ -233,7 +238,7 @@ describe("wai extension registration", () => {
         input: async () => undefined,
       },
     } as unknown as ExtensionAPI;
-    return { pi, tools, commands, toolDefs, commandDefs };
+    return { pi, tools, commands, toolDefs, commandDefs, eventHandlers };
   }
 
   async function runLearnCommand(
@@ -542,6 +547,14 @@ describe("wai extension registration", () => {
     assert.equal(selects.length, 1);
     assert.match(selects[0].join("\n"), /Renewed 0 fact\(s\)/);
     rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("registers exactly one resources_discover handler during init (design skills auto-discovery)", async () => {
+    const { pi, eventHandlers } = createMockPi();
+    await initWai(pi);
+    const registered = eventHandlers.get("resources_discover") ?? [];
+    assert.equal(registered.length, 1, "resources_discover must be registered once");
+    assert.ok(registered[0], "handler must exist");
   });
 
   it("registers the explicit review-depth tools", async () => {
