@@ -11,7 +11,7 @@ import {
 } from "./project-index.js";
 import { loadState } from "./plan-store.js";
 import { getMemorySummary, getPastIssuesForFiles } from "./review-memory.js";
-import { findLearnedFacts, formatLearnedFacts, type LearnedFact } from "./wai-learn.js";
+import { findLearnedFacts, formatLearnedFactsWithFreshness, type LearnedFact } from "./wai-learn.js";
 import type { Conventions, YoowaiSessionState, PlanTodoItem } from "./types.js";
 
 export type IndexTopic = "all" | "plan" | "memory" | "conventions" | "cost" | "logs" | "index" | "learned";
@@ -133,7 +133,7 @@ export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResul
   if (wants("learned")) {
     const learnedFacts = findLearnedFacts(cwd, query || undefined);
     result.learned = learnedFacts;
-    result.learnedSummary = formatLearnedFacts(learnedFacts);
+    result.learnedSummary = formatLearnedFactsWithFreshness(learnedFacts);
   }
 
   if (wants("cost")) {

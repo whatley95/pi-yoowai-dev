@@ -428,12 +428,28 @@ Record a persistent project fact that wai will remember across sessions.
 | `wai_learn({ verify: true, query: "auth" })`                                  | Verify only facts matching a keyword                                           |
 | `wai_learn({ verify: true, deep: true })`                                     | Verify facts with the secondary model for higher accuracy                      |
 | `wai_learn({ verify: true, deep: true, query: "auth" })`                      | Deep verify only facts matching a keyword                                      |
+| `wai_learn({ stale: true })`                                                  | List facts/decisions past their freshness budget with a `STALE` marker and a `verify, update, or revoke` hint |
+| `wai_learn({ stale: true, query: "auth" })`                                   | Stale listing filtered by keyword                                              |
+| `wai_learn({ reaffirm: "Never update the lockfile manually" })`             | Explicitly reaffirm a stored fact (exact text) — renews its freshness stamp   |
 
 Recorded facts appear in `wai_index({ topic: "learned" })`.
 
 `verify` checks referenced files, source files, and symbols from the project index. It returns each fact as `valid`, `questionable`, or `outdated` — no model call, so it is fast and safe to run manually.
 
 `verify` + `deep` calls the secondary model for each fact, including the source file and project conventions in the prompt. It is more accurate but costs tokens per fact.
+
+#### Freshness policy
+
+Memory stays **relevant, not just persistent**. Every entry carries a freshness stamp (`lastVerifiedAt`, initialized to its creation time). An entry is **stale** when its age reaches the per-kind budget (`age >= budget`):
+
+- **Decisions: 90 days** (`FRESHNESS_BUDGET_MS.decision`)
+- **Facts: 365 days** (`FRESHNESS_BUDGET_MS.fact`)
+
+Stale entries are **never injected** into the main agent's context or the review `<decisions>` block (filtered before the newest-20/400-token and 600-token slices) — but they are **retained** under the 200-entry cap and surfaced by `wai_learn({ stale: true })` and `wai_index({ topic: "learned" })` with a `STALE` marker and a `verify, update, or revoke` hint. Legacy entries without a stamp (or with a malformed one) age from their creation time; an unusable timestamp makes the entry stale without rejecting the record.
+
+**Renewal is guarded.** Running `verify` only renews entries the check returned `valid` (all-clear); `questionable`/`outdated`/empty/malformed/unconfirmed results never renew, so a merely-run verifier cannot keep stale memory alive. `deep` verification follows the same rule and is awaited before renewal is applied. `reaffirm` renews explicitly by exact fact text (duplicate texts are rejected as ambiguous unless targeted by entry id). Every entry has a stable per-entry id; writes report whether persistence succeeded (`write-failed` is surfaced as an error).
+
+> Contestability (automatically challenging stale decisions when a review contradicts them) is deliberately **deferred**; the current UX is the explicit stale listing with a `verify, update, or revoke` hint.
 
 ### `wai_design_ref` tool
 
@@ -498,8 +514,10 @@ Image analysis (including scanned PDFs) requires the **sdk backend** and a model
 | `/wai-vision <path> [question...]`               | Analyze an image (screenshot, diagram, error capture) with a vision-capable model                                                                                                                                                        |
 | `/wai-search <query>`                            | Search the web via DuckDuckGo or Brave (requires `docs.webSearch.enabled`)                                                                                                                                                               |
 | `/wai-learn <fact> [--category <cat>]`           | Record a persistent project fact                                                                                                                                                                                                         |
-| `/wai-learn --verify [--query <keyword>]`        | Check stored facts against the current codebase                                                                                                                                                                                          |
-| `/wai-learn --verify --deep [--query <keyword>]` | Check stored facts with the secondary model                                                                                                                                                                                              |
+| `/wai-learn --verify [--query <keyword>]`        | Check stored facts against the current codebase (renews only all-clear entries)                                                                                                                                                          |
+| `/wai-learn --verify --deep [--query <keyword>]` | Check stored facts with the secondary model (renews only model-confirmed entries, after the pass completes)                                                                                                                              |
+| `/wai-learn --stale [--query <keyword>]`         | List facts/decisions past their freshness budget (`STALE` marker + `verify, update, or revoke` hint)                                                                                                                                      |
+| `/wai-learn --reaffirm <fact>`                   | Explicitly reaffirm a stored fact by exact text — renews its freshness stamp (duplicates are rejected as ambiguous)                                                                                                                       |
 | `/wai-model`                                     | Interactively pick the base or per-tool model — see the selection flow above                                                                                                                                                             |
 | `/wai-model <provider> [filter]`                 | Pre-select provider and optionally filter the model list                                                                                                                                                                                 |
 | `/wai-model reset [base\|<task>]`                | Clear the base secondary model or a per-tool override (e.g. `reset review`)                                                                                                                                                              |

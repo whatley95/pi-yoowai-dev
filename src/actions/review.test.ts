@@ -2,7 +2,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REVIEW_NO_MODEL_ERROR, executeWaiReview, planAdvanceFromReview } from "./review.js";
@@ -1707,28 +1707,75 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     assert.ok(!result.review?.truncated);
   });
 
+  it("injects only fresh decisions into a normal (single-call) review prompt", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("DECISION_SINGLE_MARKER\n");
+    recordLearnedFact(cwd, "Normal path fresh decision.", { kind: "decision" });
+    recordLearnedFact(cwd, "Normal path stale decision.", { kind: "decision" });
+    const learnedPath = join(cwd, ".pi", "yoowai", "learned.json");
+    const store = JSON.parse(readFileSync(learnedPath, "utf-8")) as {
+      facts: Array<Record<string, string>>;
+    };
+    const stale = store.facts.find((f) => f.fact === "Normal path stale decision.")!;
+    stale.lastVerifiedAt = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+    stale.timestamp = stale.lastVerifiedAt;
+    writeFileSync(learnedPath, JSON.stringify(store));
+
+    const { url, bodies } = await startStubServer();
+    writeSettings(cwd, {
+      reviewLevel: "min",
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        thinking: "off",
+        contextWindow: 8000,
+        maxOutputTokens: 1024,
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test-key",
+      },
+    });
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const result = await executeWaiReview(cwd, "single decisions probe", ctx, {}, undefined, () => {});
+    assert.equal(result.review?.verdict, "pass");
+    assert.equal(bodies.length, 1, "non-parallel review runs one call");
+    const body = JSON.parse(bodies[0]) as { messages?: Array<{ role: string; content: string }> };
+    const user = body.messages?.find((m) => m.role === "user")?.content ?? "";
+    assert.ok(user.includes("<decisions>"));
+    assert.ok(user.includes("Normal path fresh decision."));
+    assert.ok(!user.includes("Normal path stale decision."));
+  });
+
   it(
     "injects recorded decisions into the review prompt (decisions only, 600-token cap)",
     { skip: !hasGit },
     async () => {
-      const cwd = mkdtempSync(join(tmpdir(), "review-decisions-repo-"));
-      tmpDirs.push(cwd);
-      initGitRepo(cwd);
-      mkdirSync(join(cwd, ".pi"), { recursive: true });
-      writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
-      writeFileSync(join(cwd, "a.txt"), "a1\n");
-      commitAll(cwd);
-      writeFileSync(join(cwd, "a.txt"), "DECISION_PROBE_MARKER\n");
-      commitAll(cwd);
+      // Parallel fixture: three changed files → three batches; the decisions
+      // block is built once and must ride EVERY batch's prompt.
+      const cwd = makeRepoWithMultiFileChange({
+        "a.txt": "a1\nDECISION_PROBE_MARKER_A\n",
+        "b.txt": "b1\nDECISION_PROBE_MARKER_B\n",
+        "c.txt": "c1\nDECISION_PROBE_MARKER_C\n",
+      });
       recordLearnedFact(cwd, "Never update the lockfile manually.", { kind: "decision", source: "review" });
       recordLearnedFact(cwd, "Use camelCase for functions.", { category: "conventions" });
+      recordLearnedFact(cwd, "Stale decision that was overturned.", { kind: "decision" });
       for (let i = 0; i < 12; i++) {
         recordLearnedFact(cwd, `Prior decision ${i}: ${"x".repeat(120)}`, { kind: "decision" });
       }
+      // Age the stale decision on disk: 400 days > 90d decision budget.
+      const learnedPath = join(cwd, ".pi", "yoowai", "learned.json");
+      const store = JSON.parse(readFileSync(learnedPath, "utf-8")) as {
+        facts: Array<Record<string, string>>;
+      };
+      const stale = store.facts.find((f) => f.fact.startsWith("Stale decision"))!;
+      stale.lastVerifiedAt = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+      stale.timestamp = stale.lastVerifiedAt;
+      writeFileSync(learnedPath, JSON.stringify(store));
 
-      const { url, bodies } = await startStubServer();
+      const { url, bodies } = await startStubServer({ holdForConcurrency: 3 });
       writeSettings(cwd, {
         reviewLevel: "min",
+        parallelReview: true,
         secondary: {
           provider: "openai",
           id: "gpt-4o-mini",
@@ -1743,18 +1790,25 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
       const ctx = { cwd } as unknown as ExtensionContext;
       const result = await executeWaiReview(cwd, "decisions probe", ctx, {}, undefined, () => {});
       assert.equal(result.review?.verdict, "pass");
-      const body = JSON.parse(bodies[0]) as { messages?: Array<{ role: string; content: string }> };
-      const user = body.messages?.find((m) => m.role === "user")?.content ?? "";
-      assert.ok(user.includes("<decisions>"), "the decisions block must reach the review");
-      assert.ok(user.includes("Never update the lockfile manually."), "a recorded decision must appear");
-      assert.ok(!user.includes("Use camelCase for functions."), "plain facts must NOT appear in the decisions block");
-      // The production limiter caps the inner payload (heading + entries) at
-      // 600 tokens; the <decisions> wrapper tags are not part of that payload.
-      const inner = user.slice(user.indexOf("<decisions>") + "<decisions>".length, user.indexOf("</decisions>"));
-      assert.ok(
-        estimateTokens(inner) <= 600,
-        `the decisions payload must stay within the 600-token cap, got ${estimateTokens(inner)}`,
-      );
+      assert.equal(bodies.length, 3, "one parallel batch per changed file");
+      for (const rawBody of bodies) {
+        const body = JSON.parse(rawBody) as { messages?: Array<{ role: string; content: string }> };
+        const user = body.messages?.find((m) => m.role === "user")?.content ?? "";
+        assert.ok(user.includes("<decisions>"), "the decisions block must reach every batch");
+        assert.ok(
+          user.includes("Never update the lockfile manually."),
+          "a recorded decision must appear in every batch",
+        );
+        assert.ok(!user.includes("Stale decision that was overturned."), "an aged decision must NOT reach any batch");
+        assert.ok(!user.includes("Use camelCase for functions."), "plain facts must NOT appear in the decisions block");
+        // The production limiter caps the inner payload (heading + entries) at
+        // 600 tokens; the <decisions> wrapper tags are not part of that payload.
+        const inner = user.slice(user.indexOf("<decisions>") + "<decisions>".length, user.indexOf("</decisions>"));
+        assert.ok(
+          estimateTokens(inner) <= 600,
+          `the decisions payload must stay within the 600-token cap, got ${estimateTokens(inner)}`,
+        );
+      }
     },
   );
 

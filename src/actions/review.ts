@@ -12,7 +12,7 @@ import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { capActionInstructions } from "../instructions.js";
 import { buildAstContext } from "../ast-context.js";
 import { getPastIssuesForFiles, recordIssues } from "../review-memory.js";
-import { findLearnedFacts } from "../wai-learn.js";
+import { findLearnedFacts, isFactFresh } from "../wai-learn.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
 import { resolveEffectivePreReviewCommands, resolveEffectiveToolLoop } from "./context-shared.js";
 import { calculateReviewBudget, estimateTokens, truncateToTokenBudget, type ReviewBudget } from "../token-budget.js";
@@ -192,7 +192,7 @@ export async function executeWaiReview(
   // reviewer as do-not-re-flag context (implemented earlier on purpose — not
   // accidental drift). Capped at 600 tokens including the heading; empty when
   // no decisions exist.
-  const decisionsRecords = findLearnedFacts(cwd, undefined, "decision");
+  const decisionsRecords = findLearnedFacts(cwd, undefined, "decision").filter((d) => isFactFresh(d));
   const decisionsContext =
     decisionsRecords.length > 0
       ? `Known project decisions — do NOT re-flag as missing or wrong without evidence they were overturned:\n${decisionsRecords

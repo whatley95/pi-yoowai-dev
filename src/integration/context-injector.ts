@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ContextEvent } from "@earendil-works/pi-coding-agent";
 import { loadYoowaiConfig } from "../config.js";
 import { loadConventions } from "../conventions.js";
-import { findLearnedFacts } from "../wai-learn.js";
+import { findLearnedFacts, isFactFresh } from "../wai-learn.js";
 import { isUiFile } from "../design-ref.js";
 import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
@@ -63,10 +63,11 @@ function buildContextBlock(cwd: string): string {
   const parts: string[] = [];
   if (planSummary) parts.push(planSummary);
   if (conventionsText) parts.push(`<project_conventions>\n${conventionsText}\n</project_conventions>`);
-  // Learned knowledge: newest-first facts + decisions (compact, token-bounded)
-  // so the main agent starts each turn with project knowledge that persists
-  // across sessions — no model calls.
-  const learned = findLearnedFacts(cwd);
+  // Learned knowledge: newest-first FRESH facts + decisions (compact,
+  // token-bounded) so the main agent starts each turn with project
+  // knowledge that persists across sessions — no model calls. Stale entries
+  // are filtered out BEFORE slicing (they remain listed by wai_index).
+  const learned = findLearnedFacts(cwd).filter((f) => isFactFresh(f));
   if (learned.length > 0) {
     const factsText = learned
       .slice(0, 20)

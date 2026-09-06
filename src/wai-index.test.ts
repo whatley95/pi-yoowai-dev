@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConventions } from "./conventions.js";
@@ -176,6 +176,42 @@ describe("wai-index", () => {
     assert.ok(result.learned, "should include learned facts");
     assert.equal(result.learned?.length, 1);
     assert.match(result.learnedSummary!, /camelCase/);
+  });
+
+  it("marks stale facts with a verify/update/revoke hint without renewing stamps", () => {
+    recordLearnedFact(cwd, "Fresh convention.", { category: "conventions" });
+    recordLearnedFact(cwd, "Stale decision.", { kind: "decision", source: "review" });
+    // Legacy entry: NO lastVerifiedAt at all (simulated legacy store → ages
+    // from creation; 400 days old → stale under both budgets).
+    const learnedPath = join(cwd, ".pi", "yoowai", "learned.json");
+    const store = JSON.parse(readFileSync(learnedPath, "utf-8")) as {
+      facts: Array<Record<string, string | undefined>>;
+    };
+    for (const f of store.facts) {
+      if (f.fact === "Stale decision.") {
+        f.lastVerifiedAt = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+        f.timestamp = f.lastVerifiedAt;
+      }
+    }
+    // Legacy entry: appended AFTER the loop, no lastVerifiedAt at all.
+    store.facts.push({
+      fact: "Legacy fact.",
+      timestamp: new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    writeFileSync(learnedPath, JSON.stringify(store));
+    const before = readFileSync(learnedPath, "utf-8");
+
+    const result = executeWaiIndex(cwd, { topic: "learned" });
+    const text = result.learnedSummary ?? "";
+    assert.match(text, /STALE/, "stale entries must carry a STALE marker");
+    assert.match(text, /STALE.*Stale decision.*verify, update, or revoke/, "the decision has marker + hint");
+    assert.match(text, /verify, update, or revoke/, "stale entries must carry the action hint");
+    assert.match(text, /Fresh convention/, "fresh entries appear without a STALE marker");
+    assert.ok(!/STALE.*Fresh convention/.test(text), "fresh entries must not be marked stale");
+    // The legacy entry must have its OWN marker + hint (not just the decision).
+    assert.match(text, /STALE.*Legacy fact.*verify, update, or revoke/, "legacy entries render marker + hint");
+    // The listing must NOT renew any stamps (read-only derived output).
+    assert.equal(readFileSync(learnedPath, "utf-8"), before);
   });
 
   it("cleans up temp dir", () => {

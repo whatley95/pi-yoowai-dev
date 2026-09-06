@@ -181,12 +181,17 @@ export function renderVisionCall(
 
 /** Render a call to the wai_learn tool (record or verify). */
 export function renderLearnCall(
-  args: { fact?: string; verify?: boolean; deep?: boolean; query?: string },
+  args: { fact?: string; verify?: boolean; deep?: boolean; query?: string; stale?: boolean; reaffirm?: string },
   theme: Theme,
   context?: ToolRenderContext,
 ): Text {
   let label: string;
-  if (args.verify) {
+  if (args.stale) {
+    const query = typeof args.query === "string" && args.query ? truncate(args.query, 60) : "";
+    label = `wai learn stale${query ? ` (${query})` : ""}`;
+  } else if (args.reaffirm) {
+    label = `wai learn reaffirm: ${truncate(args.reaffirm, 60)}`;
+  } else if (args.verify) {
     const query = typeof args.query === "string" && args.query ? truncate(args.query, 60) : "";
     label = `wai learn verify${args.deep ? " (deep)" : ""}${query ? `: ${query}` : ""}`;
   } else {

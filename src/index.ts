@@ -31,9 +31,14 @@ import { validateWaiToolParams } from "./wai-tool-params.js";
 import {
   recordLearnedFact,
   findLearnedFacts,
+  listStaleFacts,
+  reaffirmFact,
+  applyVerifiedRenewals,
+  formatLearnedFactsWithFreshness,
   verifyLearnedFacts,
   verifyLearnedFactsDeep,
   formatVerificationReport,
+  type DeepVerifyModelCaller,
 } from "./wai-learn.js";
 import { listDesignRefDocs, readDesignRefDoc, DESIGN_REF_TOPIC_DESCRIPTIONS } from "./design-ref.js";
 import { dropSessionState, resetEditsSinceDone, resetEditsSinceReview } from "./session-state.js";
@@ -72,6 +77,13 @@ function getLoopState(cwd: string): LoopDetectionState {
     loopStates.set(cwd, state);
   }
   return state;
+}
+
+/** Test seam: lets tool-level deep-verify tests inject a controlled caller
+ *  (production callers pass undefined → real secondary model). */
+let learnDeepCallerOverride: DeepVerifyModelCaller | undefined;
+export function setWaiLearnDeepCallerForTests(caller: DeepVerifyModelCaller | undefined): void {
+  learnDeepCallerOverride = caller;
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -910,6 +922,33 @@ export default async function (pi: ExtensionAPI) {
     const r = params as Record<string, unknown>;
     const query = typeof r.query === "string" ? r.query : undefined;
 
+    // deep is a verify modifier only — never valid with stale/reaffirm/fact.
+    if (r.deep === true && r.verify !== true) {
+      return {
+        content: [{ type: "text", text: "wai_learn: deep requires verify:true (it is a verify modifier)." }],
+        details: { error: "deep without verify." },
+        isError: true,
+      };
+    }
+    // Exactly one action: record (fact), verify (+deep modifier), stale, or
+    // reaffirm. Conflicting selectors are rejected loudly instead of being
+    // silently resolved by branch order.
+    const actions = [
+      typeof r.fact === "string" && r.fact.length > 0 ? "fact" : null,
+      r.verify === true ? "verify" : null,
+      r.stale === true ? "stale" : null,
+      typeof r.reaffirm === "string" && r.reaffirm.trim().length > 0 ? "reaffirm" : null,
+    ].filter(Boolean);
+    if (actions.length > 1) {
+      return {
+        content: [
+          { type: "text", text: `wai_learn: conflicting actions: ${actions.join(" + ")} — choose exactly one.` },
+        ],
+        details: { error: "Conflicting action parameters." },
+        isError: true,
+      };
+    }
+
     if (r.verify === true && r.deep === true) {
       const progress = createProgressReporter("explain", ctx, onUpdate);
       const learnConfig = loadYoowaiConfig(ctx.cwd);
@@ -921,21 +960,72 @@ export default async function (pi: ExtensionAPI) {
         signal,
         (current, total) => progress(current, total, `Verifying fact ${current}/${total} with ${learnModelLabel}…`),
         ctx.sessionManager,
+        learnDeepCallerOverride,
       );
-      const text = formatVerificationReport(results);
+      // Renew only entries actually checked AND all-clear (model-confirmed);
+      // the deep pass is awaited before any renewal.
+      const renewed = applyVerifiedRenewals(ctx.cwd, results);
+      const text = `${formatVerificationReport(results)}\n\nRenewed ${renewed} fact(s) (fresh stamps).`;
       return {
         content: [{ type: "text", text }],
-        details: { action: "learn", verify: results, cost },
+        details: { action: "learn", verify: results, cost, renewed },
         isError: false,
       };
     }
 
     if (r.verify === true) {
       const results = verifyLearnedFacts(ctx.cwd, query);
-      const text = formatVerificationReport(results);
+      const renewed = applyVerifiedRenewals(ctx.cwd, results);
+      const text = `${formatVerificationReport(results)}\n\nRenewed ${renewed} fact(s) (fresh stamps).`;
       return {
         content: [{ type: "text", text }],
-        details: { action: "learn", verify: results },
+        details: { action: "learn", verify: results, renewed },
+        isError: false,
+      };
+    }
+
+    if (r.stale === true) {
+      const staleFacts = listStaleFacts(ctx.cwd, query);
+      const text =
+        staleFacts.length > 0 ? formatLearnedFactsWithFreshness(staleFacts) : "No stale facts — memory is fresh.";
+      return {
+        content: [{ type: "text", text }],
+        details: { action: "learn", stale: staleFacts },
+        isError: false,
+      };
+    }
+
+    if (typeof r.reaffirm === "string" && r.reaffirm.trim().length > 0) {
+      const outcome = reaffirmFact(ctx.cwd, r.reaffirm);
+      if (outcome === "renewed") {
+        return {
+          content: [{ type: "text", text: `Reaffirmed — freshness stamp renewed: ${r.reaffirm}` }],
+          details: { action: "learn", reaffirmed: true },
+          isError: false,
+        };
+      }
+      if (outcome === "ambiguous") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Ambiguous — multiple facts match this text; reaffirm a specific entry: ${r.reaffirm}`,
+            },
+          ],
+          details: { action: "learn", reaffirmed: false, reason: outcome },
+          isError: true,
+        };
+      }
+      if (outcome === "write-failed") {
+        return {
+          content: [{ type: "text", text: "Reaffirm failed — the freshness stamp could not be written to disk." }],
+          details: { action: "learn", reaffirmed: false, reason: outcome },
+          isError: true,
+        };
+      }
+      return {
+        content: [{ type: "text", text: `No matching fact — nothing reaffirmed: ${r.reaffirm}` }],
+        details: { action: "learn", reaffirmed: false, reason: outcome },
         isError: false,
       };
     }
@@ -1022,9 +1112,24 @@ export default async function (pi: ExtensionAPI) {
           description: "When verifying, use the secondary model for deeper accuracy.",
         }),
       ),
+      stale: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, list retained facts/decisions past their freshness budget with a STALE marker and 'verify, update, or revoke' hint.",
+        }),
+      ),
+      reaffirm: Type.Optional(
+        Type.String({
+          description: "Explicitly reaffirm a stored fact/decision by exact text — renews its freshness stamp.",
+        }),
+      ),
     }),
     renderCall: (args, theme, context) =>
-      renderLearnCall(args as { fact?: string; verify?: boolean; deep?: boolean; query?: string }, theme, context),
+      renderLearnCall(
+        args as { fact?: string; verify?: boolean; deep?: boolean; query?: string; stale?: boolean; reaffirm?: string },
+        theme,
+        context,
+      ),
     renderResult: (result, opts, theme, context) => renderAuxResult("learn", result, opts, theme, context),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       return runWaiLearnTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);

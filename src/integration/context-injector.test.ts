@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI, ContextEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -162,6 +162,44 @@ describe("context-injector", () => {
     const lastUser = event.messages.find((m) => m.role === "user");
     const content = typeof lastUser?.content === "string" ? lastUser.content : "";
     assert.ok(!content.includes("<project_knowledge>"), "no facts → no knowledge block");
+  });
+
+  it("excludes stale facts/decisions from injection before the 20-item slice", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Move login logic"], acceptanceCriteria: [] });
+    // 25 fresh entries — only the newest 20 fit the 20-item slice.
+    for (let i = 0; i < 25; i++) {
+      recordLearnedFact(cwd, `fresh ${i}: ${"x".repeat(20)}`);
+    }
+    // FOUR stale entries recorded AFTER the fresh ones (they sort ahead as
+    // newest) but must not displace any eligible fresh entry.
+    for (let i = 0; i < 4; i++) {
+      recordLearnedFact(cwd, `stale decision ${i}`, { kind: "decision" });
+    }
+    const path = join(cwd, ".pi", "yoowai", "learned.json");
+    const store = JSON.parse(readFileSync(path, "utf-8")) as { facts: Array<Record<string, string>> };
+    for (const f of store.facts) {
+      if (f.fact.startsWith("stale decision")) {
+        f.lastVerifiedAt = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+      }
+    }
+    writeFileSync(path, JSON.stringify(store));
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+    const lastUser = event.messages.find((m) => m.role === "user");
+    const content = typeof lastUser?.content === "string" ? lastUser.content : "";
+    assert.ok(content.includes("<project_knowledge>"));
+    assert.ok(!content.includes("stale decision"), "stale entries must never be injected");
+    // The newest 20 fresh entries (fresh-24 … fresh-5) are all present; the
+    // oldest five fresh entries are cut by the 20-item slice, not staleness.
+    for (let i = 5; i <= 24; i++) {
+      assert.ok(content.includes(`fresh ${i}: `), `fresh ${i} must be injected`);
+    }
+    for (let i = 0; i <= 4; i++) {
+      assert.ok(!content.includes(`fresh ${i}: `), `fresh ${i} must yield to the 20-item slice`);
+    }
   });
 
   it("drops project knowledge first when the context exceeds its budget", () => {

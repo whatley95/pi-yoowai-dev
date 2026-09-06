@@ -5,7 +5,12 @@ import { VERSION, HOMEPAGE } from "../version.js";
 import { getAgentDir } from "../pi-paths.js";
 import { formatResultText } from "../format.js";
 import { clearPromptCache } from "../prompts.js";
-import { parseReviewCommandArgs, parseTestCommandArgs, parseSecurityCommandArgs } from "./arg-parsers.js";
+import {
+  parseReviewCommandArgs,
+  parseTestCommandArgs,
+  parseSecurityCommandArgs,
+  parseLearnCommandArgs,
+} from "./arg-parsers.js";
 import { createProgressReporter, clearWaiStatus } from "../progress.js";
 import { callSecondaryModel, clearPiSessionId } from "../secondary-model.js";
 import { getPiAiCompat } from "../backends/sdk-backend.js";
@@ -49,6 +54,10 @@ import {
   verifyLearnedFacts,
   verifyLearnedFactsDeep,
   formatVerificationReport,
+  listStaleFacts,
+  reaffirmFact,
+  applyVerifiedRenewals,
+  formatLearnedFactsWithFreshness,
 } from "../wai-learn.js";
 import {
   addDesignRule,
@@ -1402,18 +1411,37 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   });
 
   const learnHandler = async (args: string, ctx: ExtensionCommandContext) => {
-    const trimmed = args.trim();
-    if (!trimmed) {
-      ctx.ui.notify("Provide a fact or use --verify, e.g. /wai-learn Auth is handled by Clerk.", "warning");
+    const parsed = parseLearnCommandArgs(args);
+    if (parsed.kind === "invalid") {
+      ctx.ui.notify(parsed.invalidReason ?? "Invalid /wai-learn arguments.", "warning");
       return;
     }
 
-    if (trimmed === "--verify" || trimmed.startsWith("--verify ")) {
-      const queryMatch = trimmed.match(/--query\s+(\S+)/);
-      const query = queryMatch ? queryMatch[1] : undefined;
-      const deep = trimmed.includes("--deep");
+    if (parsed.kind === "stale") {
+      const staleFacts = listStaleFacts(ctx.cwd, parsed.staleQuery);
+      const text =
+        staleFacts.length > 0 ? formatLearnedFactsWithFreshness(staleFacts) : "No stale facts — memory is fresh.";
+      await ctx.ui.select("wai learn stale", text.split("\n").filter(Boolean));
+      return;
+    }
 
-      if (deep) {
+    if (parsed.kind === "reaffirm") {
+      const outcome = reaffirmFact(ctx.cwd, parsed.reaffirmFact!);
+      if (outcome === "renewed") {
+        ctx.ui.notify("Fact reaffirmed — freshness stamp renewed.", "info");
+      } else if (outcome === "ambiguous") {
+        ctx.ui.notify("Ambiguous — multiple facts match; reaffirm more precisely.", "warning");
+      } else if (outcome === "write-failed") {
+        ctx.ui.notify("Reaffirm failed — freshness stamp could not be written to disk.", "error");
+      } else {
+        ctx.ui.notify("No matching fact — nothing reaffirmed.", "warning");
+      }
+      return;
+    }
+
+    if (parsed.kind === "verify") {
+      const query = parsed.query;
+      if (parsed.deep) {
         const signal = undefined;
         const progress = createProgressReporter("explain", ctx);
         const learnConfig = loadYoowaiConfig(ctx.cwd);
@@ -1427,41 +1455,33 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           ctx.sessionManager,
         );
         clearWaiStatus(ctx);
+        // Renewal happens only AFTER the deep pass resolves (awaited above)
+        // and only for model-confirmed all-clear entries.
+        const renewed = applyVerifiedRenewals(ctx.cwd, results);
         const lines = formatVerificationReport(results).split("\n").filter(Boolean);
         lines.push(
           "",
           `${cost.estimatedInputTokens + cost.estimatedOutputTokens} tokens · $${cost.estimatedCostUsd.toFixed(6)}`,
+          `Renewed ${renewed} fact(s) (fresh stamps).`,
         );
         await ctx.ui.select("wai learn verify (deep)", lines);
         return;
       }
 
       const results = verifyLearnedFacts(ctx.cwd, query);
-      const text = formatVerificationReport(results);
-      await ctx.ui.select("wai learn verify", text.split("\n").filter(Boolean));
+      const renewed = applyVerifiedRenewals(ctx.cwd, results);
+      const lines = formatVerificationReport(results).split("\n").filter(Boolean);
+      lines.push("", `Renewed ${renewed} fact(s) (fresh stamps).`);
+      await ctx.ui.select("wai learn verify", lines);
       return;
     }
 
-    let fact = trimmed;
-    let category: string | undefined;
-    const categoryMatch = trimmed.match(/--category\s+(\S+)/);
-    if (categoryMatch) {
-      category = categoryMatch[1];
-      fact = trimmed.replace(categoryMatch[0], "").trim();
-    }
-
-    if (!fact) {
-      ctx.ui.notify("Provide a fact to record.", "warning");
-      return;
-    }
-
-    recordLearnedFact(ctx.cwd, fact, { category });
-    ctx.ui.notify(`Recorded project fact${category ? ` [${category}]` : ""}.`, "info");
+    recordLearnedFact(ctx.cwd, parsed.fact!, { category: parsed.category });
+    ctx.ui.notify(`Recorded project fact${parsed.category ? ` [${parsed.category}]` : ""}.`, "info");
   };
-
   pi.registerCommand("wai-learn", {
     description:
-      "Record or verify project facts. Usage: /wai-learn <fact> [--category <cat>] | /wai-learn --verify [--query <keyword>] [--deep]",
+      "Record or verify project facts. Usage: /wai-learn <fact> [--category <cat>] | /wai-learn --verify [--query <keyword>] [--deep] | /wai-learn --stale [--query <keyword>] | /wai-learn --reaffirm <fact>",
     handler: learnHandler,
   });
 
