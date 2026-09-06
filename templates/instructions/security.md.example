@@ -1,0 +1,25 @@
+# Security instruction template (REPO-SPECIFIC — edit then place at .pi/yoowai/instructions/security.md)
+
+Injected into the wai security prompt for the "security" action only.
+
+## Server-side checklist
+
+- [ ] Authorization enforced SERVER-side on every endpoint (`<FILL ME — evidence: middleware configuration>`); not just hidden in the client.
+- [ ] Input validation: shape, bounds, and type checks at the boundary; no raw payloads into queries/shell.
+- [ ] Token handling: refresh/rotation race-free; tokens never in logs, URLs, or client caches.
+- [ ] Sensitive logging: `<FILL ME — evidence: logging configuration>` never logged; debug endpoints disabled in production.
+- [ ] Rate limiting / abuse controls present for `<FILL ME — evidence: route/controller files>`.
+- [ ] Dependency/crypto hygiene: no known-vulnerable deps; hashing/encryption uses `<FILL ME — evidence: package manifest/imports>`.
+
+> Unresolved double-braced keys must be replaced before use — evidence: CI steps or package scripts.
+
+## This repo's security gates (REPLACE)
+
+- [ ] `{{analyzeCommand}}` runs (static/dependency scan) — if no command was detected, fill it in (run the repo's static/dependency scan command; evidence: CI or package scripts).
+- [ ] Auth tests cover expired/invalid/forged tokens and cross-tenant access.
+
+## Contract precedence
+
+The output contract instructions in the system prompt take precedence over
+this checklist. If a rule here conflicts with the requested output format,
+follow the contract.

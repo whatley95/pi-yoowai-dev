@@ -1,6 +1,6 @@
 import { describe, it, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SearchResults } from "duck-duck-scrape";
@@ -555,6 +555,81 @@ describe("wai extension registration", () => {
     const registered = eventHandlers.get("resources_discover") ?? [];
     assert.equal(registered.length, 1, "resources_discover must be registered once");
     assert.ok(registered[0], "handler must exist");
+  });
+
+  it("registers the wai_scaffold tool", async () => {
+    const { pi, toolDefs } = createMockPi();
+    await initWai(pi);
+    const def = toolDefs.find((t) => t.name === "wai_scaffold");
+    assert.ok(def, "wai_scaffold must be registered");
+    // Schema: exactly four literals, minItems 1, optional boolean apply.
+    const params = (def as { parameters?: unknown }).parameters as
+      | {
+          properties?: {
+            targets?: { type?: string; items?: { anyOf?: Array<{ const?: string }> }; minItems?: number };
+            apply?: { type?: string };
+          };
+          required?: string[];
+        }
+      | undefined;
+    assert.ok(params, "parameters defined");
+    assert.ok(params.required?.includes("targets") ?? false, "targets is required");
+    assert.ok(!(params.required?.includes("apply") ?? false), "apply stays optional");
+    const targets = params.properties?.targets;
+    assert.equal(targets?.type, "array");
+    assert.equal(targets?.minItems, 1, "targets requires at least one");
+    const literals = (targets?.items?.anyOf ?? []).map((x) => x.const);
+    assert.deepEqual([...literals].sort(), ["review", "security", "skill", "test"], "exactly the four target literals");
+    assert.equal(params.properties?.apply?.type, "boolean");
+    const execute = (def as { execute?: (...args: unknown[]) => Promise<unknown> }).execute;
+    assert.ok(execute, "wai_scaffold must have an executor");
+    // Preview default: no writes, no .pi directory.
+    const cwd = makeTempDir("wai-scaffold-tool-");
+    writeFileSync(join(cwd, "pubspec.yaml"), "name: demo\n", "utf-8");
+    const result = (await execute("t", { targets: ["review"] }, undefined, undefined, {
+      cwd,
+    } as unknown as ExtensionContext)) as {
+      content: Array<{ text: string }>;
+      details?: { mode?: string };
+    };
+    assert.match(result.content[0]?.text ?? "", /PREVIEW/);
+    assert.equal(result.details?.mode, "preview");
+    assert.ok(!existsSync(join(cwd, ".pi")), "preview creates no .pi directory");
+    // Render hooks exist and are invocable with representative data.
+    const renderCall = (def as { renderCall?: unknown }).renderCall;
+    const renderResult = (def as { renderResult?: unknown }).renderResult;
+    assert.equal(typeof renderCall, "function", "renderCall registered");
+    assert.equal(typeof renderResult, "function", "renderResult registered");
+    const theme = { fg: (_t: string, text: string) => text, bg: (_t: string, text: string) => text };
+    const { Text } = await import("@earendil-works/pi-tui");
+    const callTitle = (
+      (renderCall as (a: unknown, t: unknown, c: unknown) => unknown)(
+        { targets: ["skill"], apply: true },
+        theme,
+        {},
+      ) as {
+        render: (w: number) => string[];
+      }
+    )
+      .render(200)
+      .join("\n")
+      .trimEnd();
+    assert.match(callTitle, /wai scaffold: skill/);
+    assert.match(callTitle, /\(apply\)/);
+    const resultTitle = (
+      (renderResult as (r: unknown, o: unknown, t: unknown, c: unknown) => unknown)(
+        result, // the ACTUAL executor result — no fabricated shape
+        { status: "ok" },
+        theme,
+        {},
+      ) as { render: (w: number) => string[] }
+    )
+      .render(200)
+      .join("\n")
+      .trimEnd();
+    assert.match(resultTitle, /wai scaffold/);
+    assert.ok(Text === undefined || typeof Text === "function", "pi-tui Text available for assertions");
+    rmSync(cwd, { recursive: true, force: true });
   });
 
   it("registers the explicit review-depth tools", async () => {

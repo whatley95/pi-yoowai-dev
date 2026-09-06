@@ -14,6 +14,7 @@ import {
   renderVisionCall,
   renderLearnCall,
   renderDesignRefCall,
+  renderScaffoldCall,
   renderAuxResult,
 } from "./render.js";
 import { resetCost } from "./cost-tracker.js";
@@ -40,6 +41,7 @@ import {
   formatVerificationReport,
   type DeepVerifyModelCaller,
 } from "./wai-learn.js";
+import { runWaiScaffold, type WaiScaffoldParams } from "./wai-scaffold.js";
 import { listDesignRefDocs, readDesignRefDoc, DESIGN_REF_TOPIC_DESCRIPTIONS } from "./design-ref.js";
 import { dropSessionState, resetEditsSinceDone, resetEditsSinceReview } from "./session-state.js";
 import { secondaryModelLabel } from "./actions/shared.js";
@@ -78,6 +80,58 @@ function getLoopState(cwd: string): LoopDetectionState {
     loopStates.set(cwd, state);
   }
   return state;
+}
+
+async function runWaiScaffoldTool(
+  params: unknown,
+  _signal: AbortSignal | undefined,
+  ctx: ExtensionContext,
+): Promise<import("@earendil-works/pi-coding-agent").AgentToolResult<Record<string, unknown>> & { isError: boolean }> {
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return {
+      content: [{ type: "text", text: "wai_scaffold: invalid parameters." }],
+      details: { error: "Invalid parameters." },
+      isError: true,
+    };
+  }
+  const r = params as Record<string, unknown>;
+  const targets = Array.isArray(r.targets) ? (r.targets as string[]) : [];
+  try {
+    const result = runWaiScaffold(ctx.cwd, {
+      targets: targets as WaiScaffoldParams["targets"],
+      apply: r.apply === true,
+    });
+    const lines: string[] = [];
+    if (result.mode === "preview") {
+      lines.push("PREVIEW — nothing written. Call again with apply:true after approval.");
+    } else if (result.created.length > 0) {
+      lines.push(`Created ${result.created.length} file(s).`);
+    }
+    if (result.skipped.length > 0) {
+      lines.push(`Skipped (already exist, untouched): ${result.skipped.join(", ")}`);
+    }
+    lines.push(`Unresolved markers (fill from the repo): ${result.unresolvedTotal}`);
+    lines.push(`Fill-me placeholders (ready to fill): ${result.fillMeTotal}`);
+    for (const file of result.files) {
+      lines.push(
+        `- ${file.target}: ${file.action} → ${file.path}${file.unresolvedCount > 0 ? ` (${file.unresolvedCount} unresolved)` : ""}`,
+      );
+      if (file.content) {
+        lines.push("", file.content, "");
+      }
+    }
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      details: result as unknown as Record<string, unknown>,
+      isError: false,
+    };
+  } catch (err) {
+    return {
+      content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }],
+      details: { error: err instanceof Error ? err.message : String(err) },
+      isError: true,
+    };
+  }
 }
 
 /** Test seam: lets tool-level deep-verify tests inject a controlled caller
@@ -1134,6 +1188,42 @@ export default async function (pi: ExtensionAPI) {
     renderResult: (result, opts, theme, context) => renderAuxResult("learn", result, opts, theme, context),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       return runWaiLearnTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
+    },
+  });
+
+  pi.registerTool({
+    name: "wai_scaffold",
+    label: "Wai Scaffold — Guidance Templates",
+    description:
+      "Scaffold the fullstack guidance templates into real per-repo files (deterministic, no model calls): preview by default; apply only with apply:true; never overwrites existing files.",
+    promptSnippet: "wai_scaffold: create the engineering guidance files for this repo",
+    promptGuidelines: [
+      "Call wai_scaffold WITHOUT apply to preview the proposed files first; show the user the preview and get approval before calling it again with apply:true.",
+      "Targets: skill (.pi/skills/engineering-standards/SKILL.md), review/security/test (.pi/yoowai/instructions/<action>.md) — pass an array of the ones wanted.",
+      "The tool fills only factual placeholders from the conventions scan and manifests. Recognized keys WITHOUT evidence render as <FILL ME: key — evidence: ...> (never raw); only UNKNOWN template keys stay as {{key}} and count as unresolved.",
+      "Existing files are NEVER overwritten (exclusive creation) — report skipped files to the user.",
+      "After scaffolding, fill the unresolved markers explicitly by reading the repo (a /wai-fill completion command is planned; do not invent values).",
+      "No model calls, no command execution, no writes without apply:true.",
+    ],
+    parameters: Type.Object({
+      targets: Type.Array(
+        Type.Union([Type.Literal("skill"), Type.Literal("review"), Type.Literal("security"), Type.Literal("test")]),
+        {
+          description: "Which guidance files to scaffold (at least one).",
+          minItems: 1,
+        },
+      ),
+      apply: Type.Optional(
+        Type.Boolean({
+          description: "Write the files (exclusive create). Default false = preview only, no writes.",
+        }),
+      ),
+    }),
+    renderCall: (args, theme, context) =>
+      renderScaffoldCall(args as { targets?: string[]; apply?: boolean }, theme, context),
+    renderResult: (result, opts, theme, context) => renderAuxResult("scaffold", result, opts, theme, context),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      return runWaiScaffoldTool(params, signal, ctx);
     },
   });
 

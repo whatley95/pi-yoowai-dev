@@ -11,6 +11,8 @@ import {
   loadActionInstructions,
   resetInstructionsCache,
 } from "./instructions.js";
+import { buildAdaptiveReviewPrompt } from "./prompts/builders.js";
+import { estimateTokens } from "./token-budget.js";
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -153,5 +155,85 @@ describe("capActionInstructions", () => {
     assert.ok(capped.length > 0);
     assert.ok(!capped.includes("line three"));
     assert.ok(capped.endsWith("line one") || capped.endsWith("line two"));
+  });
+
+  it("isolation: an action's instruction file never leaks into another action", () => {
+    const cwd = makeTempDir("wai-inst-isolation-");
+    tmpDirs.push(cwd);
+    writeInstruction(cwd, "review", "REVIEW_ONLY_RULE");
+    writeInstruction(cwd, "test", "TEST_ONLY_RULE");
+    writeInstruction(cwd, "security", "SECURITY_ONLY_RULE");
+
+    const review = capActionInstructions(cwd, "review", 1000);
+    assert.ok(review.includes("REVIEW_ONLY_RULE"));
+    assert.ok(!review.includes("TEST_ONLY_RULE"), "test rules must not leak into review");
+    assert.ok(!review.includes("SECURITY_ONLY_RULE"), "security rules must not leak into review");
+
+    const test = capActionInstructions(cwd, "test", 1000);
+    assert.ok(test.includes("TEST_ONLY_RULE"));
+    assert.ok(!test.includes("REVIEW_ONLY_RULE"), "review rules must not leak into test");
+    assert.ok(!test.includes("SECURITY_ONLY_RULE"));
+
+    const security = capActionInstructions(cwd, "security", 1000);
+    assert.ok(security.includes("SECURITY_ONLY_RULE"));
+    assert.ok(!security.includes("REVIEW_ONLY_RULE"));
+    assert.ok(!security.includes("TEST_ONLY_RULE"));
+  });
+
+  it("combined budget: instructions + design rules + conventions + memory stay bounded", () => {
+    const cwd = makeTempDir("wai-inst-budget-");
+    tmpDirs.push(cwd);
+    // Distinct markers per block; each block is LARGER than its configured cap.
+    const hugeInstructions = Array.from({ length: 80 }, (_, i) => `I${i}: ${"x".repeat(60)}`).join("\n");
+    const hugeConventions = Array.from({ length: 80 }, (_, i) => `C${i}: ${"x".repeat(60)}`).join("\n");
+    const hugeMemory = Array.from({ length: 80 }, (_, i) => `M${i}: ${"x".repeat(60)}`).join("\n");
+    const hugeDesign = Array.from({ length: 80 }, (_, i) => `D${i}: ${"x".repeat(60)}`).join("\n");
+    writeInstruction(cwd, "review", hugeInstructions);
+    // The instructions block is capped by capActionInstructions (800 tokens).
+    const instructionsText = capActionInstructions(cwd, "review", 800);
+    assert.ok(estimateTokens(instructionsText) <= 800, "instructions stay within the configured cap");
+
+    const { system, user } = buildAdaptiveReviewPrompt("desc", "diff", [], {
+      instructionsText,
+      conventionsText: hugeConventions,
+      memoryContext: hugeMemory,
+      decisionsText: "",
+      designRefText: hugeDesign,
+    });
+    // Each marker appears in its own prompt location exactly once.
+    for (const [marker, prompt] of [
+      ["<user_instructions>", system],
+      ["<project_conventions>", user],
+      ["<memory>", user],
+      ["<design_rules>", user],
+    ] as const) {
+      const count = prompt.split(marker).length - 1;
+      assert.equal(count, 1, `${marker} appears exactly once`);
+    }
+    assert.ok(user.includes("<diff>"), "diff still present");
+    // Derived ceiling: base prompt (all blocks empty) + capped instructions + the
+    // three uncapped blocks at input size + measured per-block wrapper overhead.
+    // The probe isolates the real wrapper cost (section headers + XML tags + join
+    // tokens), so the bound follows from measurement, not a magic constant.
+    const base = buildAdaptiveReviewPrompt("desc", "diff", [], {});
+    const baseTokens = estimateTokens(base.system) + estimateTokens(base.user);
+    const oneLine = "probe-line";
+    const probed = buildAdaptiveReviewPrompt("desc", "diff", [], {
+      instructionsText: oneLine,
+      conventionsText: oneLine,
+      memoryContext: oneLine,
+      designRefText: oneLine,
+    });
+    const probedTokens = estimateTokens(probed.system) + estimateTokens(probed.user);
+    const wrapperOverhead = probedTokens - baseTokens - estimateTokens(oneLine) * 4;
+    const ceiling =
+      baseTokens +
+      800 +
+      estimateTokens(hugeConventions) +
+      estimateTokens(hugeMemory) +
+      estimateTokens(hugeDesign) +
+      wrapperOverhead;
+    const total = estimateTokens(system) + estimateTokens(user);
+    assert.ok(total <= ceiling, `combined prompt stays within derived ceiling (${total} <= ${ceiling})`);
   });
 });

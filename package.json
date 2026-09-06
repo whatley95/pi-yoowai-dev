@@ -16,6 +16,7 @@
     "src",
     "scripts",
     "design-refs",
+    "templates",
     "README.md"
   ],
   "pi": {

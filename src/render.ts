@@ -215,6 +215,17 @@ export function renderDesignRefCall(
   return text;
 }
 
+export function renderScaffoldCall(
+  args: { targets?: string[]; apply?: boolean },
+  theme: Theme,
+  context?: ToolRenderContext,
+): Text {
+  const targets = Array.isArray(args.targets) && args.targets.length > 0 ? args.targets.join(",") : "?";
+  const text = getTextComponent(context);
+  text.setText(theme.fg("accent", `wai scaffold: ${targets}${args.apply === true ? " (apply)" : " (preview)"}`));
+  return text;
+}
+
 export function renderResult(
   result: AgentToolResult<WaiToolResult>,
   opts: ToolRenderResultOptions,
@@ -368,7 +379,7 @@ function truncate(text: string, maxLen: number): string {
  *  text content. The row name is the registered tool name, so learn shows
  *  "wai learn" even when the progress reporter ran under the explain action. */
 export function renderAuxResult(
-  name: "index" | "explain" | "learn" | "design-ref" | "vision",
+  name: "index" | "explain" | "learn" | "design-ref" | "vision" | "scaffold",
   result: AgentToolResult<unknown>,
   opts: ToolRenderResultOptions,
   theme: Theme,
@@ -404,6 +415,21 @@ export function renderAuxResult(
   } else if (name === "design-ref") {
     const topic = typeof details.topic === "string" ? details.topic : "topics";
     lines.push(theme.fg("accent", `wai design-ref: ${topic}`));
+  } else if (name === "scaffold") {
+    const targets = Array.isArray(details.targets) ? (details.targets as string[]).join(",") : "?";
+    const mode = details.mode === "apply" ? "applied" : "preview";
+    lines.push(theme.fg("accent", `wai scaffold: ${targets} (${mode})`));
+    const created = Array.isArray(details.created) ? (details.created as string[]).length : 0;
+    const skipped = Array.isArray(details.skipped) ? (details.skipped as string[]).length : 0;
+    if (details.mode === "apply") {
+      lines.push(theme.fg("dim", `  created ${created}, skipped ${skipped}`));
+    }
+    if (typeof details.fillMeTotal === "number" && details.fillMeTotal > 0) {
+      lines.push(theme.fg("dim", `  ${details.fillMeTotal} fill-me placeholder(s)`));
+    }
+    if (typeof details.unresolvedTotal === "number" && details.unresolvedTotal > 0) {
+      lines.push(theme.fg("dim", `  ${details.unresolvedTotal} unresolved marker(s)`));
+    }
   } else if (Array.isArray(details.verify)) {
     lines.push(theme.fg("green", `wai learn verify ✓ · ${details.verify.length} fact(s)`));
   } else if (Array.isArray(details.learned)) {

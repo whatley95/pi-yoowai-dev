@@ -1,0 +1,25 @@
+# Test instruction template (REPO-SPECIFIC — edit then place at .pi/yoowai/instructions/test.md)
+
+Injected into the wai test-analysis prompt for the "test" action only.
+
+## Test-quality checklist
+
+- [ ] Contract tests: request/response shapes and error codes pinned for <FILL ME> (list the endpoints; evidence: the route/controller files).
+- [ ] Negative paths: malformed payloads, expired tokens, out-of-range values, provider failures.
+- [ ] Lifecycle tests: async/cancellation/disposal paths covered (Flutter widgets/streams: pump, dispose, error states).
+- [ ] Coverage of the changed code: at least the branches introduced by this diff are exercised.
+- [ ] Tests are deterministic: no wall-clock/flaky dependencies; fixtures isolated.
+
+> Unresolved double-braced keys must be replaced before use — evidence: CI steps or package scripts.
+
+## This repo's test gates (REPLACE)
+
+- [ ] Required command: `{{testCommand}}`.
+- [ ] Required fixtures: <FILL ME> (paths; evidence: existing test files/directories, package scripts, or CI configuration).
+- [ ] Tests must be added alongside behavior changes (no behavior change without a test).
+
+## Contract precedence
+
+The output contract instructions in the system prompt take precedence over
+this checklist. If a rule here conflicts with the requested output format,
+follow the contract.

@@ -1,0 +1,26 @@
+# Review instruction template (REPO-SPECIFIC — edit then place at .pi/yoowai/instructions/review.md)
+
+Injected into the wai review prompt for the "review" action only.
+Keep this a short checklist — evaluation criteria, not documentation.
+
+## Cross-layer correctness
+
+- [ ] Client ↔ server contract parity: request/response shapes, enums, error codes match `<FILL ME — evidence: contract/schema files>`.
+- [ ] Serialization/nullability: optional fields, default values, and decode failures handled; no implicit `null` leak.
+- [ ] Async lifecycle: subscription/cancellation/timers closed; no unawaited futures; no dangling refresh loops.
+- [ ] Failure handling: retry/backoff fits the caller's expectations; error mapping follows `<FILL ME — evidence: error handling files>`.
+- [ ] No secrets/PII in logs or error payloads (`<FILL ME — evidence: logging configuration>`).
+
+> Unresolved double-braced keys must be replaced before use — evidence: CI steps or package scripts.
+
+## This repo's review gates (REPLACE)
+
+- [ ] `{{testCommand}}` passes (test suite).
+- [ ] `{{analyzeCommand}}` passes (typecheck/analyze).
+- [ ] Changes are scoped; unrelated refactors flagged, not silently bundled.
+
+## Contract precedence
+
+The output contract instructions in the system prompt take precedence over
+this checklist. If a rule here conflicts with the requested output format,
+follow the contract.

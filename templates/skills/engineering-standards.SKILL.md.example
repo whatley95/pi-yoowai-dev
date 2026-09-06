@@ -1,0 +1,48 @@
+---
+name: engineering-standards
+description: When to apply — API/contract changes, server-side code, auth/data flows, tests, or reviews in this repository. Replace the placeholders with THIS repo's concrete rules, contracts, and links.
+---
+
+# Engineering Standards (REPO-SPECIFIC — edit this file)
+
+The main agent loads this skill when it matches the description above. Keep it
+repo-specific and actionable; put always-true rules in AGENTS.md instead.
+
+## When to use
+
+- Client ↔ server contract changes (endpoints, request/response shapes, error codes)
+- Auth & session boundaries, token handling, sensitive data
+- Data models, serialization/nullability, async lifecycle
+- Adding or changing tests; before asking wai to review
+
+## Stack & commands (REPLACE)
+
+- Primary stack (repository-level): `{{stack}}` (language: `{{language}}`) — run `{{testCommand}}` before review
+- Server: `<FILL ME — evidence: server directory/manifest>` — run `<FILL ME — evidence: CI steps or package scripts>` before review
+- Contract source of truth: `<FILL ME — evidence: route/schema files>`
+
+## Contract workflow
+
+1. Change the authoritative contract FIRST: `<FILL ME — evidence: contract/schema files>`.
+2. Update client models/serializers in `<FILL ME — evidence: client model files>`.
+3. Update server handlers + validators in `<FILL ME — evidence: server handler files>`.
+4. Add negative-path tests for malformed payloads and expired tokens (list concrete cases: <FILL ME — evidence: existing test files>).
+
+## Error mapping
+
+- Client errors are thrown as `<FILL ME — evidence: service error classes>` from `<FILL ME — evidence: service layer files>`.
+- The BFF maps provider errors to `<FILL ME — evidence: error-map file>` in `<FILL ME — evidence: the relevant source file>`.
+- NEVER log: `<FILL ME — evidence: logging configuration>`.
+
+## Auth boundaries
+
+- Client holds the refresh/access token in `<FILL ME — evidence: client storage/service config>`; never in logs or caches.
+- Server validates `<FILL ME — evidence: middleware configuration>` in `<FILL ME — evidence: the relevant source file>`; authorization rules live in `<FILL ME — evidence: the relevant source file>`.
+- Cross-service calls use <FILL ME — evidence: service authentication configuration> — see `<FILL ME — evidence: docs/README or API reference>`.
+
+## Testing gates
+
+- Required before review: `<FILL ME — evidence: CI steps or package scripts>` (typecheck), `<FILL ME — evidence: CI steps or package scripts>` (tests), `<FILL ME — evidence: CI steps or package scripts>` (contract check).
+- Required negative tests: `<FILL ME — evidence: existing test files>`.
+
+> Authoritative docs: `<FILL ME — evidence: docs/README or API reference>` — do not duplicate full docs here.
