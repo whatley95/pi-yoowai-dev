@@ -132,6 +132,76 @@ describe("secondary-model backends", () => {
     assert.equal(usage.estimatedOutputTokens, 10);
   });
 
+  it("appends the configured language directive to the system prompt", async () => {
+    const cwd = makeTempDir("pi-yoowai-language-");
+    tmpDirs.push(cwd);
+    // Isolate from any real global ~/.pi/agent/settings.json (a developer may
+    // have pi-yoowai.language set globally, which would break the unset case).
+    const agentDir = makeTempDir("pi-yoowai-language-agent-");
+    tempAgentDirs.push(agentDir);
+    setAgentDirForTests(() => agentDir);
+    writeSettings(
+      cwd,
+      { provider: "openai", id: "gpt-4o-mini", backend: "http", apiKey: "sk-test" },
+      {
+        language: "French",
+      },
+    );
+
+    let captured = "";
+    global.fetch = async (_url, init) => {
+      captured = typeof init?.body === "string" ? init.body : "";
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 5, completion_tokens: 1 },
+        }),
+        text: async () => "",
+      } as Response;
+    };
+
+    await callSecondaryModel("openai", "gpt-4o-mini", "SYSTEM", "user", { thinking: "off", cwd });
+    setAgentDirForTests(() => originalAgentDir);
+
+    const body = JSON.parse(captured) as { messages: Array<{ role: string; content: string }> };
+    const systemMessage = body.messages.find((m) => m.role === "system");
+    assert.ok(systemMessage);
+    assert.strictEqual(systemMessage.content, "SYSTEM\n\nLanguage: respond in French.");
+  });
+
+  it("does not append a language directive when unset", async () => {
+    const cwd = makeTempDir("pi-yoowai-language-unset-");
+    tmpDirs.push(cwd);
+    const agentDir = makeTempDir("pi-yoowai-language-agent-unset-");
+    tempAgentDirs.push(agentDir);
+    setAgentDirForTests(() => agentDir);
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "http", apiKey: "sk-test" });
+
+    let captured = "";
+    global.fetch = async (_url, init) => {
+      captured = typeof init?.body === "string" ? init.body : "";
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 5, completion_tokens: 1 },
+        }),
+        text: async () => "",
+      } as Response;
+    };
+
+    await callSecondaryModel("openai", "gpt-4o-mini", "SYSTEM", "user", { thinking: "off", cwd });
+    setAgentDirForTests(() => originalAgentDir);
+
+    const body = JSON.parse(captured) as { messages: Array<{ role: string; content: string }> };
+    const systemMessage = body.messages.find((m) => m.role === "system");
+    assert.ok(systemMessage);
+    assert.strictEqual(systemMessage.content, "SYSTEM");
+  });
+
   it("throws when pi backend exits with no assistant text", async () => {
     const cwd = makeTempDir("pi-yoowai-pi-fail-");
     tmpDirs.push(cwd);

@@ -137,6 +137,8 @@ export interface YoowaiConfig {
   requireReviewBeforeDone?: boolean;
   /** Automatically run wai.review when the agent settles with unreviewed edits pending, before any auto-judge. Default false. */
   autoReviewOnSettle?: boolean;
+  /** Language directive injected into the main agent's context and every secondary-model prompt ("respond in X"). Unset = natural model behavior. Settable via /wai-language. */
+  language?: string;
 }
 
 export interface PlanStep {

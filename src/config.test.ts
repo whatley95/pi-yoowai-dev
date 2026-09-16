@@ -9,6 +9,7 @@ import {
   resolveAdvisorTaskModel,
   loadYoowaiConfig,
   resolveJudgeCouncilMembers,
+  formatLanguageDirective,
 } from "./config.js";
 import { setAgentDirForTests, getAgentDir } from "./pi-paths.js";
 import type { YoowaiConfig } from "./types.js";
@@ -26,6 +27,73 @@ function writeProjectSettings(cwd: string, yooSettings: Record<string, unknown>)
   mkdirSync(piDir, { recursive: true });
   writeFileSync(join(piDir, "settings.json"), JSON.stringify({ "pi-yoowai": yooSettings }, null, 2), "utf-8");
 }
+
+describe("language config", () => {
+  const tmpDirs: string[] = [];
+  const originalAgentDir = getAgentDir();
+
+  after(() => {
+    setAgentDirForTests(() => originalAgentDir);
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  it("defaults to unset when neither global nor project settings define it", () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "config-language-agent-"));
+    tmpDirs.push(agentDir);
+    try {
+      setAgentDirForTests(() => agentDir);
+      const cwd = makeTempDir("config-language-cwd-");
+      tmpDirs.push(cwd);
+      assert.equal(loadYoowaiConfig(cwd).language, undefined);
+    } finally {
+      setAgentDirForTests(() => originalAgentDir);
+    }
+  });
+
+  it("inherits the global language when the project has none", () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "config-language-agent-"));
+    tmpDirs.push(agentDir);
+    try {
+      setAgentDirForTests(() => agentDir);
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ "pi-yoowai": { language: "French" } }), "utf-8");
+      const cwd = makeTempDir("config-language-cwd-");
+      tmpDirs.push(cwd);
+      assert.equal(loadYoowaiConfig(cwd).language, "French");
+    } finally {
+      setAgentDirForTests(() => originalAgentDir);
+    }
+  });
+
+  it("prefers the project language over the global value", () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "config-language-agent-"));
+    tmpDirs.push(agentDir);
+    try {
+      setAgentDirForTests(() => agentDir);
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ "pi-yoowai": { language: "French" } }), "utf-8");
+      const cwd = makeTempDir("config-language-cwd-");
+      tmpDirs.push(cwd);
+      writeProjectSettings(cwd, { language: "Japanese" });
+      assert.equal(loadYoowaiConfig(cwd).language, "Japanese");
+    } finally {
+      setAgentDirForTests(() => originalAgentDir);
+    }
+  });
+
+  it("formats the language directive and stays empty when unset", () => {
+    assert.equal(formatLanguageDirective(undefined), "");
+    assert.equal(formatLanguageDirective("   "), "");
+    assert.equal(formatLanguageDirective("French"), "Language: respond in French.");
+    assert.equal(formatLanguageDirective("  Latin American Spanish  "), "Language: respond in Latin American Spanish.");
+  });
+});
 
 describe("resolveTaskModel", () => {
   it("returns base secondary when no task override exists", () => {

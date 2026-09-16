@@ -134,6 +134,52 @@ describe("context-injector", () => {
     assert.ok(lastUser.content.includes("Node/TS"));
   });
 
+  it("injects the configured language directive before all other context", () => {
+    setPlan(cwd, {
+      summary: "Refactor auth",
+      todo: ["Move login logic"],
+      acceptanceCriteria: ["Tests pass"],
+    });
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { language: "French" } }));
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    assert.ok(lastUser && typeof lastUser.content === "string");
+    const block = lastUser.content.slice(lastUser.content.indexOf("<wai_context>"));
+    assert.equal(
+      block,
+      "<wai_context>\nLanguage: respond in French.\n\nPlan: Refactor auth\nProgress: 0/1 steps completed\nCurrent step: Move login logic\n</wai_context>",
+    );
+  });
+
+  it("injects only the language directive when no other context exists", () => {
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { language: "Japanese" } }));
+
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    assert.ok(lastUser && typeof lastUser.content === "string");
+    assert.equal(lastUser.content, "first\n\n<wai_context>\nLanguage: respond in Japanese.\n</wai_context>");
+  });
+
+  it("injects no block at all when language is unset and no other context exists", () => {
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+
+    const lastUser = event.messages.find((m) => m.role === "user");
+    assert.ok(lastUser && typeof lastUser.content === "string");
+    assert.equal(lastUser.content, "first");
+  });
+
   it("includes learned facts and decisions in the injected context", () => {
     setPlan(cwd, { summary: "Refactor auth", todo: ["Move login logic"], acceptanceCriteria: [] });
     recordLearnedFact(cwd, "auth uses token refresh", { category: "auth" });

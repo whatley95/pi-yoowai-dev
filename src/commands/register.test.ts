@@ -15,13 +15,17 @@ import {
   buildReviewLevelItems,
   isScopeConfigured,
   resetModelSelection,
+  parseLanguageCommandArgs,
+  applyLanguageSetting,
+  registerWaiCommands,
   type ModelRef,
 } from "./register.js";
+import { loadYoowaiConfig } from "../config.js";
 import { setSdkGetModelOverride } from "../backends/sdk-backend.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import type { RecentModel } from "../model-history.js";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,6 +49,186 @@ function fakeContext(
     },
   } as unknown as ExtensionContext;
 }
+
+describe("parseLanguageCommandArgs", () => {
+  it("returns usage for empty input", () => {
+    assert.deepStrictEqual(parseLanguageCommandArgs("   "), { kind: "usage" });
+  });
+
+  it("parses reset case-insensitively", () => {
+    assert.deepStrictEqual(parseLanguageCommandArgs("RESET"), { kind: "reset" });
+  });
+
+  it("treats multiword input as one language name", () => {
+    assert.deepStrictEqual(parseLanguageCommandArgs("  Latin American Spanish "), {
+      kind: "set",
+      language: "Latin American Spanish",
+    });
+  });
+});
+
+describe("applyLanguageSetting", () => {
+  it("sets, persists, and resets only the language key", () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "wai-language-agent-"));
+    try {
+      const settingsPath = join(agentDir, "settings.json");
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({ other: 1, "pi-yoowai": { secondary: { provider: "p", id: "m" } } }),
+        "utf-8",
+      );
+
+      applyLanguageSetting(settingsPath, "set", "French");
+      const afterSet = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      assert.equal(afterSet["pi-yoowai"].language, "French");
+      assert.equal(afterSet.other, 1);
+      assert.ok(afterSet["pi-yoowai"].secondary);
+
+      applyLanguageSetting(settingsPath, "reset");
+      const afterReset = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      assert.ok(!("language" in afterReset["pi-yoowai"]));
+      assert.equal(afterReset.other, 1);
+      assert.ok(afterReset["pi-yoowai"].secondary);
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws on set with an empty language and leaves the file unchanged", () => {
+    const agentDir = mkdtempSync(join(tmpdir(), "wai-language-agent-"));
+    try {
+      const settingsPath = join(agentDir, "settings.json");
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({ "pi-yoowai": { language: "French" } }), "utf-8");
+
+      assert.throws(() => applyLanguageSetting(settingsPath, "set", "   "));
+      const after = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      assert.equal(after["pi-yoowai"].language, "French");
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates the agent directory when missing", () => {
+    const agentDir = join(tmpdir(), `wai-language-missing-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    try {
+      const settingsPath = join(agentDir, "settings.json");
+      applyLanguageSetting(settingsPath, "set", "French");
+      const afterSet = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      assert.equal(afterSet["pi-yoowai"].language, "French");
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("/wai-language handler", () => {
+  const originalAgentDir = getAgentDir();
+  const tmpDirs: string[] = [];
+
+  const makeTemp = (prefix: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    tmpDirs.push(dir);
+    return dir;
+  };
+
+  after(() => {
+    setAgentDirForTests(() => originalAgentDir);
+    for (const dir of tmpDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  });
+
+  type CapturedCommand = { description: string; handler: (args: string, ctx: unknown) => Promise<void> };
+
+  function captureWaiCommands(): Map<string, CapturedCommand> {
+    const commands = new Map<string, CapturedCommand>();
+    const pi = {
+      registerCommand: (name: string, def: CapturedCommand) => {
+        commands.set(name, def);
+      },
+    } as unknown as ExtensionAPI;
+    registerWaiCommands(pi, new Map());
+    return commands;
+  }
+
+  function makeCtx(cwd: string, notifications: string[]): unknown {
+    return { cwd, ui: { notify: (msg: string) => notifications.push(msg) } };
+  }
+
+  it("empty input shows usage and performs no write", async () => {
+    const agentDir = makeTemp("wai-language-handler-agent-");
+    setAgentDirForTests(() => agentDir);
+    const cwd = makeTemp("wai-language-handler-cwd-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+
+    const handler = captureWaiCommands().get("wai-language")!.handler;
+    const notifications: string[] = [];
+    await handler("   ", makeCtx(cwd, notifications));
+
+    assert.ok(notifications.some((n) => n.includes("Usage: /wai-language")));
+    assert.ok(!existsSync(join(agentDir, "settings.json")));
+  });
+
+  it("set persists a multiword language visible to a fresh config load", async () => {
+    const agentDir = makeTemp("wai-language-handler-agent-");
+    setAgentDirForTests(() => agentDir);
+    const cwd = makeTemp("wai-language-handler-cwd-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+
+    const handler = captureWaiCommands().get("wai-language")!.handler;
+    const notifications: string[] = [];
+    await handler("Latin American Spanish", makeCtx(cwd, notifications));
+
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+    assert.equal(settings["pi-yoowai"].language, "Latin American Spanish");
+    assert.equal(loadYoowaiConfig(cwd).language, "Latin American Spanish");
+    assert.ok(notifications.some((n) => n.includes('Language set to "Latin American Spanish"')));
+  });
+
+  it("warns when a project-level language overrides the global value", async () => {
+    const agentDir = makeTemp("wai-language-handler-agent-");
+    setAgentDirForTests(() => agentDir);
+    const cwd = makeTemp("wai-language-handler-cwd-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { language: "Japanese" } }));
+
+    const handler = captureWaiCommands().get("wai-language")!.handler;
+    const notifications: string[] = [];
+    await handler("French", makeCtx(cwd, notifications));
+
+    assert.ok(notifications.some((n) => n.includes("project-level override is active: Japanese")));
+  });
+
+  it("reset clears only the language key and preserves unrelated settings", async () => {
+    const agentDir = makeTemp("wai-language-handler-agent-");
+    setAgentDirForTests(() => agentDir);
+    const cwd = makeTemp("wai-language-handler-cwd-");
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    const settingsPath = join(agentDir, "settings.json");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ other: 1, "pi-yoowai": { language: "French", reviewLevel: "med" } }),
+      "utf-8",
+    );
+
+    const handler = captureWaiCommands().get("wai-language")!.handler;
+    const notifications: string[] = [];
+    await handler("reset", makeCtx(cwd, notifications));
+
+    const after = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    assert.ok(!("language" in after["pi-yoowai"]));
+    assert.equal(after.other, 1);
+    assert.equal(after["pi-yoowai"].reviewLevel, "med");
+    assert.ok(notifications.some((n) => n.includes("Language cleared")));
+  });
+});
 
 describe("computeThinkingLevels", () => {
   it("returns only off for non-reasoning models", () => {

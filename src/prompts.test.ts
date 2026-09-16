@@ -886,6 +886,17 @@ describe("prompt caching", () => {
     assert.notStrictEqual(a, b);
   });
 
+  it("scan prompt embeds custom instructions verbatim and never a language directive (unset characterization)", () => {
+    const { system, user } = buildScanPrompt(false, "All scan output must be written in French.");
+    assert.ok(system.includes("All scan output must be written in French."));
+    // Language injection lives in secondary-model.ts (appended to the system
+    // prompt per call), not in the builders: with pi-yoowai.language unset,
+    // builder output contains no directive and is unchanged from before the
+    // feature existed.
+    assert.ok(!system.includes("Language: respond in"));
+    assert.ok(!user.includes("Language: respond in"));
+  });
+
   it("does not cache prompts larger than the size cap", () => {
     const bigConventions = "x".repeat(60_000);
     const a = buildPlanPrompt("task", bigConventions);

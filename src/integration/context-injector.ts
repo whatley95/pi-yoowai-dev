@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ContextEvent } from "@earendil-works/pi-coding-agent";
-import { loadYoowaiConfig } from "../config.js";
+import { formatLanguageDirective, loadYoowaiConfig } from "../config.js";
 import { loadConventions } from "../conventions.js";
 import { findLearnedFacts, isFactFresh } from "../wai-learn.js";
 import { isUiFile } from "../design-ref.js";
@@ -61,6 +61,10 @@ function buildContextBlock(cwd: string): string {
   const reviewThreshold = config.reviewReminderEdits ?? 3;
 
   const parts: string[] = [];
+  // Language directive first so it is the sole content when nothing else is
+  // active (the parts.length guard below would otherwise emit nothing).
+  const languageDirective = formatLanguageDirective(config.language);
+  if (languageDirective) parts.push(languageDirective);
   if (planSummary) parts.push(planSummary);
   if (conventionsText) parts.push(`<project_conventions>\n${conventionsText}\n</project_conventions>`);
   // Learned knowledge: newest-first FRESH facts + decisions (compact,

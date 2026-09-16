@@ -271,6 +271,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   "noPlanSteerEscalationThreshold",
   "requireReviewBeforeDone",
   "autoReviewOnSettle",
+  "language",
   "presets",
   "docs",
 ]);
@@ -307,6 +308,18 @@ function validateConfig(config: YoowaiConfig, cwd: string): YoowaiConfig {
   }
 
   return config;
+}
+
+/** Canonical language directive injected into the main agent's context
+ *  (context-injector) and appended to every secondary-model system prompt
+ *  (secondary-model) when `pi-yoowai.language` is configured. Returns ""
+ *  when unset so default behavior is byte-identical to having no directive.
+ *  Deliberately phrased as "respond in", not "think in": reasoning in a
+ *  non-English language degrades quality on some models, so only the response
+ *  language is mandated. */
+export function formatLanguageDirective(language: string | undefined): string {
+  const trimmed = typeof language === "string" ? language.trim() : "";
+  return trimmed ? `Language: respond in ${trimmed}.` : "";
 }
 
 function normalizeCostBudgetUsd(value: unknown, fallback: number | undefined): number | undefined {
@@ -589,6 +602,7 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
     requireReviewBeforeDone:
       typeof o.requireReviewBeforeDone === "boolean" ? o.requireReviewBeforeDone : base.requireReviewBeforeDone,
     autoReviewOnSettle: typeof o.autoReviewOnSettle === "boolean" ? o.autoReviewOnSettle : base.autoReviewOnSettle,
+    language: pickOptionalString(o.language, base.language),
     presets: mergePresets(base.presets, o.presets),
     docs: mergeDocs(base.docs, o.docs),
   };

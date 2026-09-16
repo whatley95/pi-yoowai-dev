@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { VERSION, HOMEPAGE } from "../version.js";
 import { getAgentDir } from "../pi-paths.js";
 import { formatResultText } from "../format.js";
@@ -80,6 +80,43 @@ import { planStepDescription } from "../types.js";
 import { getDefaultReviewLevel } from "../model-registry.js";
 import type { SecondaryModelConfig, WaiToolResult, WaiModelTask, WaiAction, ReviewLevel } from "../types.js";
 import type { LoopDetectionState } from "../loop-detector.js";
+
+/** Parsed /wai-language argument. */
+export type LanguageCommandArgs = { kind: "usage" } | { kind: "set"; language: string } | { kind: "reset" };
+
+/** Parse /wai-language arguments: empty → usage, "reset" → reset, otherwise a (possibly multiword) language name. */
+export function parseLanguageCommandArgs(input: string): LanguageCommandArgs {
+  const trimmed = input.trim();
+  if (!trimmed) return { kind: "usage" };
+  if (/^reset$/i.test(trimmed)) return { kind: "reset" };
+  return { kind: "set", language: trimmed };
+}
+
+/** Read-modify-write the global `pi-yoowai.language` key (same pattern as /wai-model and /wai-config).
+ *  `reset` deletes only the language key; `set` requires a non-empty language name and
+ *  throws otherwise (a set must never silently behave like a reset). */
+export function applyLanguageSetting(settingsPath: string, kind: "set", language: string): void;
+export function applyLanguageSetting(settingsPath: string, kind: "reset"): void;
+export function applyLanguageSetting(settingsPath: string, kind: "set" | "reset", language?: string): void {
+  const settings = existsSync(settingsPath)
+    ? (JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>)
+    : {};
+  const wai =
+    settings["pi-yoowai"] && typeof settings["pi-yoowai"] === "object" && !Array.isArray(settings["pi-yoowai"])
+      ? (settings["pi-yoowai"] as Record<string, unknown>)
+      : {};
+  if (kind === "reset") {
+    delete wai["language"];
+  } else {
+    const lang = typeof language === "string" ? language.trim() : "";
+    if (!lang) throw new Error("Language name must not be empty.");
+    wai["language"] = lang;
+  }
+  settings["pi-yoowai"] = wai;
+  const agentDir = dirname(settingsPath);
+  if (!existsSync(agentDir)) mkdirSync(agentDir, { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+}
 
 export interface ModelThinkingDetails {
   reasoning?: boolean;
@@ -957,6 +994,47 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     description:
       "View or edit pi-yoowai settings. Usage: /wai-config [get|set|list] [key] [value], or /wai-config <provider.model>",
     handler: configHandler,
+  });
+
+  const languageHandler = async (args: string, ctx: ExtensionCommandContext) => {
+    try {
+      const parsed = parseLanguageCommandArgs(args);
+      if (parsed.kind === "usage") {
+        ctx.ui.notify("Usage: /wai-language <language|reset> — e.g. /wai-language French", "info");
+        return;
+      }
+      if (parsed.kind === "set") {
+        applyLanguageSetting(join(getAgentDir(), "settings.json"), "set", parsed.language);
+      } else {
+        applyLanguageSetting(join(getAgentDir(), "settings.json"), "reset");
+      }
+      clearPromptCache();
+      const effective = loadYoowaiConfig(ctx.cwd).language;
+      if (parsed.kind === "reset") {
+        ctx.ui.notify(
+          effective
+            ? `Global language cleared, but a project-level override is still active: ${effective}.`
+            : "Language cleared — both models fall back to their natural language behavior.",
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          effective === parsed.language
+            ? `Language set to "${parsed.language}" for the main agent and all wai secondary-model calls.`
+            : `Global language set to "${parsed.language}", but a project-level override is active: ${effective}.`,
+          "info",
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`wai-language failed: ${message}`, "error");
+    }
+  };
+
+  pi.registerCommand("wai-language", {
+    description:
+      "Set the language used by both the main agent and the wai secondary model. Usage: /wai-language <language|reset>",
+    handler: languageHandler,
   });
 
   const modelHandler = async (_args: string, ctx: ExtensionContext) => {

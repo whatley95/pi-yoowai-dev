@@ -1,5 +1,5 @@
 import { resolveApiKey } from "./auth-reader.js";
-import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
+import { formatLanguageDirective, loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { formatCost, getSessionCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveModelInfo } from "./model-registry.js";
@@ -91,6 +91,7 @@ export async function callSecondaryModel(
   const config = cwd ? loadYoowaiConfig(cwd) : undefined;
   const effectiveSecondary =
     options.secondaryOverride ?? (config && task ? resolveTaskModel(config, task) : config?.secondary);
+  const languageDirective = formatLanguageDirective(config?.language);
 
   const attempts: ModelAttempt[] = [
     {
@@ -113,7 +114,8 @@ export async function callSecondaryModel(
   for (let i = 0; i < attempts.length; i++) {
     const attempt = attempts[i];
     try {
-      return await runSingleAttempt(attempt, systemPrompt, userPrompt, options, config, cwd);
+      const promptWithLanguage = languageDirective ? `${systemPrompt}\n\n${languageDirective}` : systemPrompt;
+      return await runSingleAttempt(attempt, promptWithLanguage, userPrompt, options, config, cwd);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       lastErrors.push(`${attempt.provider}:${attempt.model} -> ${msg}`);
