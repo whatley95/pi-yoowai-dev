@@ -41,7 +41,14 @@ const sdkOverrides: {
   streamSimple?: PiAiCompatModule["streamSimple"];
   getModel?: PiAiCompatModule["getModel"];
   runtimeGetModel?: (provider: string, model: string) => Model<Api> | undefined;
+  registry?: () => RegistryStreamAdapter | undefined;
 } = {};
+
+/** True once setSdkRegistryOverride has been called with any argument: every
+ *  call configures an override, and `null` explicitly disables registry use
+ *  until clearSdkRegistryOverride() removes the configuration (restoring the
+ *  session accessor as the registry source). */
+let registryOverrideConfigured = false;
 
 let oauthResolverOverride:
   | ((
@@ -58,6 +65,90 @@ export function setSdkStreamSimpleOverride(fn: PiAiCompatModule["streamSimple"] 
 /** Test hook: override getModel resolution in the sdk backend. */
 export function setSdkGetModelOverride(fn: PiAiCompatModule["getModel"] | null): void {
   sdkOverrides.getModel = fn ?? undefined;
+}
+
+/** Minimal structural adapter over Pi ≥ 0.86's ModelRegistry, exposed to
+ *  extensions as `ctx.modelRegistry`. Signatures verified against
+ *  @earendil-works/pi-coding-agent 0.86.1 (dist/core/model-registry.d.ts):
+ *  `find(provider, modelId)` resolves from the live catalog (builtins,
+ *  models.json, extension-registered providers) and `streamSimple()` streams
+ *  with request-time authentication resolved by Pi itself. Declared
+ *  structurally against the local (0.82.1-era) pi-ai types — no 0.86-only
+ *  symbols are imported — so this compiles on older dev installs, and on hosts
+ *  without the registry the capability check simply fails and the existing
+ *  compat path is used. */
+export interface RegistryStreamAdapter {
+  /** Resolve a model from Pi's live registry. */
+  find(provider: string, modelId: string): Model<Api> | undefined;
+  /** Lower-level streaming API. Required only as a capability marker for the
+   *  request-time-auth registry (Pi ≥ 0.86) — this extension never calls it,
+   *  but requiring it keeps partial/older shims out of the registry route. */
+  stream(
+    model: Model<Api>,
+    context: Context,
+    options?: SimpleStreamOptions,
+  ): ReturnType<PiAiCompatModule["streamSimple"]>;
+  /** Stream through the configured provider with Pi-resolved request auth. */
+  streamSimple(
+    model: Model<Api>,
+    context: Context,
+    options?: SimpleStreamOptions,
+  ): ReturnType<PiAiCompatModule["streamSimple"]>;
+}
+
+/** True when a value looks like Pi ≥ 0.86's ModelRegistry — find, stream, and
+ *  streamSimple all present and callable. Duck-typed on purpose; never imports
+ *  0.86-only symbols. 0.82.1's facade has find but no stream/streamSimple, so
+ *  it fails here and the compat path stays in charge. */
+export function isRegistryStreamCapable(registry: unknown): registry is RegistryStreamAdapter {
+  if (!registry || typeof registry !== "object") return false;
+  const candidate = registry as { find?: unknown; stream?: unknown; streamSimple?: unknown };
+  return (
+    typeof candidate.find === "function" &&
+    typeof candidate.stream === "function" &&
+    typeof candidate.streamSimple === "function"
+  );
+}
+
+/** Session-scoped accessor wired by the extension lifecycle (session_start /
+ *  session transitions). Holds a getter, not the registry itself, so session
+ *  switches swap the underlying object without stale references. */
+let sessionRegistryAccessor: (() => RegistryStreamAdapter | undefined) | undefined;
+
+/** Wiring hook: point the SDK backend at the current session's ModelRegistry.
+ *  Pass null to detach (shutdown/session switch). */
+export function setSdkSessionRegistry(accessor: (() => RegistryStreamAdapter | undefined) | null): void {
+  sessionRegistryAccessor = accessor ?? undefined;
+}
+
+/** Test hook: force a registry adapter (or null to clear), taking precedence
+ *  over the session accessor so tests never depend on Pi lifecycle wiring.
+ *  A null override means "no registry at all" — the session accessor is then
+ *  ignored until a new override is installed. */
+export function setSdkRegistryOverride(fn: (() => RegistryStreamAdapter | undefined) | null): void {
+  registryOverrideConfigured = true;
+  sdkOverrides.registry = fn ?? undefined;
+}
+
+/** Test hook: remove the override configuration entirely, restoring the
+ *  session accessor as the registry source. */
+export function clearSdkRegistryOverride(): void {
+  registryOverrideConfigured = false;
+  sdkOverrides.registry = undefined;
+}
+
+/** The registry adapter to use for the next SDK call, if any: an explicitly
+ *  configured override wins (and null disables the route entirely); otherwise
+ *  the session accessor is consulted. Both results pass through the same
+ *  capability check, so a partial/older registry-like object (e.g. one lacking
+ *  `stream`) degrades to the compat path instead of failing mid-call. */
+export function getSdkRegistry(): RegistryStreamAdapter | undefined {
+  if (registryOverrideConfigured) {
+    const override = sdkOverrides.registry?.();
+    return override !== undefined && isRegistryStreamCapable(override) ? override : undefined;
+  }
+  const candidate = sessionRegistryAccessor?.();
+  return candidate !== undefined && isRegistryStreamCapable(candidate) ? candidate : undefined;
 }
 
 /** Test hook: override the Pi runtime-registry model lookup. */
@@ -110,6 +201,20 @@ interface OAuthResolution {
 }
 
 const oauthApiKeyCache = new Map<string, { credential: Record<string, unknown>; resolution: OAuthResolution }>();
+
+/** In-flight OAuth resolution dedupe, keyed by provider + agent-dir identity +
+ *  credential JSON. Concurrent same-credential callers share one resolution
+ *  promise, so the ModelRuntime/lockfile layer is consulted once per transient
+ *  miss (a settled getAuth is cheap; a refresh is what costs a lockfile
+ *  round-trip). The entry is removed on settle — success or failure — so a
+ *  failed resolution never poisons later callers. Cwd-scoped disk-cache
+ *  reads/writes stay per caller. */
+const inFlightOAuth = new Map<string, Promise<OAuthResolution | undefined>>();
+
+function oauthInFlightKey(provider: string, credential: Record<string, unknown>): string {
+  // Full credential JSON in the key: collision-free without inventing a hash.
+  return `${provider}\u0000${getAgentDir()}\u0000${JSON.stringify(credential)}`;
+}
 
 export async function getPiAiCompat(): Promise<PiAiCompatModule> {
   if (sdkOverrides.streamSimple || sdkOverrides.getModel) {
@@ -307,7 +412,9 @@ async function resolveOAuthApiKey(
       return resolution;
     }
   }
-  const result = await fetchOAuthApiKey(provider, credential, cwd);
+  const result = await shareInFlightOAuthResolution(provider, credential, cwd, () =>
+    fetchOAuthApiKey(provider, credential, cwd),
+  );
   if (result && (result.apiKey || result.headers)) {
     const resolution: OAuthResolution = { apiKey: result.apiKey, headers: result.headers };
     oauthApiKeyCache.set(provider, { credential, resolution });
@@ -323,6 +430,32 @@ async function resolveOAuthApiKey(
     }
   }
   return result;
+}
+
+/** Join (or start) the single in-flight OAuth resolution for this
+ *  provider/agent-dir/credential. The promise is removed from the map when it
+ *  settles so a rejected resolution is retried by the next caller, and so a
+ *  resolution completed by another caller is not discarded. */
+function shareInFlightOAuthResolution(
+  provider: string,
+  credential: Record<string, unknown>,
+  cwd: string | undefined,
+  fetch: () => Promise<OAuthResolution | undefined>,
+): Promise<OAuthResolution | undefined> {
+  const key = oauthInFlightKey(provider, credential);
+  const existing = inFlightOAuth.get(key);
+  if (existing) return existing;
+  const promise: Promise<OAuthResolution | undefined> = fetch();
+  inFlightOAuth.set(key, promise);
+  // Detach the cleanup so a settled resolution can't be reused by a later
+  // caller; the derived promise's rejection is already surfaced to every
+  // awaiting caller, so the continuation swallows its own.
+  void promise
+    .finally(() => {
+      if (inFlightOAuth.get(key) === promise) inFlightOAuth.delete(key);
+    })
+    .catch(() => {});
+  return promise;
 }
 
 function persistRefreshedCredential(provider: string, credential: Record<string, unknown>): void {
@@ -455,51 +588,9 @@ export async function callSdkBackend(
 ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> {
   const { signal, thinking, cwd, secondary, modelInfoOverride, sdkModelInfo } = options;
 
-  // Prefer pi-yoowai's auth resolution (auth.json with indirection, env vars,
-  // inline key, or OAuth credential refresh), but fall back to the SDK's own
-  // credential/env lookup when no explicit key is configured. The pi-ai SDK can
-  // read Pi's CredentialStore (e.g. ~/.pi/agent/auth.json) and provider env vars
-  // on its own.
-  const sdkAuth = await resolveSdkAuth(provider, secondary?.apiKey, cwd);
-  if (!sdkAuth?.apiKey && !sdkAuth?.headers && cwd) {
-    logEvent(cwd, "debug", "No explicit API key for SDK backend; relying on SDK credential resolution", {
-      provider,
-      model,
-      backend: "sdk",
-    });
-  }
-
-  const piAi = await getPiAiCompat();
-  const builtinModel = piAi.getModel(provider, model) ?? (await resolveRuntimeModel(provider, model));
-  if (!builtinModel) {
-    throw new Error(
-      `Model "${model}" is not in Pi's built-in catalog for provider "${provider}" and no extension or models.json entry provides it. ` +
-        `Use backend: "pi" to call it through the Pi CLI, or configure a custom baseUrl with backend: "http".`,
-    );
-  }
+  // --- Shared request construction (identical on both routes) ---
 
   const images = options.images;
-  if (images && images.length > 0 && !builtinModel.input?.includes("image")) {
-    throw new Error(
-      `Model "${provider}:${model}" does not accept image input. ` +
-        `Pick a vision-capable model for the vision task via /wai-model (taskModels.vision).`,
-    );
-  }
-
-  const context: Context = {
-    systemPrompt,
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: userPrompt },
-          ...(images ?? []).map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType })),
-        ],
-        timestamp: Date.now(),
-      },
-    ],
-  };
-
   const sessionId = cwd ? getPiSessionId(cwd) : undefined;
 
   // Prefer Pi's catalog metadata, allow user overrides, and fall back to the
@@ -514,9 +605,16 @@ export async function callSdkBackend(
   // a cheap 2048 token cap, so allow the full model limit for those too.
   const structuredOutput = Boolean(options.structuredOutput);
 
-  const attempt = async (
-    auth: Awaited<ReturnType<typeof resolveSdkAuth>>,
-  ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> => {
+  const rejectImages = (): Error =>
+    new Error(
+      `Model "${provider}:${model}" does not accept image input. ` +
+        `Pick a vision-capable model for the vision task via /wai-model (taskModels.vision).`,
+    );
+
+  const buildSdkOptions = (
+    auth: { apiKey?: string; headers?: Record<string, string | null> } | undefined,
+    modelForHeaders: { provider: string; baseUrl: string },
+  ): SimpleStreamOptions => {
     const sdkOptions: SimpleStreamOptions = {
       apiKey: auth?.apiKey,
       signal,
@@ -543,7 +641,7 @@ export async function callSdkBackend(
       sdkOptions.headers = { ...auth.headers, ...sdkOptions.headers };
     }
 
-    const opencodeHeaders = buildSdkHeaders(builtinModel, sessionId);
+    const opencodeHeaders = buildSdkHeaders(modelForHeaders, sessionId);
     if (opencodeHeaders) {
       sdkOptions.headers = { ...sdkOptions.headers, ...opencodeHeaders };
     }
@@ -560,8 +658,12 @@ export async function callSdkBackend(
     sdkOptions.maxTokens =
       thinkingEnabledForBudget || structuredOutput ? maxOutputTokens : Math.min(maxOutputTokens, 2048);
 
-    const stream = piAi.streamSimple(builtinModel, context, sdkOptions);
+    return sdkOptions;
+  };
 
+  const processStream = async (
+    stream: ReturnType<PiAiCompatModule["streamSimple"]>,
+  ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> => {
     // Stream progress to the TUI when a callback is provided. We throttle updates
     // to avoid saturating the UI with every token.
     if (options.onStreamProgress) {
@@ -605,6 +707,131 @@ export async function callSdkBackend(
     return { content, usage, truncated };
   };
 
+  const buildContext = (): Context => ({
+    systemPrompt,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: userPrompt },
+          ...(images ?? []).map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType })),
+        ],
+        timestamp: Date.now(),
+      },
+    ],
+  });
+
+  /** True when a provider rejection should get exactly one retry on the same
+   *  route: the registry re-resolves request-time auth (Pi refreshes under its
+   *  own lock), and the compat route re-resolves through auth-reader. */
+  const canRetryAuthRejected = (err: unknown): boolean =>
+    !secondary?.apiKey && isAuthRejectedError(err) && readRawAuthEntry(provider)?.type === "oauth";
+
+  const logAuthRetry = (error: unknown): void => {
+    if (cwd) {
+      logEvent(cwd, "warn", "Provider rejected the OAuth credential; re-resolving and retrying once", {
+        provider,
+        model,
+        backend: "sdk",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const authRetryHint = (retryErr: unknown): Error => {
+    const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+    return new Error(
+      `${msg} — the OAuth credential for "${provider}" was rejected again after re-resolution. ` +
+        `Run /login in Pi to re-authenticate, then retry.`,
+      { cause: retryErr },
+    );
+  };
+
+  // --- Registry-first route (Pi ≥ 0.86) ---
+  //
+  // Stream through Pi's own provider wiring with request-time authentication:
+  // no pi-yoowai auth resolution, no compat catalog lookup. Used only when the
+  // session exposed a capable registry AND the wai config carries no overrides
+  // the registry cannot represent faithfully (inline API key, baseUrl, or an
+  // authHeader override). A model-resolution miss falls through to the compat
+  // path; registry EXECUTION failures (including auth rejections) propagate —
+  // they are never replayed through compat.
+  const registry = getSdkRegistry();
+  const registryUsable =
+    registry !== undefined &&
+    !secondary?.apiKey &&
+    !secondary?.baseUrl &&
+    (secondary?.authHeader === undefined || secondary?.authHeader === true);
+
+  if (registryUsable && registry) {
+    const registryModel = registry.find(provider, model);
+    if (registryModel) {
+      if (images && images.length > 0 && !registryModel.input?.includes("image")) {
+        throw rejectImages();
+      }
+      const context = buildContext();
+      // Method call keeps `this` bound to the registry facade.
+      const runRegistry = () =>
+        processStream(registry.streamSimple(registryModel, context, buildSdkOptions(undefined, registryModel)));
+      try {
+        return await runRegistry();
+      } catch (err) {
+        // Short-lived OAuth access tokens (Kimi Coding's live ~15 minutes) can
+        // expire between resolution and the provider call. Pi re-resolves
+        // request-time authentication on the retry — refreshing under its own
+        // auth.json lock — so retry exactly once without injecting any
+        // pi-yoowai-resolved key.
+        if (!canRetryAuthRejected(err)) throw err;
+        logAuthRetry(err);
+        oauthApiKeyCache.delete(provider);
+        if (cwd) clearCachedOAuthApiKey(cwd, provider);
+        try {
+          return await runRegistry();
+        } catch (retryErr) {
+          if (isAuthRejectedError(retryErr)) throw authRetryHint(retryErr);
+          throw retryErr;
+        }
+      }
+    }
+    // Unresolvable via the registry → fall through to the compat path.
+  }
+
+  // --- Compat route (pi-ai SDK; existing behavior) ---
+
+  // Prefer pi-yoowai's auth resolution (auth.json with indirection, env vars,
+  // inline key, or OAuth credential refresh), but fall back to the SDK's own
+  // credential/env lookup when no explicit key is configured. The pi-ai SDK can
+  // read Pi's CredentialStore (e.g. ~/.pi/agent/auth.json) and provider env vars
+  // on its own.
+  const sdkAuth = await resolveSdkAuth(provider, secondary?.apiKey, cwd);
+  if (!sdkAuth?.apiKey && !sdkAuth?.headers && cwd) {
+    logEvent(cwd, "debug", "No explicit API key for SDK backend; relying on SDK credential resolution", {
+      provider,
+      model,
+      backend: "sdk",
+    });
+  }
+
+  const piAi = await getPiAiCompat();
+  const builtinModel = piAi.getModel(provider, model) ?? (await resolveRuntimeModel(provider, model));
+  if (!builtinModel) {
+    throw new Error(
+      `Model "${model}" is not in Pi's built-in catalog for provider "${provider}" and no extension or models.json entry provides it. ` +
+        `Use backend: "pi" to call it through the Pi CLI, or configure a custom baseUrl with backend: "http".`,
+    );
+  }
+
+  if (images && images.length > 0 && !builtinModel.input?.includes("image")) {
+    throw rejectImages();
+  }
+
+  const context = buildContext();
+
+  const attempt = async (
+    auth: Awaited<ReturnType<typeof resolveSdkAuth>>,
+  ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> =>
+    processStream(piAi.streamSimple(builtinModel, context, buildSdkOptions(auth, builtinModel)));
+
   try {
     return await attempt(sdkAuth);
   } catch (err) {
@@ -612,31 +839,17 @@ export async function callSdkBackend(
     // expire between resolution and the provider call: re-resolve — which
     // refreshes under the auth.json lock or picks up a credential another
     // process just refreshed — and retry exactly once.
-    if (secondary?.apiKey || !isAuthRejectedError(err) || readRawAuthEntry(provider)?.type !== "oauth") {
+    if (!canRetryAuthRejected(err)) {
       throw err;
     }
-    if (cwd) {
-      logEvent(cwd, "warn", "Provider rejected the OAuth credential; re-resolving and retrying once", {
-        provider,
-        model,
-        backend: "sdk",
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    logAuthRetry(err);
     oauthApiKeyCache.delete(provider);
     if (cwd) clearCachedOAuthApiKey(cwd, provider);
     const freshAuth = await resolveSdkAuth(provider, undefined, cwd);
     try {
       return await attempt(freshAuth);
     } catch (retryErr) {
-      if (isAuthRejectedError(retryErr)) {
-        const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        throw new Error(
-          `${msg} — the OAuth credential for "${provider}" was rejected again after re-resolution. ` +
-            `Run /login in Pi to re-authenticate, then retry.`,
-          { cause: retryErr },
-        );
-      }
+      if (isAuthRejectedError(retryErr)) throw authRetryHint(retryErr);
       throw retryErr;
     }
   }

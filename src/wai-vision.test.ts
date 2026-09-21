@@ -16,6 +16,7 @@ import {
 } from "./wai-vision.js";
 import { buildPdfAnalysisPrompt, buildVisionPrompt } from "./prompts.js";
 import { callSecondaryModel, setSdkGetModelOverride, setSdkStreamSimpleOverride } from "./secondary-model.js";
+import { getSdkRegistry, setSdkSessionRegistry } from "./backends/sdk-backend.js";
 
 const tmpDirs: string[] = [];
 
@@ -396,6 +397,76 @@ describe("wai-vision model call", () => {
       { type: "text", text: "usr" },
       { type: "image", data: "aGk=", mimeType: "image/png" },
     ]);
+  });
+
+  it("rides the session-attached registry for image calls and falls back after detach", async () => {
+    const cwd = makeTempDir("wai-vision-registry-");
+    // No apiKey: an explicit key override would force the compat route. The
+    // registry resolves authentication itself.
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o" });
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    writeFileSync(join(cwd, "shot.png"), pngBytes);
+
+    // Attached through the production wiring (the session accessor — exactly
+    // what attachSessionRegistry establishes on session_start in index.ts).
+    const registryContexts: Array<{ context: { messages: { content: unknown }[] } }> = [];
+    const registry = {
+      find: (provider: string, modelId: string) => fakeSdkModel(provider, modelId, ["text", "image"]),
+      stream: () => undefined,
+      streamSimple: (_model: unknown, context: { messages: { content: unknown }[] }) => {
+        registryContexts.push({ context });
+        return fakeSdkStream(fakeSdkAssistantMessage("registry vision ok"));
+      },
+    };
+    setSdkSessionRegistry(() => registry as never);
+    assert.equal(getSdkRegistry(), registry as never, "the session registry must be selectable before the vision call");
+
+    const first = await executeWaiVision(
+      cwd,
+      { path: "shot.png", question: "what is in the shot?" },
+      undefined,
+      () => {},
+    );
+    assert.ok("result" in first, JSON.stringify(first));
+    if ("result" in first) assert.equal(first.result.details, "registry vision ok");
+    assert.equal(registryContexts.length, 1, "the registry route must serve the image call");
+    const registryBlocks = registryContexts[0]!.context.messages[0].content as {
+      type: string;
+      data?: string;
+      mimeType?: string;
+    }[];
+    const imageBlock = registryBlocks.find((b) => b.type === "image");
+    assert.deepEqual(
+      imageBlock,
+      { type: "image", data: pngBytes.toString("base64"), mimeType: "image/png" },
+      "the base64 payload and MIME type must survive the registry route",
+    );
+
+    // Detach (session switch/shutdown): the legacy SDK route resumes with the
+    // image payload intact.
+    setSdkSessionRegistry(null);
+    assert.equal(getSdkRegistry(), undefined, "the registry must detach before the fallback call");
+    let compatContext: { messages: { content: unknown }[] } | undefined;
+    setSdkGetModelOverride((provider: string, modelId: string) => fakeSdkModel(provider, modelId, ["text", "image"]));
+    setSdkStreamSimpleOverride(((_model: unknown, context: { messages: { content: unknown }[] }) => {
+      compatContext = context;
+      return fakeSdkStream(fakeSdkAssistantMessage("legacy vision ok"));
+    }) as never);
+
+    const second = await executeWaiVision(
+      cwd,
+      { path: "shot.png", question: "what is in the shot?" },
+      undefined,
+      () => {},
+    );
+    assert.ok("result" in second, JSON.stringify(second));
+    if ("result" in second) assert.equal(second.result.details, "legacy vision ok");
+    const legacyBlocks = compatContext!.messages[0].content as { type: string; data?: string; mimeType?: string }[];
+    assert.deepEqual(
+      legacyBlocks.find((b) => b.type === "image"),
+      { type: "image", data: pngBytes.toString("base64"), mimeType: "image/png" },
+      "the legacy route must keep the image payload intact",
+    );
   });
 
   it("sends text-layer PDFs as a plain text call, no vision model required", async () => {

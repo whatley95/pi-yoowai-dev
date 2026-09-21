@@ -12,6 +12,7 @@ import { buildProjectIndex, saveProjectIndex } from "./project-index.js";
 import { recordLearnedFact, type DeepVerifyModelCaller } from "./wai-learn.js";
 import { setWaiLearnDeepCallerForTests } from "./index.js";
 import initWai from "./index.js";
+import { getSdkRegistry } from "./backends/sdk-backend.js";
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -278,6 +279,61 @@ describe("wai extension registration", () => {
     assert.ok(
       commandDefs.some((c) => c.name === "wai-learn" && typeof (c as { handler?: unknown }).handler === "function"),
     );
+  });
+
+  it("session_start attaches the current model registry and sessions replace/detach it", async () => {
+    const { pi, eventHandlers } = createMockPi();
+    await initWai(pi);
+
+    const registryA = {
+      find: () => undefined,
+      stream: () => undefined,
+      streamSimple: () => undefined,
+    };
+    const registryB = {
+      find: () => undefined,
+      stream: () => undefined,
+      streamSimple: () => undefined,
+    };
+    const startHandlers = eventHandlers.get("session_start") ?? [];
+    assert.ok(startHandlers.length > 0, "session_start must be registered");
+    const shutdownHandlers = eventHandlers.get("session_shutdown") ?? [];
+    assert.ok(shutdownHandlers.length > 0, "session_shutdown must be registered");
+
+    const makeCtx = (modelRegistry: unknown, cwd: string): ExtensionContext =>
+      ({
+        cwd,
+        modelRegistry,
+        sessionManager: { getSessionId: () => `sess-${String(modelRegistry).slice(0, 6)}` },
+        ui: {
+          setStatus: () => {},
+          setWidget: () => {},
+          clearStatusLines: () => {},
+          getStatusLines: () => [],
+          notify: () => {},
+          input: async () => undefined,
+          select: async () => undefined,
+          output: () => {},
+        },
+      }) as unknown as ExtensionContext;
+
+    // Session 1: registry A attaches.
+    for (const handler of startHandlers) await handler({}, makeCtx(registryA, makeTempDir("wai-registry-a-")));
+    assert.equal(getSdkRegistry(), registryA, "session_start must attach this session's registry");
+
+    // Session 2 (replacement): registry B replaces A — no stale reference.
+    for (const handler of startHandlers) await handler({}, makeCtx(registryB, makeTempDir("wai-registry-b-")));
+    assert.equal(getSdkRegistry(), registryB, "a second session must replace the first registry");
+
+    // Session 3: a registry-less / incapable registry degrades to none.
+    for (const handler of startHandlers) await handler({}, makeCtx({}, makeTempDir("wai-registry-none-")));
+    assert.equal(getSdkRegistry(), undefined, "an incapable registry must leave no registry selected");
+
+    // Shutdown detaches whatever is left.
+    for (const handler of startHandlers) await handler({}, makeCtx(registryA, makeTempDir("wai-registry-c-")));
+    assert.equal(getSdkRegistry(), registryA);
+    for (const handler of shutdownHandlers) await handler({}, makeCtx(registryA, makeTempDir("wai-registry-d-")));
+    assert.equal(getSdkRegistry(), undefined, "session_shutdown must detach the registry");
   });
 
   async function callLearnTool(cwd: string, params: Record<string, unknown>): Promise<string> {

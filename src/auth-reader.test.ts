@@ -139,4 +139,37 @@ describe("auth-reader", () => {
     assert.deepEqual(entry, { type: "oauth", accessToken: "oauth-token" });
     assert.equal(resolveApiKey("openai-codex"), undefined);
   });
+
+  it("readRawAuthEntry reflects persisted OAuth refreshes so later resolutions see the refreshed credential", () => {
+    tempAgentDir = makeTempDir("pi-yoowai-auth-reader-refresh-");
+    mkdirSync(tempAgentDir, { recursive: true });
+    setAgentDirForTests(() => tempAgentDir!);
+    writeFileSync(
+      join(tempAgentDir!, "auth.json"),
+      JSON.stringify({ "kimi-coding": { type: "oauth", access: "old", refresh: "r1", expiresAt: Date.now() - 1000 } }),
+      "utf-8",
+    );
+
+    // Pre-refresh: the stale credential is what a resolution would read and
+    // hash for the OAuth caches.
+    const stale = readRawAuthEntry("kimi-coding") as { access?: string } | undefined;
+    assert.equal(stale?.access, "old");
+
+    // sdk-backend's persistRefreshedCredential rewrites auth.json with the
+    // refreshed tokens after a resolution reports newCredentials.
+    writeFileSync(
+      join(tempAgentDir!, "auth.json"),
+      JSON.stringify({
+        "kimi-coding": { type: "oauth", access: "new", refresh: "r2", expiresAt: Date.now() + 3_600_000 },
+      }),
+      "utf-8",
+    );
+
+    const refreshed = readRawAuthEntry("kimi-coding") as { access?: string; refresh?: string } | undefined;
+    assert.equal(refreshed?.access, "new", "the refreshed access token must be visible to later resolutions");
+    assert.equal(refreshed?.refresh, "r2", "the rotated refresh token must be persisted");
+    // The provider's own env var must not shadow the auth.json OAuth entry.
+    delete process.env.KIMI_CODING_API_KEY;
+    assert.equal(resolveApiKey("kimi-coding"), undefined, "OAuth credentials resolve through auth.json, not env");
+  });
 });

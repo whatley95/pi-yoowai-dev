@@ -16,6 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { registerLifecycleHandlers, triggerAutoJudge, type LifecycleDeps } from "./lifecycle.js";
 import { setAuditExtensionAPI } from "./audit.js";
+import { getSdkRegistry, setSdkSessionRegistry } from "../backends/sdk-backend.js";
 import {
   setPlan,
   dropSessionState,
@@ -421,6 +422,31 @@ describe("lifecycle", () => {
     await triggerAutoJudge(makeContext(cwd), "Final verification.", runJudge);
 
     assert.strictEqual(receivedDescription, "Final verification.");
+  });
+
+  it("detaches the session registry on session_before_switch and session_before_fork", () => {
+    const { pi, emitSessionBeforeSwitch, emitSessionBeforeFork } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd));
+
+    const registry = {
+      find: () => undefined,
+      stream: () => undefined,
+      streamSimple: () => undefined,
+    };
+    setSdkSessionRegistry(() => registry as never);
+    assert.ok(getSdkRegistry(), "the attached registry must be selectable before the switch");
+
+    emitSessionBeforeSwitch(
+      { type: "session_before_switch", reason: "resume" } as SessionBeforeSwitchEvent,
+      makeContext(cwd),
+    );
+    assert.equal(getSdkRegistry(), undefined, "no stale registry survives a session switch");
+
+    // Attach again and fork: the fork must detach too (the forked session
+    // re-attaches via its own session_start).
+    setSdkSessionRegistry(() => registry as never);
+    emitSessionBeforeFork({ type: "session_before_fork" } as SessionBeforeForkEvent, makeContext(cwd));
+    assert.equal(getSdkRegistry(), undefined, "no stale registry survives a session fork");
   });
 
   it("flushes volatile counters to disk on session_before_switch", () => {

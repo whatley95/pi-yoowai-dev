@@ -71,6 +71,7 @@ import { registerWaiShortcuts } from "./integration/shortcuts.js";
 import { registerDesignSkillDiscovery } from "./integration/skills.js";
 import { updateWaiPlanWidget, hideWaiPlanWidget } from "./integration/widget.js";
 import { registerWaiProvider, unregisterWaiProvider } from "./integration/provider.js";
+import { isRegistryStreamCapable, setSdkSessionRegistry } from "./backends/sdk-backend.js";
 
 const loopStates = new Map<string, LoopDetectionState>();
 function getLoopState(cwd: string): LoopDetectionState {
@@ -141,6 +142,19 @@ export function setWaiLearnDeepCallerForTests(caller: DeepVerifyModelCaller | un
   learnDeepCallerOverride = caller;
 }
 
+/** Attach the current session's ModelRegistry to the SDK backend so calls can
+ *  stream with Pi-resolved authentication on Pi ≥ 0.86 (find + streamSimple).
+ *  On older hosts the capability check fails and the accessor degrades to the
+ *  existing pi-ai compat path — this is a no-op, not an error. */
+function attachSessionRegistry(ctx: ExtensionContext): void {
+  try {
+    const registry: unknown = ctx.modelRegistry;
+    setSdkSessionRegistry(isRegistryStreamCapable(registry) ? () => registry : null);
+  } catch {
+    setSdkSessionRegistry(null);
+  }
+}
+
 export default async function (pi: ExtensionAPI) {
   setAuditExtensionAPI(pi);
 
@@ -176,6 +190,10 @@ export default async function (pi: ExtensionAPI) {
     updateWaiStatus(ctx);
     updateWaiPlanWidget(ctx);
 
+    // Attach the session's ModelRegistry (Pi ≥ 0.86) before any SDK call can
+    // happen; older hosts fail the capability check and detach instead.
+    attachSessionRegistry(ctx);
+
     // Phase 6: optionally register the configured secondary model as a Pi provider.
     await registerWaiProvider(pi, ctx.cwd);
   });
@@ -186,6 +204,9 @@ export default async function (pi: ExtensionAPI) {
     loopStates.delete(ctx.cwd);
     clearPiSessionId(ctx.cwd);
     clearSessionId(ctx.cwd);
+    // Drop the ModelRegistry reference so no stale session object survives
+    // shutdown; the next session_start re-attaches a fresh one.
+    setSdkSessionRegistry(null);
     hideWaiPlanWidget(ctx);
     clearWaiStatusLines(ctx);
     unregisterWaiProvider(pi, ctx.cwd);

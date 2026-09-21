@@ -13,6 +13,7 @@ import type {
 import { isWriteToolResult, isEditToolResult } from "@earendil-works/pi-coding-agent";
 import { isFileWriteTool } from "../file-write-tools.js";
 import { loadYoowaiConfig } from "../config.js";
+import { setSdkSessionRegistry } from "../backends/sdk-backend.js";
 import { resolveReviewLevel } from "../review-level.js";
 import { clearPromptCache } from "../prompts.js";
 import { getDiff } from "../diff-grabber.js";
@@ -394,6 +395,11 @@ export function registerLifecycleHandlers(
       unregisterWaiProvider(pi, ctx.cwd);
     } catch {
       // best-effort flush
+    } finally {
+      // The outgoing session's registry must not serve the incoming one; the
+      // new session's session_start re-attaches (or detaches again). Runs in
+      // finally so an earlier best-effort failure can't leak the registry.
+      setSdkSessionRegistry(null);
     }
   });
 
@@ -403,6 +409,8 @@ export function registerLifecycleHandlers(
       unregisterWaiProvider(pi, ctx.cwd);
     } catch {
       // best-effort flush
+    } finally {
+      setSdkSessionRegistry(null);
     }
   });
 
