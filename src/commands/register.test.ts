@@ -23,6 +23,9 @@ import {
 import { loadYoowaiConfig } from "../config.js";
 import { setSdkGetModelOverride } from "../backends/sdk-backend.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
+import { setPlan, dropSessionState, getState } from "../session-state.js";
+import { buildPlanView } from "../plan-view.js";
+import { getSessionCost } from "../cost-tracker.js";
 import type { RecentModel } from "../model-history.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -160,6 +163,71 @@ describe("/wai-language handler", () => {
   function makeCtx(cwd: string, notifications: string[]): unknown {
     return { cwd, ui: { notify: (msg: string) => notifications.push(msg) } };
   }
+
+  describe("/wai-plan command", () => {
+    function makeSelectCtx(cwd: string, selections: Array<{ lines: string[] }>): unknown {
+      return {
+        cwd,
+        ui: {
+          notify: () => {},
+          select: async (_label: string, lines: string[]) => {
+            selections.push({ lines });
+            return undefined;
+          },
+        },
+      };
+    }
+
+    it("registers /wai-plan between /wai and /wai-status", () => {
+      const commands = captureWaiCommands();
+      const order = [...commands.keys()];
+      const wai = order.indexOf("wai");
+      const plan = order.indexOf("wai-plan");
+      const status = order.indexOf("wai-status");
+      assert.ok(wai >= 0 && plan >= 0 && status >= 0, "all three commands must be registered");
+      assert.ok(
+        wai < plan && plan < status,
+        `wai-plan must sit between /wai and /wai-status (got: ${order.join(", ")})`,
+      );
+      assert.match(commands.get("wai-plan")!.description, /plan/);
+    });
+
+    it("renders the no-plan message when no plan is active", async () => {
+      const cwd = makeTemp("wai-plan-noplan-");
+      mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
+      const handler = captureWaiCommands().get("wai-plan")!.handler;
+      const selections: Array<{ lines: string[] }> = [];
+      await handler("", makeSelectCtx(cwd, selections));
+
+      assert.equal(selections.length, 1);
+      assert.deepEqual(selections[0]!.lines, ["No active plan."]);
+    });
+
+    it("forwards the renderer output exactly for an active plan", async () => {
+      const cwd = makeTemp("wai-plan-active-");
+      mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
+      setPlan(cwd, {
+        summary: "Ship the feature",
+        todo: ["build it", "review it"],
+        acceptanceCriteria: ["tests pass"],
+      });
+      // Nonzero pending edits: proves the handler forwards the edit tracker's
+      // count into the renderer (the review-pending line only renders then).
+      // getEditTracker returns a copy, so set the live state directly.
+      getState(cwd).editsSinceLastReview = 3;
+      const handler = captureWaiCommands().get("wai-plan")!.handler;
+      const selections: Array<{ lines: string[] }> = [];
+      await handler("", makeSelectCtx(cwd, selections));
+
+      assert.equal(selections.length, 1, "the handler must present exactly one selection");
+      const expected = buildPlanView(getState(cwd), getSessionCost(cwd), { unreviewedEdits: 3 });
+      assert.deepEqual(selections[0]!.lines, expected);
+      assert.ok(selections[0]!.lines.some((l) => l.includes("1. → build it")));
+      assert.ok(selections[0]!.lines.some((l) => l.includes("2. · review it")));
+      assert.ok(selections[0]!.lines.some((l) => l.includes("⚠ review pending: 3 edits")));
+      dropSessionState(cwd);
+    });
+  });
 
   it("empty input shows usage and performs no write", async () => {
     const agentDir = makeTemp("wai-language-handler-agent-");

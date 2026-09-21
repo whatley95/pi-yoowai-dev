@@ -159,4 +159,51 @@ describe("updateWaiPlanWidget", () => {
     hideWaiPlanWidget(makeContext(cwd, capture));
     assert.strictEqual(capture.get("wai-plan"), undefined);
   });
+
+  it("warns when a done step has not been reviewed (mixed reviewed/manual)", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1", "Step 2", "Step 3"], acceptanceCriteria: [] });
+    markStepComplete(cwd, true); // step 1: reviewed
+    markStepComplete(cwd, false); // step 2: manually marked
+
+    const capture = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, capture));
+    const content = capture.get("wai-plan");
+    assert.ok(content);
+    const warning = content!.find((line) => line.includes("not reviewed"));
+    assert.ok(warning, "the done-but-unreviewed warning must appear");
+    assert.ok(warning!.includes("⚠ 1 done step not reviewed"));
+    const widths = new Set(content!.map((line) => line.length));
+    assert.strictEqual(widths.size, 1, "the warning line must respect the widget width");
+    assert.strictEqual(INNER_WIDTH, 30, "the widget inner width contract");
+    for (const line of content!) {
+      assert.strictEqual(
+        line.slice(2, -2).length,
+        INNER_WIDTH,
+        `every line renders the full inner width: ${JSON.stringify(line)}`,
+      );
+    }
+  });
+
+  it("stays quiet when every completed step was reviewed", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1", "Step 2", "Step 3"], acceptanceCriteria: [] });
+    markStepComplete(cwd, true);
+    markStepComplete(cwd, true);
+
+    const capture = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, capture));
+    const content = capture.get("wai-plan");
+    assert.ok(content);
+    assert.ok(!content!.some((line) => line.includes("not reviewed")));
+  });
+
+  it("uses the plural warning label for multiple unreviewed done steps", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1", "Step 2", "Step 3", "Step 4"], acceptanceCriteria: [] });
+    markStepComplete(cwd, false);
+    markStepComplete(cwd, false);
+
+    const capture = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, capture));
+    const content = capture.get("wai-plan");
+    assert.ok(content!.some((line) => line.includes("⚠ 2 done steps not reviewed")));
+  });
 });

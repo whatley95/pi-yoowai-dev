@@ -40,7 +40,8 @@ import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
 import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
 import { resolveReviewLevel } from "../review-level.js";
 import type { YoowaiConfig } from "../types.js";
-import { getState, getProgress, dropSessionState, resetEditsSinceReview } from "../session-state.js";
+import { getState, getProgress, dropSessionState, resetEditsSinceReview, getEditTracker } from "../session-state.js";
+import { buildPlanView } from "../plan-view.js";
 import { loadRecentModels, saveRecentModel, formatRecentModel, type RecentModel } from "../model-history.js";
 import { searchableSelect } from "./searchable-select.js";
 import { clearState } from "../plan-store.js";
@@ -1372,6 +1373,18 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     description:
       "Interactively manage the judge council (multi-model final verdict): add/remove members with the /wai-model pickers, including a thinking level per member. Fewer than 2 members means single-model judge.",
     handler: councilHandler,
+  });
+
+  const planViewHandler = async (_args: string, ctx: ExtensionContext) => {
+    const state = getState(ctx.cwd);
+    const unreviewedEdits = getEditTracker(ctx.cwd).editsSinceLastReview;
+    const lines = buildPlanView(state, getSessionCost(ctx.cwd), { unreviewedEdits });
+    await ctx.ui.select("wai plan", lines);
+  };
+
+  pi.registerCommand("wai-plan", {
+    description: "Show the full plan view (steps, review state, acceptance criteria, cost)",
+    handler: planViewHandler,
   });
 
   const statusHandler = async (_args: string, ctx: ExtensionContext) => {

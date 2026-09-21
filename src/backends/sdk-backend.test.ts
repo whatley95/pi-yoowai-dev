@@ -77,6 +77,17 @@ function fakeSdkStream(message: AssistantMessage): AssistantMessageEventStream {
   } as unknown as AssistantMessageEventStream;
 }
 
+/** Deferred promise helper for deterministic concurrency tests. */
+function makeDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 /** AssistantMessage shaped like a provider-side credential rejection, as
  *  surfaced by pi-ai's stopReason "error". */
 function authRejectedStream(): AssistantMessageEventStream {
@@ -726,6 +737,152 @@ describe("sdk-backend registry routing", () => {
     assert.equal(detached.content, "compat ok");
     assert.equal(state.streamSimpleCalls.length, 1, "the registry must not serve calls after detach");
     assert.equal(compat.count(), 1, "the compat route must resume after detach");
+  });
+
+  it("shares a failing OAuth resolution with concurrent callers and resolves fresh afterwards", async () => {
+    const agentDir = makeAgentDir();
+    writeAuthJson(agentDir, {
+      "test-provider": { type: "oauth", access: "tok", refresh: "ref", expiresAt: Date.now() + 60_000 },
+    });
+    const cwd = makeCwd();
+    const { registry } = makeCapableRegistry({ model: undefined }); // attached, unresolvable → fallback
+    setSdkRegistryOverride(() => registry);
+    const compat = installCompatFakes({
+      compatModel: fakeSdkModel("test-provider", "test-model"),
+      stream: fakeSdkStream(fakeSdkAssistantMessage("compat ok")),
+    });
+    let resolverCalls = 0;
+    const started = makeDeferred<void>();
+    const failureGate = makeDeferred<never>();
+    setSdkOAuthResolverOverride(async () => {
+      resolverCalls += 1;
+      if (resolverCalls === 1) {
+        started.resolve();
+        await failureGate.promise;
+      }
+      return { apiKey: "sk-recovered" };
+    });
+
+    // Both callers start while the first resolution is held open, so both join
+    // the same in-flight entry before it settles: each callSdkBackend invocation
+    // runs synchronously through resolveSdkAuth into the in-flight join (or the
+    // override, which signals `started`) before its first await — so by the time
+    // this function next suspends, both callers have already joined. The failure
+    // is a plain error (not a 401), so the 401 retry path must not engage, and
+    // allSettled is NOT awaited until after the gate releases (awaiting it first
+    // would deadlock: the callers cannot settle until the rejection lands).
+    const results = Promise.allSettled([
+      callSdkBackend("test-provider", "test-model", "sys", "usr", { cwd }),
+      callSdkBackend("test-provider", "test-model", "sys", "usr", { cwd }),
+    ]);
+    await started.promise;
+    failureGate.reject(new Error("oauth exchange down"));
+    const settled = await results;
+
+    assert.equal(settled[0]?.status, "rejected");
+    assert.equal(settled[1]?.status, "rejected");
+    assert.match(
+      String(settled[0] && settled[0].status === "rejected" ? settled[0].reason : ""),
+      /oauth exchange down/,
+    );
+    assert.match(String(settled[1]?.status === "rejected" ? settled[1].reason : ""), /oauth exchange down/);
+    assert.equal(resolverCalls, 1, "concurrent same-key callers share one failing resolution");
+    assert.equal(compat.count(), 0, "no stream call may happen when OAuth resolution fails");
+
+    // The in-flight entry was removed on settle: a later caller gets a fresh
+    // resolution (and the recovered credential), not the cached failure.
+    const recovered = await callSdkBackend("test-provider", "test-model", "sys", "usr", { cwd });
+    assert.equal(recovered.content, "compat ok");
+    assert.equal(resolverCalls, 2, "a failed resolution must not poison later callers");
+    assert.equal(compat.streamSimpleCalls[0]?.options?.apiKey, "sk-recovered");
+  });
+
+  it("isolates distinct credential hashes in concurrent in-flight resolutions", async () => {
+    const agentDir = makeAgentDir();
+    writeAuthJson(agentDir, {
+      "test-provider": { type: "oauth", access: "cred-v1", refresh: "r1", expiresAt: Date.now() + 60_000 },
+    });
+    const cwd = makeCwd();
+    const { registry } = makeCapableRegistry({ model: undefined });
+    setSdkRegistryOverride(() => registry);
+    const compat = installCompatFakes({
+      compatModel: fakeSdkModel("test-provider", "test-model"),
+      stream: fakeSdkStream(fakeSdkAssistantMessage("compat ok")),
+    });
+    let resolverCalls = 0;
+    const started = [makeDeferred<void>(), makeDeferred<void>()];
+    const gates = [makeDeferred<{ apiKey: string }>(), makeDeferred<{ apiKey: string }>()];
+    setSdkOAuthResolverOverride(async () => {
+      const myCall = ++resolverCalls;
+      started[myCall - 1]?.resolve();
+      return await gates[myCall - 1]!.promise;
+    });
+
+    // Caller 1 starts with credential v1 and blocks inside the resolver.
+    const first = callSdkBackend("test-provider", "test-model", "sys", "usr", { cwd });
+    await started[0]!.promise;
+
+    // The stored credential rotates WHILE the v1 resolution is still pending;
+    // the v2 caller must create its own in-flight resolution, not join v1's.
+    writeAuthJson(agentDir, {
+      "test-provider": { type: "oauth", access: "cred-v2", refresh: "r2", expiresAt: Date.now() + 60_000 },
+    });
+    const second = callSdkBackend("test-provider", "test-model", "sys", "usr", { cwd });
+    await started[1]!.promise;
+    assert.equal(resolverCalls, 2, "a distinct credential hash must resolve independently");
+
+    gates[0].resolve({ apiKey: "sk-for-cred-v1" });
+    gates[1].resolve({ apiKey: "sk-for-cred-v2" });
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    assert.equal(firstResult.content, "compat ok");
+    assert.equal(secondResult.content, "compat ok");
+    assert.equal(compat.streamSimpleCalls[0]?.options?.apiKey, "sk-for-cred-v1");
+    assert.equal(compat.streamSimpleCalls[1]?.options?.apiKey, "sk-for-cred-v2");
+  });
+
+  it("runs independent in-flight resolutions for distinct providers concurrently", async () => {
+    const agentDir = makeAgentDir();
+    writeAuthJson(agentDir, {
+      "test-provider": { type: "oauth", access: "tok-a", refresh: "r", expiresAt: Date.now() + 60_000 },
+      "other-provider": { type: "oauth", access: "tok-b", refresh: "r", expiresAt: Date.now() + 60_000 },
+    });
+    const cwd = makeCwd();
+    const { registry } = makeCapableRegistry({ model: undefined });
+    setSdkRegistryOverride(() => registry);
+    const compat = installCompatFakes({
+      compatModel: fakeSdkModel("test-provider", "test-model"),
+      stream: fakeSdkStream(fakeSdkAssistantMessage("compat ok")),
+    });
+    const providerKeys = new Map<string, string>();
+    const started = [makeDeferred<void>(), makeDeferred<void>()];
+    const gates = [makeDeferred<{ apiKey: string }>(), makeDeferred<{ apiKey: string }>()];
+    let resolverCalls = 0;
+    setSdkOAuthResolverOverride(async (provider: string) => {
+      const myCall = ++resolverCalls;
+      started[myCall - 1]?.resolve();
+      const value = await gates[myCall - 1]!.promise;
+      providerKeys.set(provider, value.apiKey);
+      return value;
+    });
+
+    const pendingA = callSdkBackend("test-provider", "test-model", "sys", "usr", { cwd });
+    const pendingB = callSdkBackend("other-provider", "test-model", "sys", "usr", { cwd });
+    await Promise.all([started[0]!.promise, started[1]!.promise]);
+    assert.equal(resolverCalls, 2, "distinct providers must not share an in-flight resolution");
+    gates[0].resolve({ apiKey: "sk-provider-a" });
+    gates[1].resolve({ apiKey: "sk-provider-b" });
+
+    const [a, b] = await Promise.all([pendingA, pendingB]);
+
+    assert.equal(a.content, "compat ok");
+    assert.equal(b.content, "compat ok");
+    assert.equal(resolverCalls, 2, "distinct providers must not share an in-flight resolution");
+    assert.equal(providerKeys.get("test-provider"), "sk-provider-a");
+    assert.equal(providerKeys.get("other-provider"), "sk-provider-b");
+    // The two stream calls carry exactly the two provider-specific keys (the
+    // recording order between parallel calls is nondeterministic).
+    assert.deepEqual(compat.streamSimpleCalls.map((c) => c.options?.apiKey).sort(), ["sk-provider-a", "sk-provider-b"]);
   });
 
   it("preserves image payloads through a registry-only image-capable model", async () => {
