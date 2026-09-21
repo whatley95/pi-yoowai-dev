@@ -282,6 +282,42 @@ function validateSubcommand(program: string, args: string[]): void {
   }
 }
 
+/** Git's full help (`git --help`, `git <cmd> --help`, `git help <cmd>`) opens
+ *  the local HTML documentation in the default browser on Windows — a surprise
+ *  window during a model-driven review. Model-generated tool-loop commands
+ *  must use `git <cmd> -h` for terminal usage instead. The `help` subcommand
+ *  is detected via the existing firstSubcommand parsing (so "help" as an
+ *  option value, e.g. `git log --grep help`, is not a full-help invocation);
+ *  a bare `--help` flag is scanned pre-`--` (git honors it before path
+ *  arguments), skipping values of value-taking flags. Parsed-argument check
+ *  (tokenizer already stripped quotes), not substring matching. Trusted
+ *  user-configured pre-review commands are not restricted. */
+export function validateGitHelpFlags(program: string, args: string[]): void {
+  if (program !== "git") return;
+  if (firstSubcommand(program, args)?.toLowerCase() === "help") {
+    throw new Error(
+      'git full help may launch an external viewer (a browser on Windows); use "git <command> -h" for terminal usage instead',
+    );
+  }
+  const valueFlags = new Set([...(VALUE_FLAGS["*"] ?? []), ...(VALUE_FLAGS.git ?? [])]);
+  let afterDoubleDash = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (afterDoubleDash) return;
+    if (arg === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (arg === "--help") {
+      throw new Error(
+        'git full help may launch an external viewer (a browser on Windows); use "git <command> -h" for usage, or the "--flag=value" form if this --help is a literal option value',
+      );
+    }
+    // `--flag value` form consumes the next arg; `--flag=value` does not.
+    if (valueFlags.has(arg) && !arg.includes("=")) i++;
+  }
+}
+
 export interface PreReviewOptions {
   /** Restrict subcommands (git/svn/npm/...) to read-only ones. Used for
    *  model-generated commands in the tool loop; user-configured pre-review
@@ -309,6 +345,7 @@ export async function runPreReviewCommands(
         }
         if (options.restrictSubcommands) {
           validateSubcommand(program, args);
+          validateGitHelpFlags(program, args);
         }
         const output = execProgram(program, args, cwd);
         return { command, output: truncateOutput(output), exitCode: 0 };

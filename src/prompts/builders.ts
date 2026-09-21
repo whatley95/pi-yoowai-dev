@@ -317,6 +317,8 @@ function buildAdaptiveReviewPromptImpl(
 
 You are reviewing the latest code change as the developer's pair. Catch bugs, mistakes, and quality issues they missed.
 
+Evidence discipline: distinguish observed findings from suspicions. Claims about gate results (typecheck, lint, tests) must be labeled "(assumed — not run)" unless that command actually ran during this review; only executed command output counts as observed evidence — any failure you have not executed is a suspicion, not a fact.
+
 ${levelInstructions ? `${levelInstructions}\n\n` : ""}${REVIEW_RUBRIC}
 
 You are provided with a diff and, when available, the full contents of changed files. Use the full file contents to verify context outside the diff; do not flag something as missing if you can see it in the full file.

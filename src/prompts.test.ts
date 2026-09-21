@@ -769,6 +769,23 @@ describe("validateJudgeResult", () => {
 });
 
 describe("prompt caching", () => {
+  it("review prompts carry the evidence-discipline requirement at every level", () => {
+    for (const levelInstructions of [
+      undefined,
+      "MIN-LEVEL INSTRUCTIONS",
+      "MED-LEVEL INSTRUCTIONS",
+      "HIGH-LEVEL INSTRUCTIONS",
+    ]) {
+      const prompt = buildAdaptiveReviewPrompt("desc", "diff", [], { levelInstructions });
+      assert.ok(
+        prompt.system.includes('labeled "(assumed — not run)"'),
+        `evidence-discipline requirement must appear (levelInstructions: ${levelInstructions ?? "none"})`,
+      );
+      assert.ok(prompt.system.includes("only executed command output counts as observed evidence"));
+      assert.ok(prompt.system.includes("is a suspicion, not a fact"));
+    }
+  });
+
   it("returns equal prompts for identical args", () => {
     const a = buildPlanPrompt("task", "conventions");
     const b = buildPlanPrompt("task", "conventions");

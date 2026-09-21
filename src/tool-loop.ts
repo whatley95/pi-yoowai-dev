@@ -52,7 +52,7 @@ function buildToolInstruction(maxIterations: number): string {
 {"tool": "search_code", "pattern": "functionName\\\\(", "path": "src", "contextLines": 2}
 {"tool": "run_command", "command": "npm run typecheck"}
 
-read_file accepts optional startLine/endLine (1-based, inclusive) to page through large files; when a file is truncated, the result tells you the total line count so you can request a specific range. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match) — use it to locate callers, definitions, or patterns, then read_file the hits.
+read_file accepts optional startLine/endLine (1-based, inclusive) to page through large files; when a file is truncated, the result tells you the total line count so you can request a specific range. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match) — use it to locate callers, definitions, or patterns, then read_file the hits. run_command blocks destructive subcommands (push/reset/publish/…); for git, use "<command> -h" for terminal usage — full help ("--help" or "git help …") is rejected because it can open an external viewer (a browser on Windows).
 
 You may make up to ${maxIterations} such request(s). After each request, the tool result will be appended to this conversation. Once you have enough context, produce the final structured JSON result requested below. Do not output explanatory text with a tool request. If no additional context is needed, produce the final JSON result immediately.`;
 }

@@ -1,6 +1,11 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { runPreReviewCommands, formatPreReviewOutput, detectAutoPreReviewCommands } from "./pre-review.js";
+import {
+  runPreReviewCommands,
+  formatPreReviewOutput,
+  detectAutoPreReviewCommands,
+  validateGitHelpFlags,
+} from "./pre-review.js";
 import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -127,13 +132,69 @@ describe("pre-review", () => {
         "git status --short",
         "git diff --stat",
         "git show --stat",
-        "git blame --help",
+        "git blame -h",
         "git rev-parse HEAD",
       ]) {
         const results = await restricted(cmd);
         assert.equal(results.length, 1, cmd);
         assert.doesNotMatch(results[0].output, /not allowed for model-generated tool calls/, cmd);
       }
+    });
+
+    it("rejects git full-help invocations (they open an external viewer/browser on Windows)", async () => {
+      for (const cmd of [
+        "git blame --help",
+        "git --help",
+        'git log "--help"',
+        "git help blame",
+        "git -C some/repo log --help",
+      ]) {
+        const results = await restricted(cmd);
+        assert.equal(results.length, 1, cmd);
+        assert.ok(results[0].exitCode !== 0, cmd);
+        assert.match(results[0].output, /may launch an external viewer/, cmd);
+      }
+    });
+
+    it("allows tokens after -- (path arguments, not flags)", async () => {
+      const results = await restricted("git log --oneline -- --help");
+      assert.equal(results.length, 1);
+      assert.doesNotMatch(results[0].output, /may launch an external viewer/);
+    });
+
+    it("parsed-argument check: a single token containing --help as text is not a flag", () => {
+      // Tokenizer already stripped quotes: the token "text --help" contains a
+      // space, so it is an argument value, not git's --help flag.
+      assert.doesNotThrow(() => validateGitHelpFlags("git", ["log", "text --help"]));
+    });
+
+    it("deliberately rejects the ambiguous space-form value (fail-safe), with the --flag=value escape", async () => {
+      // git's parse-options consumes `--help` as the grep VALUE here (no
+      // browser), but enumerating git's per-subcommand value flags is
+      // out of scope for this nuisance guard. The reject is fail-safe, and
+      // the error message teaches the unambiguous "--flag=value" form.
+      const results = await restricted("git log --grep --help");
+      assert.equal(results.length, 1);
+      assert.match(results[0].output, /may launch an external viewer/);
+      assert.match(results[0].output, /--flag=value/);
+    });
+
+    it("allows the unambiguous --flag=value form carrying a --help value", async () => {
+      const results = await restricted("git log --grep=--help --oneline");
+      assert.equal(results.length, 1);
+      assert.doesNotMatch(results[0].output, /may launch an external viewer/);
+    });
+
+    it("allows 'help' as an option value (not the help subcommand)", async () => {
+      const results = await restricted("git log --grep help");
+      assert.equal(results.length, 1);
+      assert.doesNotMatch(results[0].output, /may launch an external viewer/);
+    });
+
+    it("trusted user-configured commands are not restricted (guard call site)", () => {
+      // The guard only runs under restrictSubcommands; the pure validator stays
+      // silent for a token list that a trusted command could carry.
+      assert.doesNotThrow(() => validateGitHelpFlags("npm", ["--help"]));
     });
 
     it("sees through value-taking git flags to find the subcommand", async () => {
