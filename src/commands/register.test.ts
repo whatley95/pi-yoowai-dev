@@ -26,6 +26,8 @@ import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import { setPlan, dropSessionState, getState } from "../session-state.js";
 import { buildPlanView } from "../plan-view.js";
 import { getSessionCost } from "../cost-tracker.js";
+import { setSearchFnForTests, resetSearchFnForTests } from "../doc-fetcher.js";
+import type { SearchResults } from "duck-duck-scrape";
 import type { RecentModel } from "../model-history.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -165,15 +167,11 @@ describe("/wai-language handler", () => {
   }
 
   describe("/wai-plan command", () => {
-    function makeSelectCtx(cwd: string, selections: Array<{ lines: string[] }>): unknown {
+    function makeNotifyCtx(cwd: string, notifications: string[]): unknown {
       return {
         cwd,
         ui: {
-          notify: () => {},
-          select: async (_label: string, lines: string[]) => {
-            selections.push({ lines });
-            return undefined;
-          },
+          notify: (message: string) => notifications.push(message),
         },
       };
     }
@@ -192,18 +190,87 @@ describe("/wai-language handler", () => {
       assert.match(commands.get("wai-plan")!.description, /plan/);
     });
 
+    it("/wai-status renders diagnostics on the timeline surface (no picker)", async () => {
+      const cwd = makeTemp("wai-status-notify-");
+      mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
+      const handler = captureWaiCommands().get("wai-status")!.handler;
+      const notifications: string[] = [];
+      let selectInvoked = false;
+      const ctx = {
+        cwd,
+        ui: {
+          notify: (message: string) => notifications.push(message),
+          select: async () => {
+            selectInvoked = true;
+            return undefined;
+          },
+        },
+      };
+      await handler("", ctx);
+
+      assert.equal(selectInvoked, false, "/wai-status must not open the select picker anymore");
+      assert.equal(notifications.length, 1);
+      const text = notifications[0]!;
+      assert.match(text, /pi-yoowai v/, "the first diagnostic section (version header) must lead the notification");
+      assert.match(text, /Session:/, "the session section must be present");
+      assert.match(text, /Project conventions:/, "the last diagnostic section must be present");
+    });
+
+    it("/wai-index renders on the timeline (no picker)", async () => {
+      const cwd = makeTemp("wai-index-notify-");
+      mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
+      const handler = captureWaiCommands().get("wai-index")!.handler;
+      const notifications: string[] = [];
+      await handler("plan", {
+        cwd,
+        ui: { notify: (message: string) => notifications.push(message) },
+      });
+      assert.equal(notifications.length, 1);
+      assert.ok(notifications[0]!.length > 0, "the index result text must be notified");
+    });
+
+    it("/wai-search renders on the timeline (no picker)", async () => {
+      const cwd = makeTemp("wai-search-notify-");
+      mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
+      // Web search is opt-in per project: enable it for this fixture.
+      writeFileSync(
+        join(cwd, ".pi", "settings.json"),
+        JSON.stringify({ "pi-yoowai": { docs: { webSearch: { enabled: true } } } }),
+        "utf-8",
+      );
+      setSearchFnForTests(
+        async () =>
+          ({
+            noResults: false,
+            results: [{ title: "React Hooks", url: "https://react.dev/reference/react", description: "Official docs" }],
+          }) as unknown as SearchResults,
+      );
+      const handler = captureWaiCommands().get("wai-search")!.handler;
+      const notifications: string[] = [];
+      try {
+        await handler("react hooks", {
+          cwd,
+          ui: { notify: (message: string) => notifications.push(message) },
+        });
+      } finally {
+        resetSearchFnForTests();
+      }
+      assert.equal(notifications.length, 1);
+      assert.ok(notifications[0]!.includes("react.dev"), "the search result must be notified on the timeline");
+    });
+
     it("renders the no-plan message when no plan is active", async () => {
       const cwd = makeTemp("wai-plan-noplan-");
       mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
       const handler = captureWaiCommands().get("wai-plan")!.handler;
-      const selections: Array<{ lines: string[] }> = [];
-      await handler("", makeSelectCtx(cwd, selections));
+      const notifications: string[] = [];
+      await handler("", makeNotifyCtx(cwd, notifications));
 
-      assert.equal(selections.length, 1);
-      assert.deepEqual(selections[0]!.lines, ["No active plan."]);
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0], "No active plan.");
     });
 
-    it("forwards the renderer output exactly for an active plan", async () => {
+    it("notifies the full plan view for an active plan (timeline surface, not the picker)", async () => {
       const cwd = makeTemp("wai-plan-active-");
       mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
       setPlan(cwd, {
@@ -216,15 +283,19 @@ describe("/wai-language handler", () => {
       // getEditTracker returns a copy, so set the live state directly.
       getState(cwd).editsSinceLastReview = 3;
       const handler = captureWaiCommands().get("wai-plan")!.handler;
-      const selections: Array<{ lines: string[] }> = [];
-      await handler("", makeSelectCtx(cwd, selections));
+      const notifications: string[] = [];
+      await handler("", makeNotifyCtx(cwd, notifications));
 
-      assert.equal(selections.length, 1, "the handler must present exactly one selection");
+      assert.equal(notifications.length, 1, "the handler must present exactly one notification");
       const expected = buildPlanView(getState(cwd), getSessionCost(cwd), { unreviewedEdits: 3 });
-      assert.deepEqual(selections[0]!.lines, expected);
-      assert.ok(selections[0]!.lines.some((l) => l.includes("1. → build it")));
-      assert.ok(selections[0]!.lines.some((l) => l.includes("2. · review it")));
-      assert.ok(selections[0]!.lines.some((l) => l.includes("⚠ review pending: 3 edits")));
+      assert.deepEqual(
+        notifications[0]!.split(String.fromCharCode(10)),
+        expected,
+        "rendered lines must match the renderer output exactly",
+      );
+      assert.ok(notifications[0]!.includes("1. → build it"));
+      assert.ok(notifications[0]!.includes("2. · review it"));
+      assert.ok(notifications[0]!.includes("⚠ review pending: 3 edits"));
       dropSessionState(cwd);
     });
   });

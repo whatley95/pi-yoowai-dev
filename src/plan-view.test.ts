@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildPlanView, getBlockedBy, latestFileReview, type PlanViewCost } from "./plan-view.js";
+import { buildPlanView, getBlockedBy, latestFileReview, stepGlyph, type PlanViewCost } from "./plan-view.js";
 import type { PlanResult, YoowaiSessionState } from "./types.js";
 
 const COST: PlanViewCost = { calls: 4, costUsd: 0.0123 };
@@ -278,6 +278,15 @@ describe("buildPlanView", () => {
   });
 });
 
+describe("stepGlyph (shared precedence)", () => {
+  it("maps precedence: reviewed ✓, manual ⚠, current →, pending ·", () => {
+    const state = makeState({ completedSteps: 2, reviewedSteps: [true, false, false] });
+    assert.equal(stepGlyph(state, 0), "✓");
+    assert.equal(stepGlyph(state, 1), "⚠");
+    assert.equal(stepGlyph(state, 2), "→");
+    assert.equal(stepGlyph(state, 5), "·");
+  });
+});
 describe("getBlockedBy (re-exported plan-view logic)", () => {
   it("returns unmet numeric dependencies and ignores string steps", () => {
     const state = makeState({

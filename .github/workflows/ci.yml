@@ -28,7 +28,7 @@ jobs:
       - run: npm test
 
   # Advisory compatibility job: runs the focused SDK/lifecycle/vision suites
-  # against a disposable install pinned to a recent Pi host (0.86.1). The repo
+  # against a disposable install pinned to a recent Pi host (0.87.1). The repo
   # itself stays on its >=0.82.1 peer floor; this job only proves the registry
   # adapter against a real newer host. continue-on-error keeps it advisory.
   compat-086:
@@ -39,13 +39,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Stage disposable 0.86.1 tree
+      - name: Stage disposable 0.87.1 tree
         run: |
           mkdir -p "$RUNNER_TEMP/pi-yoowai-086"
           cd "$RUNNER_TEMP/pi-yoowai-086"
           cat > package.json << 'PKG'
           {
-            "name": "pi-yoowai-086-validation",
+            "name": "pi-yoowai-087-validation",
             "version": "0.0.0",
             "private": true,
             "type": "module",
@@ -53,10 +53,10 @@ jobs:
               "test-focused": "node --import tsx --test src/backends/sdk-backend.test.ts src/integration/lifecycle.test.ts src/index.test.ts src/wai-vision.test.ts src/secondary-model.test.ts src/auth-reader.test.ts"
             },
             "dependencies": {
-              "@earendil-works/pi-agent-core": "0.86.1",
-              "@earendil-works/pi-ai": "0.86.1",
-              "@earendil-works/pi-coding-agent": "0.86.1",
-              "@earendil-works/pi-tui": "0.86.1",
+              "@earendil-works/pi-agent-core": "0.87.1",
+              "@earendil-works/pi-ai": "0.87.1",
+              "@earendil-works/pi-coding-agent": "0.87.1",
+              "@earendil-works/pi-tui": "0.87.1",
               "@sinclair/typebox": "^0.34.49",
               "@types/node": "^26.0.0",
               "duck-duck-scrape": "^2.2.7",
@@ -70,5 +70,5 @@ jobs:
           cp -r "${{ github.workspace }}/templates" ./templates
           cp "${{ github.workspace }}/tsconfig.json" ./tsconfig.json
           npm install --no-audit --no-fund
-      - name: Focused suites under 0.86.1
+      - name: Focused suites under 0.87.1
         run: cd "$RUNNER_TEMP/pi-yoowai-086" && npm run test-focused

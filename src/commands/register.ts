@@ -538,7 +538,10 @@ async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
 
   lines.push("", `${HOMEPAGE} · pi-yoowai v${VERSION}`);
 
-  await ctx.ui.select("wai status", lines.filter(Boolean));
+  // Timeline surface (notify) — the select picker hides lines above the
+  // viewport while scrolling; the selection return value was never used, so
+  // nothing interactive is lost.
+  ctx.ui.notify(lines.filter(Boolean).join("\n"), "info");
 }
 
 /** Reset the base secondary model or a per-tool model override.
@@ -1379,7 +1382,11 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     const state = getState(ctx.cwd);
     const unreviewedEdits = getEditTracker(ctx.cwd).editsSinceLastReview;
     const lines = buildPlanView(state, getSessionCost(ctx.cwd), { unreviewedEdits });
-    await ctx.ui.select("wai plan", lines);
+    // Timeline surface (notify), not the select picker: select hides lines
+    // above the viewport while scrolling down, which hides the plan header —
+    // the user complained the top of the view becomes unreachable. A notify
+    // block persists in the chat scrollback, so the whole plan stays readable.
+    await ctx.ui.notify(lines.join("\n"), "info");
   };
 
   pi.registerCommand("wai-plan", {
@@ -1405,7 +1412,9 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       update,
     });
     const text = formatIndexResult(result);
-    await ctx.ui.select("wai index", text.split("\n").filter(Boolean));
+    // Timeline surface: viewer-only (the picker's selection was ignored), and
+    // notify preserves the result's own blank-line grouping.
+    await ctx.ui.notify(text, "info");
   };
 
   pi.registerCommand("wai-index", {
@@ -1481,7 +1490,8 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   const searchHandler = async (args: string, ctx: ExtensionCommandContext) => {
     const result = await handleWaiSearchCommand(args, ctx);
     const text = result.content[0]?.text ?? "";
-    await ctx.ui.select("wai search", text.split("\n").filter(Boolean));
+    // Timeline surface: viewer-only (the picker's selection was ignored).
+    await ctx.ui.notify(text, "info");
   };
 
   pi.registerCommand("wai-search", {

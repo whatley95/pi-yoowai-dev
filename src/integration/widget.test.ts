@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { updateWaiPlanWidget, hideWaiPlanWidget, INNER_WIDTH } from "./widget.js";
+import { updateWaiPlanWidget, hideWaiPlanWidget, INNER_WIDTH, displayWidth } from "./widget.js";
 import { setPlan, dropSessionState, markStepComplete } from "../session-state.js";
 
 function makeContext(cwd: string, capture: Map<string, string[] | undefined>): ExtensionContext {
@@ -160,7 +160,7 @@ describe("updateWaiPlanWidget", () => {
     assert.strictEqual(capture.get("wai-plan"), undefined);
   });
 
-  it("warns when a done step has not been reviewed (mixed reviewed/manual)", () => {
+  it("marks done-but-unreviewed steps with the ⚠ glyph (mixed reviewed/manual)", () => {
     setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1", "Step 2", "Step 3"], acceptanceCriteria: [] });
     markStepComplete(cwd, true); // step 1: reviewed
     markStepComplete(cwd, false); // step 2: manually marked
@@ -169,12 +169,17 @@ describe("updateWaiPlanWidget", () => {
     updateWaiPlanWidget(makeContext(cwd, capture));
     const content = capture.get("wai-plan");
     assert.ok(content);
-    const warning = content!.find((line) => line.includes("not reviewed"));
-    assert.ok(warning, "the done-but-unreviewed warning must appear");
-    assert.ok(warning!.includes("⚠ 1 done step not reviewed"));
-    const widths = new Set(content!.map((line) => line.length));
-    assert.strictEqual(widths.size, 1, "the warning line must respect the widget width");
-    assert.strictEqual(INNER_WIDTH, 30, "the widget inner width contract");
+    const manual = content!.find((line) => line.includes("2. ⚠ Step 2"));
+    assert.ok(manual, "the done-but-unreviewed step must carry the ⚠ glyph");
+    assert.ok(
+      content!.some((line) => line.includes("1. ✓ Step 1")),
+      "the reviewed step keeps ✓",
+    );
+    assert.ok(
+      !content!.some((line) => /⚠ \d+ done steps? not reviewed/.test(line)),
+      "the old aggregate warning line is replaced by per-step glyphs",
+    );
+    assert.strictEqual(INNER_WIDTH, 56, "the widget inner width contract");
     for (const line of content!) {
       assert.strictEqual(
         line.slice(2, -2).length,
@@ -196,7 +201,88 @@ describe("updateWaiPlanWidget", () => {
     assert.ok(!content!.some((line) => line.includes("not reviewed")));
   });
 
-  it("uses the plural warning label for multiple unreviewed done steps", () => {
+  it("shows 50% and the reviewed ratio on a four-step mixed fixture", () => {
+    setPlan(cwd, { summary: "Refactor auth", todo: ["S1", "S2", "S3", "S4"], acceptanceCriteria: [] });
+    markStepComplete(cwd, true);
+    markStepComplete(cwd, false);
+
+    const capture = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, capture));
+    const content = capture.get("wai-plan");
+    assert.ok(content!.some((line) => line.includes("50%")));
+    assert.ok(content!.some((line) => line.includes("2/4 steps · reviewed 1/2")));
+  });
+
+  it("wraps an unspaced wide CJK run without dropping content", () => {
+    const run = "重构认证中间件并处理所有可能的边界情况以验证宽度处理逻辑是否正确无误且不会丢失任何内容"; // unspaced, > 56 columns
+    setPlan(cwd, { summary: "Refactor auth", todo: [run], acceptanceCriteria: [] });
+
+    const capture = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, capture));
+    const content = capture.get("wai-plan");
+    assert.ok(content);
+    const joined = content!.join("").replace(/\s+/g, "");
+    // Ordered consumption: every code point of the run must appear in order.
+    let pos = 0;
+    for (const ch of run) {
+      const found = joined.indexOf(ch, pos);
+      assert.ok(found >= 0, `every wide character must survive wrapping in order: ${ch}`);
+      pos = found + 1;
+    }
+  });
+
+  it("displayWidth handles ZWJ emoji and regional flags as single clusters", () => {
+    assert.strictEqual(displayWidth("👨‍👩‍👧‍👦"), 2, "ZWJ family emoji render as one 2-column cluster");
+    assert.strictEqual(displayWidth("🇺🇸"), 2, "regional-indicator flags render as one 2-column cluster");
+  });
+
+  it("counts keycap sequences as 2 columns", () => {
+    assert.strictEqual(displayWidth("1️⃣"), 2, "keycap clusters render ~2 columns");
+  });
+
+  it("keeps ZWJ emoji and flags intact across wrap boundaries", () => {
+    // 50 narrow chars + a ZWJ family + a flag: the clusters straddle the
+    // available-column boundary of the first wrapped line.
+    const description = "x".repeat(50) + "👨‍👩‍👧‍👦" + "🇺🇸" + " tail";
+    setPlan(cwd, { summary: "Refactor auth", todo: [description], acceptanceCriteria: [] });
+
+    const capture = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, capture));
+    const content = capture.get("wai-plan")!;
+    const joined = content.join("");
+    assert.ok(joined.includes("👨‍👩‍👧‍👦"), "the ZWJ family must land intact on one line");
+    assert.ok(joined.includes("🇺🇸"), "the flag must land intact on one line");
+  });
+
+  it("displayWidth handles modern emoji and supplemental marks", () => {
+    assert.strictEqual(displayWidth("🫠"), 2, "modern emoji are double-width");
+    assert.strictEqual(displayWidth("᪰"), 0, "supplemental combining marks are zero-width");
+    assert.strictEqual(displayWidth("a᪰b"), 2, "marks add no columns");
+  });
+
+  it("retains wide Unicode and combining characters within the framed width", () => {
+    const wide = "重构认证中间件并处理所有可能的边界情况以验证宽度处理逻辑是否正确无误"; // 39 wide chars
+    const combining = "café naïve élévé"; // precomposed + combining marks
+    setPlan(cwd, { summary: "Refactor auth", todo: [wide, combining], acceptanceCriteria: [] });
+
+    const capture = new Map<string, string[] | undefined>();
+    updateWaiPlanWidget(makeContext(cwd, capture));
+    const content = capture.get("wai-plan");
+    assert.ok(content);
+    for (const line of content!) {
+      const inner = line.slice(2, -2);
+      assert.strictEqual(
+        displayWidth(inner),
+        INNER_WIDTH,
+        `line must occupy exactly INNER_WIDTH display columns: ${JSON.stringify(line)}`,
+      );
+    }
+    const combined = content!.join(" ");
+    assert.ok(combined.includes("重构认证"), "wide description content retained");
+    assert.ok(combined.includes("café"), "combining-mark content retained");
+  });
+
+  it("marks every manually-completed step with ⚠ (two unreviewed)", () => {
     setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1", "Step 2", "Step 3", "Step 4"], acceptanceCriteria: [] });
     markStepComplete(cwd, false);
     markStepComplete(cwd, false);
@@ -204,6 +290,12 @@ describe("updateWaiPlanWidget", () => {
     const capture = new Map<string, string[] | undefined>();
     updateWaiPlanWidget(makeContext(cwd, capture));
     const content = capture.get("wai-plan");
-    assert.ok(content!.some((line) => line.includes("⚠ 2 done steps not reviewed")));
+    assert.ok(content!.some((line) => line.includes("1. ⚠ Step 1")));
+    assert.ok(content!.some((line) => line.includes("2. ⚠ Step 2")));
+    assert.ok(
+      content!.some((line) => line.includes("3. → Step 3")),
+      "step 3 is the current step",
+    );
+    assert.ok(content!.some((line) => line.includes("4. · Step 4")));
   });
 });

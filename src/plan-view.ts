@@ -60,6 +60,15 @@ function indentedWrap(text: string, prefix: string, indent: string): string[] {
   );
 }
 
+/** Status glyph for a plan step, shared by /wai-plan and the widget so the
+ *  precedence never diverges: ✓ completed-and-reviewed, ⚠ completed-but-
+ *  manually-marked (no passing review), → current incomplete, · pending. */
+export function stepGlyph(state: YoowaiSessionState, index: number): "✓" | "⚠" | "→" | "·" {
+  if (index < state.completedSteps) return state.reviewedSteps[index] ? "✓" : "⚠";
+  if (index === state.completedSteps) return "→";
+  return "·";
+}
+
 /** Latest file-review summary from state.reviewedFiles: the newest entry by
  *  `at` plus how many files carry verdicts. Returns undefined when no
  *  per-file review has been recorded. */
@@ -111,24 +120,19 @@ export function buildPlanView(state: YoowaiSessionState, cost: PlanViewCost, opt
     const item: PlanTodoItem = plan.todo[i]!;
     const description = planStepDescription(item);
     const indent = "  ";
-    let glyph: string;
+    const glyph = stepGlyph(state, i);
     let suffix = "";
     if (i < completed) {
       const rounds = state.reviewRounds[i] ?? 0;
-      if (state.reviewedSteps[i]) {
-        glyph = "✓";
+      if (glyph === "✓") {
         suffix = ` — reviewed (${rounds} round${rounds === 1 ? "" : "s"})`;
       } else {
-        glyph = "⚠";
         suffix = " — completed (manually marked, not reviewed)";
       }
     } else if (i === completed) {
-      glyph = "→";
       suffix = " — current";
       const blockedBy = getBlockedBy(state, i);
       if (blockedBy) suffix += `, blocked by step ${blockedBy.join(", ")}`;
-    } else {
-      glyph = "·";
     }
     const base = `${indent}${i + 1}. ${glyph} `;
     for (const line of indentedWrap(`${description}${suffix}`, base, " ".repeat(base.length))) {
