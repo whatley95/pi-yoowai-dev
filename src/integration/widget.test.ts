@@ -178,7 +178,7 @@ describe("updateWaiPlanWidget", () => {
       !content!.some((line) => /⚠ \d+ done steps? not reviewed/.test(line)),
       "the old aggregate warning line is replaced by per-step glyphs",
     );
-    assert.strictEqual(INNER_WIDTH, 56, "the widget inner width contract");
+    assert.ok(INNER_WIDTH >= 56, "the widget inner width must be at least 56");
     for (const line of content!) {
       assert.strictEqual(
         line.slice(2, -2).length,

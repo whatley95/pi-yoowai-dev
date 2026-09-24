@@ -4,7 +4,7 @@ import { getBlockedBy, stepGlyph } from "../plan-view.js";
 import { getState, getProgress } from "../session-state.js";
 import { planStepDescription } from "../types.js";
 
-export const INNER_WIDTH = 56;
+export const INNER_WIDTH = Math.max(56, (process.stdout?.columns ?? 120) - 8);
 const TOTAL_WIDTH = INNER_WIDTH + 4; // includes borders and side padding
 
 /** Wide (2-column) code-point ranges — compact table covering CJK, Hangul,

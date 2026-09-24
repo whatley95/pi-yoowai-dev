@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { logEvent } from "./logger.js";
 import { isSafeRelativePath, validateRevision } from "./path-security.js";
@@ -251,43 +251,6 @@ export function getGitDiff(
   };
 }
 
-export function getSvnDiff(
-  cwd: string,
-  options: {
-    revision?: string;
-    since?: string;
-    files?: string[];
-    exclude?: string[];
-    maxDiffChars?: number;
-  } = {},
-): DiffResult {
-  const revision = validateRevision(options.revision);
-  const since = validateRevision(options.since);
-  const pathArgs =
-    options.files && options.files.length > 0 ? options.files.filter((f) => isSafeRelativePath(f)) : ["."];
-  const maxDiffChars = options.maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
-
-  try {
-    const args = buildSvnRevisionArgs(revision, since);
-    const safeExcludes = options.exclude?.filter((e) => isSafeRelativePath(e)) ?? [];
-    args.push(...pathArgs);
-    const diff = runVcsDiff(cwd, ["svn", "diff", ...args]);
-    if (diff.trim()) {
-      const filtered = safeExcludes.length > 0 ? applyExclude(diff, safeExcludes) : diff;
-      return processDiff(filtered, "svn", maxDiffChars);
-    }
-  } catch (err) {
-    logEvent(cwd, "debug", "SVN diff attempt failed", { error: err instanceof Error ? err.message : String(err) });
-  }
-
-  return {
-    diff: "(no SVN changes detected — review session context instead)",
-    truncated: false,
-    changedFiles: [],
-    vcs: "svn",
-  };
-}
-
 function buildGitRevisionArgs(revision?: string, since?: string, pathArgs?: string[]): string[] {
   const args: string[] = [];
   if (revision) {
@@ -303,6 +266,22 @@ function buildGitRevisionArgs(revision?: string, since?: string, pathArgs?: stri
   return args;
 }
 
+function buildGitPathArgs(files?: string[], exclude?: string[]): string[] | undefined {
+  if (!files || files.length === 0) {
+    if (exclude && exclude.length > 0) {
+      return [".", ...exclude.filter((e) => isSafeRelativePath(e)).map((e) => `:(exclude)${e}`)];
+    }
+    return undefined;
+  }
+
+  const safeFiles = files.filter((f) => isSafeRelativePath(f));
+  const excludeArgs = (exclude ?? []).filter((e) => isSafeRelativePath(e)).map((e) => `:(exclude)${e}`);
+  if (safeFiles.length === 0) {
+    throw new Error("No safe file paths provided for git diff");
+  }
+  return [...safeFiles, ...excludeArgs];
+}
+
 function buildSvnRevisionArgs(revision?: string, since?: string): string[] {
   const args: string[] = [];
   if (revision) {
@@ -313,29 +292,137 @@ function buildSvnRevisionArgs(revision?: string, since?: string): string[] {
   return args;
 }
 
-function buildGitPathArgs(files?: string[], exclude?: string[]): string[] | undefined {
-  if (!files || files.length === 0) {
-    if (exclude && exclude.length > 0) {
-      return [".", ...exclude.filter((e) => isSafeRelativePath(e)).map((e) => `:(exclude)${e}`)];
-    }
-    return undefined;
-  }
+export function getSvnDiff(
+  cwd: string,
+  options: {
+    revision?: string;
+    since?: string;
+    files?: string[];
+    exclude?: string[];
+    untracked?: boolean;
+    maxDiffChars?: number;
+  } = {},
+): DiffResult {
+  const revision = validateRevision(options.revision);
+  const since = validateRevision(options.since);
+  const maxDiffChars = options.maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
+  const safeExcludes = options.exclude?.filter((e) => isSafeRelativePath(e)) ?? [];
 
-  const safeFiles = files.filter((f) => isSafeRelativePath(f));
-  if (safeFiles.length === 0) {
-    throw new Error("No safe file paths provided for git diff");
-  }
-  const args = [...safeFiles];
-  if (exclude && exclude.length > 0) {
-    for (const e of exclude) {
-      if (isSafeRelativePath(e)) {
-        args.push(":(exclude)" + e);
+  try {
+    const statusOutput = runVcsDiff(cwd, ["svn", "status"]);
+    const modified: string[] = [];
+    const added: string[] = [];
+    const deleted: string[] = [];
+    const unversionedFiles: string[] = [];
+    const unversionedDirs: string[] = [];
+    for (const line of statusOutput.split("\n")) {
+      if (!line.trim()) continue;
+      const statusChar = line.charAt(0);
+      const path = line.slice(8).trim();
+      if (!path) continue;
+      if (statusChar === "M") modified.push(path);
+      else if (statusChar === "A") added.push(path);
+      else if (statusChar === "D") deleted.push(path);
+      else if (statusChar === "?" && options.untracked) {
+        const full = join(cwd, path);
+        try {
+          if (statSync(full).isDirectory()) unversionedDirs.push(path);
+          else unversionedFiles.push(path);
+        } catch {
+          unversionedFiles.push(path);
+        }
       }
     }
-  }
-  return args;
-}
 
+    const unversionedDescendants: string[] = [];
+    const expandDir = (dir: string): void => {
+      try {
+        for (const entry of readdirSync(join(cwd, dir), { withFileTypes: true })) {
+          const child = dir + "/" + entry.name;
+          if (entry.isDirectory()) expandDir(child);
+          else if (entry.name !== ".svn") unversionedDescendants.push(child);
+        }
+      } catch {
+        /* skip */
+      }
+    };
+    for (const dir of unversionedDirs) expandDir(dir);
+    const unversionedAll = [...unversionedFiles, ...unversionedDescendants];
+
+    const matchesScope = (p: string, scope: string): boolean => {
+      if (scope === ".") return true;
+      return p === scope || p.startsWith(scope + "/");
+    };
+    const isExcluded = (p: string): boolean => safeExcludes.some((e) => p === e || p.startsWith(e + "/"));
+    const filterPaths = (paths: string[]): string[] =>
+      paths.filter(
+        (p) =>
+          !isExcluded(p) &&
+          (!options.files || options.files.length === 0 || options.files.some((f) => matchesScope(p, f))),
+      );
+
+    const modifiedFiltered = filterPaths(modified);
+    const addedFiltered = filterPaths(added);
+    const deletedFiltered = filterPaths(deleted);
+    const unversionedFiltered = filterPaths(unversionedAll);
+
+    const patches: string[] = [];
+
+    // Modified + deleted: plain svn diff (covers revision ranges).
+    const plainDiffPaths = [...modifiedFiltered, ...deletedFiltered];
+    if (plainDiffPaths.length > 0) {
+      const revArgs = buildSvnRevisionArgs(revision, since);
+      const diff = runVcsDiff(cwd, ["svn", "diff", ...revArgs, ...plainDiffPaths]);
+      if (diff.trim()) patches.push(diff);
+    }
+
+    // Scheduled-add: svn diff --new-file includes full content.
+    for (const addedPath of addedFiltered) {
+      try {
+        const diff = runVcsDiff(cwd, ["svn", "diff", "--new-file", addedPath]);
+        if (diff.trim()) patches.push(diff);
+      } catch {
+        /* skip */
+      }
+    }
+
+    if (options.untracked) {
+      for (const unvPath of unversionedFiltered) {
+        try {
+          const content = readFileSync(join(cwd, unvPath), "utf-8");
+          const hasTrail = content.endsWith("\n");
+          const lines = content.split("\n");
+          const lineCount = content.length === 0 ? 0 : hasTrail ? lines.length - 1 : lines.length;
+          const body = lines
+            .slice(0, lineCount)
+            .map((l) => "+" + l)
+            .join("\n");
+          const indexHeader = "Index: " + unvPath + "\n";
+          const header = indexHeader + "--- /dev/null\n+++ " + unvPath + "\n@@ -0,0 +1," + lineCount + " @@";
+          let patch = header + (lineCount > 0 ? "\n" + body : "");
+          if (!hasTrail && content.length > 0) patch += "\n\\ No newline at end of file\n";
+          patches.push(patch);
+        } catch {
+          /* binary */
+        }
+      }
+    }
+    const combined = patches.join("\n");
+    if (combined.trim()) {
+      const filtered = safeExcludes.length > 0 ? applyExclude(combined, safeExcludes) : combined;
+      return processDiff(filtered, "svn", maxDiffChars);
+    }
+  } catch (err) {
+    logEvent(cwd, "debug", "SVN diff attempt failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  return {
+    diff: "(no SVN changes detected — review session context instead)",
+    truncated: false,
+    changedFiles: [],
+    vcs: "svn",
+  };
+}
 export function applyExclude(diff: string, exclude?: string[]): string {
   if (!exclude || exclude.length === 0) return diff;
   const patterns = exclude.map((e) => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
