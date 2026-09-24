@@ -305,6 +305,17 @@ describe("getSdkRegistry", () => {
 });
 
 describe("sdk-backend registry routing", () => {
+  it("passes the selected extended reasoning level unchanged; off omits reasoning", async () => {
+    makeAgentDir();
+    const cwd = makeCwd();
+    const { registry, state } = makeCapableRegistry({ model: fakeSdkModel("openai-codex", "gpt-6-astra") });
+    setSdkRegistryOverride(() => registry);
+    await callSdkBackend("openai-codex", "gpt-6-astra", "system", "user", { cwd, thinking: "max" });
+    await callSdkBackend("openai-codex", "gpt-6-astra", "system", "user", { cwd, thinking: "off" });
+    assert.equal(state.streamSimpleCalls[0].options?.reasoning, "max");
+    assert.equal(state.streamSimpleCalls[1].options?.reasoning, undefined);
+  });
+
   it("streams via a capable registry without compat lookup or local auth resolution", async () => {
     const agentDir = makeAgentDir();
     writeAuthJson(agentDir, {

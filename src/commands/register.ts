@@ -147,52 +147,63 @@ export function computeThinkingLevels(
   });
 }
 
-/** Resolve the thinking levels to offer for a model. Uses the model's
- *  advertised supported levels (mirroring pi-ai's own semantics). When the
- *  model is entirely unknown to the SDK catalog and registry (or advertises
- *  nothing selectable), returns a safe fallback of "off" plus the model's
- *  currently-configured / default level, so the user can keep their setting
- *  or disable reasoning without selecting an unverified level. */
+/** Offer only levels verified by live or static model metadata. If capability
+ *  data is unavailable, leave the saved selection intact rather than guessing. */
 export function resolveThinkingLevelOptions(
   modelDetails: ModelThinkingDetails | undefined,
   canonicalLevels: readonly string[],
   effectiveThinking: string,
 ): string[] {
-  const advertised = computeThinkingLevels(modelDetails, canonicalLevels);
-  if (advertised && advertised.length > 0) return advertised;
-  const levels = ["off"];
-  if (effectiveThinking && effectiveThinking !== "off" && !levels.includes(effectiveThinking)) {
-    levels.push(effectiveThinking);
-  }
-  return levels;
+  // Keep the existing call signature; a saved value is not proof of support.
+  void effectiveThinking;
+  return computeThinkingLevels(modelDetails, canonicalLevels) ?? [];
 }
 
-/** Resolve a model's advertised thinking levels. The Pi model registry does not
- *  reliably expose `thinkingLevelMap` (its `getModel` may be absent or return a
- *  model without the map), which caused `/wai-model` to fall back to the full
- *  canonical list. The pi-ai SDK catalog — the same source the main agent's
- *  model picker reads — is authoritative, so prefer it and fall back to the
- *  registry only when the catalog has nothing. */
+/** Use the live Pi catalog first (including extension and models.json overrides).
+ *  The static pi-ai catalog is only a fallback for hosts without a live match. */
 export async function resolveModelThinkingDetails(
   provider: string,
   modelId: string,
   registryModel: ModelThinkingDetails | undefined,
 ): Promise<ModelThinkingDetails | undefined> {
-  let sdkModel: ModelThinkingDetails | undefined;
+  if (typeof registryModel?.reasoning === "boolean") return registryModel;
   try {
     const piAi = await getPiAiCompat();
     const m = piAi.getModel(provider, modelId);
-    if (m) {
-      sdkModel = { reasoning: m.reasoning, thinkingLevelMap: m.thinkingLevelMap };
-    }
+    if (m) return { reasoning: m.reasoning, thinkingLevelMap: m.thinkingLevelMap };
   } catch {
-    // pi-ai catalog unavailable (e.g. package not resolvable); fall through.
+    // Static catalog unavailable; retain the unknown-model fallback.
   }
-  const sdkHasMap = !!sdkModel?.thinkingLevelMap && Object.keys(sdkModel.thinkingLevelMap).length > 0;
-  const registryHasMap = !!registryModel?.thinkingLevelMap && Object.keys(registryModel.thinkingLevelMap).length > 0;
-  if (sdkHasMap) return sdkModel;
-  if (registryHasMap) return registryModel;
-  return sdkModel ?? registryModel;
+  return undefined;
+}
+
+/** ModelRegistry.find is present on Pi hosts; older/mocked registries can still
+ *  supply metadata through getAll/getAvailable. Never match an id across providers. */
+export function findModelThinkingDetails(
+  registry: WaiModelRegistry,
+  provider: string,
+  id: string,
+): ModelThinkingDetails | undefined {
+  const found = typeof registry.find === "function" ? registry.find(provider, id) : undefined;
+  const model =
+    (found?.provider === provider && found.id === id ? found : undefined) ??
+    (typeof registry.getAll === "function" ? registry.getAll() : registry.getAvailable()).find(
+      (entry) => entry.provider === provider && entry.id === id,
+    );
+  if (!model || typeof model.reasoning !== "boolean") return undefined;
+  const map = model.thinkingLevelMap;
+  const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+  return {
+    reasoning: model.reasoning,
+    thinkingLevelMap:
+      map && typeof map === "object"
+        ? Object.fromEntries(
+            levels
+              .filter((level) => typeof map[level] === "string" || map[level] === null)
+              .map((level) => [level, map[level]]),
+          )
+        : undefined,
+  };
 }
 
 const MODEL_PICKER_SOFT_CAP = 20;
@@ -268,6 +279,8 @@ export function isScopeConfigured(scope: string, config: YoowaiConfig): boolean 
 export interface ModelRef {
   id: string;
   provider: string;
+  reasoning?: boolean;
+  thinkingLevelMap?: Partial<Record<string, string | null>>;
 }
 
 interface WaiModelRegistry {
@@ -275,15 +288,7 @@ interface WaiModelRegistry {
   getAll?(): ModelRef[];
   getProviderAuthStatus(provider: string): { configured: boolean };
   hasConfiguredAuth(model: { provider: string }): boolean;
-  getModel?(
-    provider: string,
-    id: string,
-  ):
-    | {
-        reasoning?: boolean;
-        thinkingLevelMap?: Partial<Record<string, string | null>>;
-      }
-    | undefined;
+  find?(provider: string, id: string): ModelRef | undefined;
 }
 
 function getModelRegistry(ctx: ExtensionContext): WaiModelRegistry | undefined {
@@ -1159,10 +1164,9 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       // Offer the model's advertised supported levels from the Pi SDK catalog /
       // registry, mirroring pi-ai's getSupportedThinkingLevels semantics
       // (gateway providers like OpenRouter get the default reasoning set).
-      // resolveThinkingLevelOptions falls back to a safe set ("off" + the
-      // current default) only for models unknown to both sources.
+      // Unknown capabilities abort the picker without changing the saved model.
       const canonicalThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-      const registryModel = typeof registry.getModel === "function" ? registry.getModel(provider, modelId) : undefined;
+      const registryModel = findModelThinkingDetails(registry, provider, modelId);
       const modelDetails = await resolveModelThinkingDetails(provider, modelId, registryModel);
       const thinkingLevels = resolveThinkingLevelOptions(modelDetails, canonicalThinkingLevels, effectiveThinking);
       if (thinkingLevels.length === 0) {
@@ -1341,8 +1345,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         const waiConfig = loadYoowaiConfig(ctx.cwd);
         const effectiveThinking = waiConfig.secondary.thinking ?? "xhigh";
         const canonicalThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-        const registryModel =
-          typeof registry.getModel === "function" ? registry.getModel(provider, modelId) : undefined;
+        const registryModel = findModelThinkingDetails(registry, provider, modelId);
         const modelDetails = await resolveModelThinkingDetails(provider, modelId, registryModel);
         const thinkingLevels = resolveThinkingLevelOptions(modelDetails, canonicalThinkingLevels, effectiveThinking);
         if (thinkingLevels.length === 0) {

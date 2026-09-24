@@ -4,6 +4,7 @@ import {
   computeThinkingLevels,
   resolveThinkingLevelOptions,
   resolveModelThinkingDetails,
+  findModelThinkingDetails,
   formatModelItem,
   parseModelIdFromItem,
   groupModelsByPrefix,
@@ -463,14 +464,10 @@ describe("resolveThinkingLevelOptions", () => {
     ]);
   });
 
-  it("falls back to off plus the current default only for unknown models", () => {
-    assert.deepStrictEqual(resolveThinkingLevelOptions(undefined, canonicalLevels, "xhigh"), ["off", "xhigh"]);
+  it("never offers guessed levels when capability metadata is unavailable", () => {
+    assert.deepStrictEqual(resolveThinkingLevelOptions(undefined, canonicalLevels, "xhigh"), []);
+    assert.deepStrictEqual(resolveThinkingLevelOptions(undefined, canonicalLevels, "off"), []);
     assert.deepStrictEqual(resolveThinkingLevelOptions({}, canonicalLevels, "high"), ["off"]);
-  });
-
-  it("falls back to just off when the current default is off or absent", () => {
-    assert.deepStrictEqual(resolveThinkingLevelOptions(undefined, canonicalLevels, "off"), ["off"]);
-    assert.deepStrictEqual(resolveThinkingLevelOptions(undefined, canonicalLevels, ""), ["off"]);
   });
 });
 
@@ -490,39 +487,126 @@ function fakeSdkModel(thinkingLevelMap?: Record<string, string | null>, reasonin
   };
 }
 
-describe("resolveModelThinkingDetails", () => {
-  it("prefers the SDK catalog map over the registry", async () => {
-    setSdkGetModelOverride(() => fakeSdkModel({ off: null, high: "high", max: "max" }) as never);
+describe("findModelThinkingDetails", () => {
+  const live = {
+    provider: "openai-codex",
+    id: "gpt-6-astra",
+    reasoning: true,
+    thinkingLevelMap: { off: null, minimal: "low", xhigh: "xhigh", max: "max" },
+  };
+  const other = { provider: "openai", id: "gpt-6-astra", reasoning: false };
+
+  it("uses the live find lookup and honors GPT-6 levels", () => {
+    const registry = {
+      find: () => live,
+      getAvailable: () => [other],
+    } as never;
+    const details = findModelThinkingDetails(registry, live.provider, live.id);
+    assert.deepStrictEqual(computeThinkingLevels(details, canonicalLevels), [
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+  });
+
+  it("takes a custom live Sol model's explicit capabilities without guessing from its name", () => {
+    // This is a custom-provider fixture, NOT an assertion about built-in GPT-6 Sol support.
+    const sol = {
+      provider: "custom-gateway",
+      id: "gpt-6-sol",
+      reasoning: true,
+      thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, xhigh: null, max: "max" },
+    };
+    const registry = { find: () => sol, getAvailable: () => [sol] } as never;
+    assert.deepStrictEqual(
+      computeThinkingLevels(findModelThinkingDetails(registry, sol.provider, sol.id), canonicalLevels),
+      ["high", "max"],
+    );
+  });
+
+  it("looks up exact provider and id in getAll on older hosts", () => {
+    const registry = { getAll: () => [other, live], getAvailable: () => [] } as never;
+    assert.deepStrictEqual(
+      computeThinkingLevels(findModelThinkingDetails(registry, live.provider, live.id), canonicalLevels),
+      ["minimal", "low", "medium", "high", "xhigh", "max"],
+    );
+    assert.deepStrictEqual(
+      computeThinkingLevels(findModelThinkingDetails(registry, other.provider, other.id), canonicalLevels),
+      ["off"],
+    );
+    assert.strictEqual(findModelThinkingDetails(registry, "opencode-go", live.id), undefined);
+  });
+
+  it("uses static catalog for legacy provider/id-only registry entries", async () => {
+    const registry = { getAvailable: () => [{ provider: "openai-codex", id: "gpt-6-astra" }] } as never;
+    const liveDetails = findModelThinkingDetails(registry, "openai-codex", "gpt-6-astra");
+    assert.strictEqual(liveDetails, undefined);
+    setSdkGetModelOverride(() => fakeSdkModel({ off: null, xhigh: "xhigh" }) as never);
     try {
-      const details = await resolveModelThinkingDetails("deepseek", "deepseek-chat", { reasoning: true });
-      assert.deepStrictEqual(details?.thinkingLevelMap, { off: null, high: "high", max: "max" });
+      const details = await resolveModelThinkingDetails("openai-codex", "gpt-6-astra", liveDetails);
       assert.deepStrictEqual(computeThinkingLevels(details, canonicalLevels), [
         "minimal",
         "low",
         "medium",
         "high",
-        "max",
+        "xhigh",
       ]);
     } finally {
       setSdkGetModelOverride(null);
     }
   });
 
-  it("falls back to the registry when SDK catalog has no map", async () => {
-    setSdkGetModelOverride(() => fakeSdkModel(undefined) as never);
+  it("supports getAvailable-only hosts and ignores malformed map values", () => {
+    const registry = {
+      getAvailable: () => [{ ...live, thinkingLevelMap: { off: null, max: 42, xhigh: "xhigh" } }],
+    } as never;
+    assert.deepStrictEqual(
+      computeThinkingLevels(findModelThinkingDetails(registry, live.provider, live.id), canonicalLevels),
+      ["minimal", "low", "medium", "high", "xhigh"],
+    );
+  });
+});
+
+describe("resolveModelThinkingDetails", () => {
+  it("prefers the live registry map over the static SDK catalog", async () => {
+    setSdkGetModelOverride(() => fakeSdkModel({ off: null, high: "high", max: "max" }) as never);
     try {
-      const registryMap = { off: null, high: "high" } as Record<string, string | null>;
       const details = await resolveModelThinkingDetails("deepseek", "deepseek-chat", {
         reasoning: true,
-        thinkingLevelMap: registryMap,
+        thinkingLevelMap: { off: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh" },
       });
-      assert.deepStrictEqual(details?.thinkingLevelMap, registryMap);
+      assert.deepStrictEqual(computeThinkingLevels(details, canonicalLevels), [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ]);
     } finally {
       setSdkGetModelOverride(null);
     }
   });
 
-  it("returns registry details when SDK catalog is unavailable", async () => {
+  it("does not replace a live model without a map with static catalog metadata", async () => {
+    setSdkGetModelOverride(() => fakeSdkModel(undefined) as never);
+    try {
+      const details = await resolveModelThinkingDetails("deepseek", "deepseek-chat", { reasoning: true });
+      assert.deepStrictEqual(computeThinkingLevels(details, canonicalLevels), [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+      ]);
+    } finally {
+      setSdkGetModelOverride(null);
+    }
+  });
+
+  it("returns live registry details when SDK catalog is unavailable", async () => {
     setSdkGetModelOverride(() => {
       throw new Error("no sdk");
     });
@@ -1013,6 +1097,117 @@ describe("resetModelSelection", () => {
     assert.ok(judgeRow?.includes("not configured"), `judge row: ${judgeRow}`);
     assert.ok(!judgeRow?.includes("✓ current"), `judge row must not be marked current: ${judgeRow}`);
   });
+});
+
+describe("live thinking levels in model and council commands", () => {
+  const originalAgentDir = getAgentDir();
+  after(() => setAgentDirForTests(() => originalAgentDir));
+  const model = {
+    provider: "openai-codex",
+    id: "gpt-6-astra",
+    reasoning: true,
+    thinkingLevelMap: {
+      off: null,
+      minimal: "low",
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: "max",
+    },
+  };
+
+  async function run(command: "wai-model" | "wai-council", cancelThinking = false, unknown = false) {
+    const agentDir = mkdtempSync(join(tmpdir(), "wai-thinking-agent-"));
+    const cwd = mkdtempSync(join(tmpdir(), "wai-thinking-project-"));
+    try {
+      setAgentDirForTests(() => agentDir);
+      const settingsPath = join(agentDir, "settings.json");
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          "pi-yoowai": {
+            secondary: { provider: model.provider, id: model.id, thinking: "medium" },
+          },
+        }),
+      );
+      const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+      const pi = {
+        registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+          commands.set(name, def),
+      } as unknown as ExtensionAPI;
+      registerWaiCommands(pi, new Map());
+      const selections: Array<{ title: string; items: string[] }> = [];
+      const notifications: string[] = [];
+      if (unknown)
+        setSdkGetModelOverride(() => {
+          throw new Error("not in static catalog");
+        });
+      let councilPicks = 0;
+      const ctx = {
+        cwd,
+        modelRegistry: {
+          getAll: () => [unknown ? { provider: model.provider, id: model.id } : model],
+          getAvailable: () => [unknown ? { provider: model.provider, id: model.id } : model],
+          find: () => (unknown ? { provider: model.provider, id: model.id } : model),
+          getProviderAuthStatus: () => ({ configured: true }),
+          hasConfiguredAuth: () => true,
+        },
+        ui: {
+          notify: (message: string) => notifications.push(message),
+          select: async (title: string, items: string[]) => {
+            selections.push({ title, items });
+            if (title.startsWith("Judge council")) return councilPicks++ === 0 ? "Add member…" : "Done";
+            if (title.startsWith("Which wai tool")) return items[0];
+            if (title.startsWith("Pick model")) return items[0];
+            if (title.startsWith("Pick thinking")) return cancelThinking ? undefined : "max";
+            return undefined;
+          },
+        },
+      } as unknown as ExtensionContext;
+      await commands.get(command)!.handler(command === "wai-model" ? model.provider : "", ctx);
+      const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))["pi-yoowai"];
+      const thinkingPicker = selections.find((s) => s.title.startsWith("Pick thinking"));
+      if (unknown) {
+        assert.equal(thinkingPicker, undefined, "unknown model must not offer guessed levels");
+        assert.ok(notifications.some((message) => message.includes("does not advertise any thinking levels")));
+      } else {
+        assert.ok(thinkingPicker, "thinking picker reached");
+        assert.deepStrictEqual(
+          thinkingPicker.items.map((item) => item.replace(" ✓ current", "")),
+          ["minimal", "low", "medium", "high", "xhigh", "max"],
+        );
+      }
+      if (command === "wai-model") {
+        assert.equal(settings.secondary.thinking, cancelThinking || unknown ? "medium" : "max");
+      } else {
+        assert.deepStrictEqual(
+          settings.judgeCouncil ?? [],
+          cancelThinking || unknown
+            ? []
+            : [
+                {
+                  provider: model.provider,
+                  id: model.id,
+                  thinking: "max",
+                },
+              ],
+        );
+      }
+    } finally {
+      setSdkGetModelOverride(null);
+      setAgentDirForTests(() => originalAgentDir);
+      rmSync(agentDir, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+
+  it("/wai-model displays live max and persists it", () => run("wai-model"));
+  it("/wai-model cancel keeps prior selection", () => run("wai-model", true));
+  it("/wai-council displays live max and persists it", () => run("wai-council"));
+  it("/wai-council cancel leaves council unchanged", () => run("wai-council", true));
+  it("/wai-model unknown metadata leaves settings unchanged", () => run("wai-model", false, true));
+  it("/wai-council unknown metadata leaves settings unchanged", () => run("wai-council", false, true));
 });
 
 describe("buildReviewLevelItems", () => {
