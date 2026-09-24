@@ -301,25 +301,32 @@ export function updateWaiPlanWidget(ctx: ExtensionContext): void {
     const lines: string[] = [];
     lines.push(borderLine("┌─ wai plan ─", "─", "┐"));
     lines.push(framed(`${bar} ${pct.toString().padStart(3)}%`));
-    lines.push(framed(`${completed}/${total} steps · reviewed ${reviewed}/${completed}`));
-
-    // Compact grid: all steps as "N:glyph" pairs on as few lines as fit.
+    // Compact grid: all steps as "N:glyph" pairs, combined with the count
+    // line when they fit within INNER_WIDTH.
     const stepPairs: string[] = [];
     for (let i = 0; i < plan.todo.length; i++) {
       stepPairs.push(`${i + 1}:${stepGlyph(state, i)}`);
     }
-    // Pack step pairs into lines that fit INNER_WIDTH.
-    let grid = "";
-    for (const pair of stepPairs) {
-      const candidate = grid ? `${grid} ${pair}` : pair;
-      if (displayWidth(candidate) > INNER_WIDTH) {
-        lines.push(framed(grid));
-        grid = pair;
-      } else {
-        grid = candidate;
+    const countLine = `${completed}/${total} · rev ${reviewed}/${completed}`;
+    const gridStart = stepPairs.join(" ");
+    const combined = `${countLine} · ${gridStart}`;
+    if (displayWidth(combined) <= INNER_WIDTH) {
+      lines.push(framed(combined));
+    } else {
+      lines.push(framed(countLine));
+      // Grid on its own line(s), wrapping as needed.
+      let grid = "";
+      for (const pair of stepPairs) {
+        const candidate = grid ? `${grid} ${pair}` : pair;
+        if (displayWidth(candidate) > INNER_WIDTH) {
+          lines.push(framed(grid));
+          grid = pair;
+        } else {
+          grid = candidate;
+        }
       }
+      if (grid) lines.push(framed(grid));
     }
-    if (grid) lines.push(framed(grid));
     // One current-step description line (the "what am I working on now" answer).
     if (completed < total) {
       const desc = planStepDescription(plan.todo[completed]!);

@@ -209,7 +209,7 @@ describe("updateWaiPlanWidget", () => {
     updateWaiPlanWidget(makeContext(cwd, capture));
     const content = capture.get("wai-plan");
     assert.ok(content!.some((line) => line.includes("50%")));
-    assert.ok(content!.some((line) => line.includes("2/4 steps · reviewed 1/2")));
+    assert.ok(content!.some((line) => line.includes("2/4 · rev 1/2")));
   });
 
   it("wraps an unspaced wide CJK run without dropping content", () => {
