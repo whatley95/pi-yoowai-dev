@@ -300,7 +300,6 @@ export function updateWaiPlanWidget(ctx: ExtensionContext): void {
 
     const lines: string[] = [];
     lines.push(borderLine("┌─ wai plan ─", "─", "┐"));
-    wrapInto(lines, plan.summary, "", "   ");
     lines.push(framed(`${bar} ${pct.toString().padStart(3)}%`));
     lines.push(framed(`${completed}/${total} steps · reviewed ${reviewed}/${completed}`));
 

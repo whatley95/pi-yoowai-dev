@@ -57,7 +57,6 @@ describe("updateWaiPlanWidget", () => {
     assert.ok(content);
     const widths = new Set(content!.map((line) => line.length));
     assert.strictEqual(widths.size, 1, "widget lines should all have the same width");
-    assert.ok(content!.some((line) => line.includes("Refactor auth")));
     assert.ok(content!.some((line) => line.includes("0/3")));
     assert.ok(content!.some((line) => line.includes("0%")));
   });
