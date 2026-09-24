@@ -304,20 +304,29 @@ export function updateWaiPlanWidget(ctx: ExtensionContext): void {
     lines.push(framed(`${bar} ${pct.toString().padStart(3)}%`));
     lines.push(framed(`${completed}/${total} steps · reviewed ${reviewed}/${completed}`));
 
-    // Every step, in order, with the shared glyph language — per-step ⚠ marks
-    // replace the old aggregate "done steps not reviewed" warning line. The
-    // continuation indent matches the step prefix's display width so 1- and
-    // 2-digit numbers align identically.
+    // Compact grid: all steps as "N:glyph" pairs on as few lines as fit.
+    const stepPairs: string[] = [];
     for (let i = 0; i < plan.todo.length; i++) {
-      const description = planStepDescription(plan.todo[i]!);
-      const glyph = stepGlyph(state, i);
-      let annotation = "";
-      if (i === completed && completed < total) {
-        const blockedBy = getBlockedBy(state, i);
-        if (blockedBy) annotation = ` — blocked by step ${blockedBy.join(", ")}`;
+      stepPairs.push(`${i + 1}:${stepGlyph(state, i)}`);
+    }
+    // Pack step pairs into lines that fit INNER_WIDTH.
+    let grid = "";
+    for (const pair of stepPairs) {
+      const candidate = grid ? `${grid} ${pair}` : pair;
+      if (displayWidth(candidate) > INNER_WIDTH) {
+        lines.push(framed(grid));
+        grid = pair;
+      } else {
+        grid = candidate;
       }
-      const prefix = `${i + 1}. ${glyph} `;
-      wrapInto(lines, `${description}${annotation}`, prefix, " ".repeat(displayWidth(prefix)));
+    }
+    if (grid) lines.push(framed(grid));
+    // One current-step description line (the "what am I working on now" answer).
+    if (completed < total) {
+      const desc = planStepDescription(plan.todo[completed]!);
+      const blockedBy = getBlockedBy(state, completed);
+      const annotation = blockedBy ? ` ⚠ blocked by #${blockedBy.join(", #")}` : "";
+      wrapInto(lines, `→ ${completed + 1}: ${desc}${annotation}`, "", "   ");
     }
     lines.push(borderLine("└", "─", "┘"));
 

@@ -117,7 +117,7 @@ describe("updateWaiPlanWidget", () => {
     assert.ok(content);
     // The blocked step itself is shown, and the blocker is named.
     assert.ok(content.some((line) => line.includes("Setup")));
-    assert.ok(content.some((line) => line.includes("blocked by step 3")));
+    assert.ok(content.some((line) => line.includes("blocked by #3")));
   });
 
   it("hides the blocked line once the current step advances past the blocker", () => {
@@ -130,7 +130,7 @@ describe("updateWaiPlanWidget", () => {
     // Before: the current step is blocked by an unmet forward dependency.
     const before = new Map<string, string[] | undefined>();
     updateWaiPlanWidget(makeContext(cwd, before));
-    assert.ok(before.get("wai-plan")!.some((line) => line.includes("blocked by step 3")));
+    assert.ok(before.get("wai-plan")!.some((line) => line.includes("blocked by #3")));
 
     // After advancing, the current step is a plain step: the line is gone.
     markStepComplete(cwd, true);
@@ -169,10 +169,10 @@ describe("updateWaiPlanWidget", () => {
     updateWaiPlanWidget(makeContext(cwd, capture));
     const content = capture.get("wai-plan");
     assert.ok(content);
-    const manual = content!.find((line) => line.includes("2. ⚠ Step 2"));
+    const manual = content!.find((line) => line.includes("2:⚠"));
     assert.ok(manual, "the done-but-unreviewed step must carry the ⚠ glyph");
     assert.ok(
-      content!.some((line) => line.includes("1. ✓ Step 1")),
+      content!.some((line) => line.includes("1:✓")),
       "the reviewed step keeps ✓",
     );
     assert.ok(
@@ -278,8 +278,8 @@ describe("updateWaiPlanWidget", () => {
       );
     }
     const combined = content!.join(" ");
-    assert.ok(combined.includes("重构认证"), "wide description content retained");
-    assert.ok(combined.includes("café"), "combining-mark content retained");
+    assert.ok(combined.includes("1:→"), "the step grid must show the current step glyph");
+    assert.ok(combined.includes("2:·"), "the pending step must show · in the grid");
   });
 
   it("marks every manually-completed step with ⚠ (two unreviewed)", () => {
@@ -290,12 +290,12 @@ describe("updateWaiPlanWidget", () => {
     const capture = new Map<string, string[] | undefined>();
     updateWaiPlanWidget(makeContext(cwd, capture));
     const content = capture.get("wai-plan");
-    assert.ok(content!.some((line) => line.includes("1. ⚠ Step 1")));
-    assert.ok(content!.some((line) => line.includes("2. ⚠ Step 2")));
+    assert.ok(content!.some((line) => line.includes("1:⚠")));
+    assert.ok(content!.some((line) => line.includes("2:⚠")));
     assert.ok(
-      content!.some((line) => line.includes("3. → Step 3")),
+      content!.some((line) => line.includes("3:→")),
       "step 3 is the current step",
     );
-    assert.ok(content!.some((line) => line.includes("4. · Step 4")));
+    assert.ok(content!.some((line) => line.includes("4:·")));
   });
 });
