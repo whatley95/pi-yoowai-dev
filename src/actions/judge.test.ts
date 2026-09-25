@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeWaiJudge } from "./judge.js";
+import { getDiff } from "../diff-grabber.js";
 import { getLastReviewedCommit, getPendingReviewCommit } from "../session-state.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import { gitSpawnEnv } from "../git-env.js";
@@ -125,17 +126,24 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
     const bigLine = "x".repeat(200);
     const big = Array.from({ length: 500 }, (_, i) => `${i} ${bigLine}`).join("\n");
     const cwd = makeRepoWithChange(big);
+    const { url, bodies } = await startStubServer();
+    const cap = 1_000;
+    const fullDiff = getDiff(cwd, { maxDiffChars: Number.MAX_SAFE_INTEGER });
+    const expectedChars = fullDiff.diff.length;
+    const captured = getDiff(cwd, { maxDiffChars: cap }).totalChars;
+    assert.equal(captured, expectedChars, "captured size must equal the independently untruncated diff length");
+    assert.ok(captured > cap, "fixture must exceed the configured per-file cap");
     writeSettings(cwd, {
+      reviewMaxDiffChars: cap,
       secondary: {
         provider: "openai",
         id: "gpt-4o-mini",
         thinking: "off",
         contextWindow: 8000,
         maxOutputTokens: 1024,
-        // Dead port proves zero model calls: a regression would surface a
-        // connection error instead of the guidance.
         backend: "http",
-        baseUrl: "http://127.0.0.1:9",
+        baseUrl: url,
+        apiKey: "test-key",
       },
     });
 
@@ -143,9 +151,14 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
     const result = await executeWaiJudge(cwd, "oversized judge probe", undefined, () => {}, ctx.sessionManager);
 
     assert.ok(result.error, "expected an error result");
-    assert.match(result.error, /too large for a judge review/);
-    assert.match(result.error, /files:\[\.\.\.\]/);
-    assert.match(result.error, /reviewMaxInputTokens/);
+    assert.match(result.error, /Cannot judge completely/);
+    assert.match(result.error, /a\.txt/);
+    assert.match(result.error, new RegExp(`${expectedChars.toLocaleString()} chars`));
+    assert.match(result.error, new RegExp(`pi-yoowai\\.reviewMaxDiffChars \\(${cap.toLocaleString()} chars\\)`));
+    assert.match(result.error, /partial verdict/);
+    assert.match(result.error, /passing wai\.review/);
+    assert.match(result.error, /only when the configured judge model has enough context/);
+    assert.equal(bodies.length, 0, "an oversized single-file diff must not call the judge model");
   });
 
   it(

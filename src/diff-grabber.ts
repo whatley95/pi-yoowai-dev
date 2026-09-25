@@ -13,6 +13,8 @@ export type VcsType = "git" | "svn";
 export interface DiffResult {
   diff: string;
   truncated: boolean;
+  /** Original character count before maxDiffChars truncation, when available. */
+  totalChars?: number;
   changedFiles: string[];
   vcs?: VcsType;
 }
@@ -507,11 +509,12 @@ function runGitUntrackedDiff(cwd: string, files: string[]): string {
 export function processDiff(diff: string, vcs: VcsType, maxDiffChars: number): DiffResult {
   const changedFiles = extractChangedFiles(diff, vcs);
   if (diff.length <= maxDiffChars) {
-    return { diff, truncated: false, changedFiles, vcs };
+    return { diff, truncated: false, totalChars: diff.length, changedFiles, vcs };
   }
   return {
     diff: diff.slice(0, maxDiffChars) + "\n... diff truncated (too large)",
     truncated: true,
+    totalChars: diff.length,
     changedFiles,
     vcs,
   };

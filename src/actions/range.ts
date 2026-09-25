@@ -121,9 +121,15 @@ export function rebuiltDiff(
   cwd: string,
   diffOptions: RangeScope & { maxDiffChars?: number; untracked?: boolean; vcs?: "git" | "svn" },
   changedFiles: string[],
-): { diff: string; perFileTruncated: boolean; omitted: string[] } {
+): {
+  diff: string;
+  perFileTruncated: boolean;
+  truncatedFiles: Array<{ file: string; totalChars: number }>;
+  omitted: string[];
+} {
   const parts: string[] = [];
   let perFileTruncated = false;
+  const truncatedFiles: Array<{ file: string; totalChars: number }> = [];
   const omitted: string[] = [];
   for (const file of changedFiles) {
     let perFile: DiffResult;
@@ -144,9 +150,12 @@ export function rebuiltDiff(
       continue;
     }
     parts.push(perFile.diff);
-    if (perFile.truncated) perFileTruncated = true;
+    if (perFile.truncated) {
+      perFileTruncated = true;
+      truncatedFiles.push({ file, totalChars: perFile.totalChars ?? perFile.diff.length });
+    }
   }
-  return { diff: parts.join("\n"), perFileTruncated, omitted };
+  return { diff: parts.join("\n"), perFileTruncated, truncatedFiles, omitted };
 }
 
 /** Update the incremental-diff range state AFTER a completed review.

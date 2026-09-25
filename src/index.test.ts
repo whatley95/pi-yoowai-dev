@@ -10,7 +10,7 @@ import { handleWaiSearchCommand } from "./wai-search.js";
 import { setSearchFnForTests, resetSearchFnForTests } from "./doc-fetcher.js";
 import { buildProjectIndex, saveProjectIndex } from "./project-index.js";
 import { recordLearnedFact, type DeepVerifyModelCaller } from "./wai-learn.js";
-import { setWaiLearnDeepCallerForTests } from "./index.js";
+import { setWaiExplainExecutorForTests, setWaiLearnDeepCallerForTests } from "./index.js";
 import initWai from "./index.js";
 import { getSdkRegistry } from "./backends/sdk-backend.js";
 
@@ -350,7 +350,196 @@ describe("wai extension registration", () => {
   }
 
   afterEach(() => {
+    setWaiExplainExecutorForTests(undefined);
     setWaiLearnDeepCallerForTests(undefined);
+  });
+
+  async function getToolExecutor(
+    name: string,
+  ): Promise<
+    (
+      toolCallId: string,
+      params: unknown,
+      signal: AbortSignal | undefined,
+      onUpdate: unknown,
+      ctx: ExtensionContext,
+    ) => Promise<unknown>
+  > {
+    const { pi, toolDefs } = createMockPi();
+    await initWai(pi);
+    const def = toolDefs.find((tool) => tool.name === name);
+    assert.ok(def, `${name} must be registered`);
+    const execute = (def as { execute?: unknown }).execute;
+    assert.equal(typeof execute, "function", `${name} must have an executor`);
+    return execute as (
+      toolCallId: string,
+      params: unknown,
+      signal: AbortSignal | undefined,
+      onUpdate: unknown,
+      ctx: ExtensionContext,
+    ) => Promise<unknown>;
+  }
+
+  function progressCtx(cwd: string, statuses: Array<string | undefined>): ExtensionContext {
+    return {
+      cwd,
+      ui: { setStatus: (_key: string, value: string | undefined) => statuses.push(value) },
+    } as unknown as ExtensionContext;
+  }
+
+  it("wai_explain disposes its reporter after success, rejection, and cancellation", async () => {
+    const cwd = makeTempDir("wai-explain-progress-");
+    const execute = await getToolExecutor("wai_explain");
+    const statuses: Array<string | undefined> = [];
+    const ctx = progressCtx(cwd, statuses);
+
+    let releaseSuccess: (() => void) | undefined;
+    const successReady = new Promise<void>((resolve) => {
+      setWaiExplainExecutorForTests(async (_cwd, _params, _signal, progress) => {
+        progress(1, 2, "Explaining");
+        resolve();
+        await new Promise<void>((release) => {
+          releaseSuccess = release;
+        });
+        return {
+          result: { summary: "ok", details: "ok", relatedFiles: [] },
+          cost: { estimatedInputTokens: 0, estimatedOutputTokens: 0, estimatedCostUsd: 0, sessionCostUsd: 0 },
+          model: { provider: "test", id: "test", backend: "sdk" },
+        };
+      });
+    });
+    const successful = execute("success", { target: "test" }, undefined, undefined, ctx);
+    await successReady;
+    assert.ok(statuses.at(-1)?.includes("Explaining"), "success must begin with a non-terminal status");
+    releaseSuccess!();
+    await successful;
+    assert.equal(statuses.at(-1), undefined, "success must dispose the reporter");
+
+    let rejectExplanation: ((reason?: unknown) => void) | undefined;
+    const failureReady = new Promise<void>((resolve) => {
+      setWaiExplainExecutorForTests(async (_cwd, _params, _signal, progress) => {
+        progress(1, 2, "Failing");
+        resolve();
+        await new Promise<never>((_resolve, reject) => {
+          rejectExplanation = reject;
+        });
+        throw new Error("unreachable");
+      });
+    });
+    const failed = execute("failure", { target: "test" }, undefined, undefined, ctx);
+    await failureReady;
+    assert.ok(statuses.at(-1)?.includes("Failing"), "rejection must begin with a non-terminal status");
+    rejectExplanation!(new Error("explain failed"));
+    await assert.rejects(() => failed, /explain failed/);
+    assert.equal(statuses.at(-1), undefined, "rejection must dispose the reporter");
+
+    const controller = new AbortController();
+    let signalCancellationReady: (() => void) | undefined;
+    const cancellationReady = new Promise<void>((resolve) => {
+      signalCancellationReady = resolve;
+    });
+    setWaiExplainExecutorForTests(async (_cwd, _params, signal, progress) => {
+      progress(1, 2, "Waiting");
+      await new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+        signalCancellationReady!();
+      });
+      throw new Error("unreachable");
+    });
+    const cancelled = execute("cancel", { target: "test" }, controller.signal, undefined, ctx);
+    await cancellationReady;
+    assert.ok(statuses.at(-1)?.includes("Waiting"), "cancellation must begin with a non-terminal status");
+    controller.abort();
+    await assert.rejects(() => cancelled, /cancelled/);
+    assert.equal(statuses.at(-1), undefined, "cancellation must dispose the reporter");
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("wai_explain cleanup leaves an overlapping reporter active", async () => {
+    const cwd = makeTempDir("wai-explain-overlap-");
+    const execute = await getToolExecutor("wai_explain");
+    const statuses: Array<string | undefined> = [];
+    const ctx = progressCtx(cwd, statuses);
+    let releaseSlow: (() => void) | undefined;
+    const slow = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    let signalSlowStarted: (() => void) | undefined;
+    const slowStarted = new Promise<void>((resolve) => {
+      signalSlowStarted = resolve;
+    });
+
+    setWaiExplainExecutorForTests(async (_cwd, params, _signal, progress) => {
+      if (params.target === "slow") {
+        progress(1, 2, "Slow reporter");
+        signalSlowStarted!();
+        await slow;
+        return {
+          result: { summary: "ok", details: "ok", relatedFiles: [] },
+          cost: { estimatedInputTokens: 0, estimatedOutputTokens: 0, estimatedCostUsd: 0, sessionCostUsd: 0 },
+          model: { provider: "test", id: "test", backend: "sdk" },
+        };
+      }
+      progress(1, 2, "Failing reporter");
+      throw new Error("overlap failed");
+    });
+
+    const slowCall = execute("slow", { target: "slow" }, undefined, undefined, ctx);
+    await slowStarted;
+    assert.ok(statuses.at(-1)?.includes("Slow reporter"), "the survivor must be active before the overlap");
+    await assert.rejects(() => execute("fail", { target: "fail" }, undefined, undefined, ctx), /overlap failed/);
+    assert.ok(statuses.at(-1)?.includes("Slow reporter"), "disposing one call must restore the surviving reporter");
+    releaseSlow!();
+    await slowCall;
+    assert.equal(statuses.at(-1), undefined, "the surviving reporter cleans up when its own call finishes");
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("deep wai_learn rejection and cancellation dispose an active reporter", async () => {
+    const cwd = makeTempDir("wai-learn-progress-");
+    recordLearnedFact(cwd, "First fact.");
+    recordLearnedFact(cwd, "Second fact.");
+    const execute = await getToolExecutor("wai_learn");
+    const statuses: Array<string | undefined> = [];
+    const ctx = progressCtx(cwd, statuses);
+
+    let rejectDeepVerification: ((reason?: unknown) => void) | undefined;
+    const deepVerificationStarted = new Promise<void>((resolve) => {
+      setWaiLearnDeepCallerForTests(async () => {
+        resolve();
+        await new Promise<never>((_resolve, reject) => {
+          rejectDeepVerification = reject;
+        });
+        throw new Error("unreachable");
+      });
+    });
+    const rejected = execute("learn-failure", { verify: true, deep: true }, undefined, undefined, ctx);
+    await deepVerificationStarted;
+    assert.ok(statuses.at(-1)?.includes("Verifying fact 1/2"), "rejection must begin with a non-terminal status");
+    rejectDeepVerification!(new Error("deep verification failed"));
+    await assert.rejects(() => rejected, /deep verification failed/);
+    assert.equal(statuses.at(-1), undefined, "deep verification rejection must dispose its reporter");
+
+    const controller = new AbortController();
+    let signalCancellationReady: (() => void) | undefined;
+    const cancellationReady = new Promise<void>((resolve) => {
+      signalCancellationReady = resolve;
+    });
+    setWaiLearnDeepCallerForTests(async () => {
+      await new Promise<never>((_resolve, reject) => {
+        controller.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+        signalCancellationReady!();
+      });
+      throw new Error("unreachable");
+    });
+
+    const cancelled = execute("learn", { verify: true, deep: true }, controller.signal, undefined, ctx);
+    await cancellationReady;
+    assert.ok(statuses.at(-1)?.includes("Verifying fact 1/2"), "cancellation must begin with a non-terminal status");
+    controller.abort();
+    await assert.rejects(() => cancelled, /cancelled/);
+    assert.equal(statuses.at(-1), undefined, "deep verification cancellation must dispose its reporter");
+    rmSync(cwd, { recursive: true, force: true });
   });
 
   it("wai_learn lists stale facts via stale:true", async () => {

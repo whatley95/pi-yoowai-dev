@@ -26,7 +26,7 @@ import {
   shouldSendSteer,
   type LoopDetectionState,
 } from "./loop-detector.js";
-import { createProgressReporter, clearWaiStatus } from "./progress.js";
+import { cleanupProgressReporter, createProgressReporter, clearWaiStatus } from "./progress.js";
 import { setSessionId, clearSessionId, pruneSessionDirs } from "./session-scope.js";
 import { validateWaiToolParams } from "./wai-tool-params.js";
 import {
@@ -140,6 +140,13 @@ async function runWaiScaffoldTool(
 let learnDeepCallerOverride: DeepVerifyModelCaller | undefined;
 export function setWaiLearnDeepCallerForTests(caller: DeepVerifyModelCaller | undefined): void {
   learnDeepCallerOverride = caller;
+}
+
+/** Test seam: keeps reporter cleanup regressions deterministic without making
+ * the registered wai_explain tool depend on a live model provider. */
+let waiExplainExecutorOverride: typeof executeWaiExplain | undefined;
+export function setWaiExplainExecutorForTests(executor: typeof executeWaiExplain | undefined): void {
+  waiExplainExecutorOverride = executor;
 }
 
 /** Attach the current session's ModelRegistry to the SDK backend so calls can
@@ -852,20 +859,30 @@ export default async function (pi: ExtensionAPI) {
     }
 
     const progress = createProgressReporter("explain", ctx, onUpdate);
-    const result = await executeWaiExplain(ctx.cwd, validation.params, signal, progress, ctx.sessionManager);
-    if ("error" in result) {
-      return {
-        content: [{ type: "text", text: `wai_explain error: ${result.error}` }],
-        details: { error: result.error },
-        isError: true,
-      };
-    }
+    try {
+      const result = await (waiExplainExecutorOverride ?? executeWaiExplain)(
+        ctx.cwd,
+        validation.params,
+        signal,
+        progress,
+        ctx.sessionManager,
+      );
+      if ("error" in result) {
+        return {
+          content: [{ type: "text", text: `wai_explain error: ${result.error}` }],
+          details: { error: result.error },
+          isError: true,
+        };
+      }
 
-    return {
-      content: [{ type: "text", text: result.result.details }],
-      details: { action: "explain", explain: result.result, cost: result.cost, model: result.model },
-      isError: false,
-    };
+      return {
+        content: [{ type: "text", text: result.result.details }],
+        details: { action: "explain", explain: result.result, cost: result.cost, model: result.model },
+        isError: false,
+      };
+    } finally {
+      cleanupProgressReporter(progress);
+    }
   }
 
   pi.registerTool({
@@ -925,20 +942,24 @@ export default async function (pi: ExtensionAPI) {
     }
 
     const progress = createProgressReporter("vision", ctx, onUpdate);
-    const result = await executeWaiVision(ctx.cwd, validation.params, signal, progress, ctx.sessionManager);
-    if ("error" in result) {
-      return {
-        content: [{ type: "text", text: `wai_vision error: ${result.error}` }],
-        details: { error: result.error },
-        isError: true,
-      };
-    }
+    try {
+      const result = await executeWaiVision(ctx.cwd, validation.params, signal, progress, ctx.sessionManager);
+      if ("error" in result) {
+        return {
+          content: [{ type: "text", text: `wai_vision error: ${result.error}` }],
+          details: { error: result.error },
+          isError: true,
+        };
+      }
 
-    return {
-      content: [{ type: "text", text: result.result.details }],
-      details: { action: "vision", vision: result.result, cost: result.cost, model: result.model },
-      isError: false,
-    };
+      return {
+        content: [{ type: "text", text: result.result.details }],
+        details: { action: "vision", vision: result.result, cost: result.cost, model: result.model },
+        isError: false,
+      };
+    } finally {
+      cleanupProgressReporter(progress);
+    }
   }
 
   pi.registerTool({
@@ -1027,26 +1048,30 @@ export default async function (pi: ExtensionAPI) {
 
     if (r.verify === true && r.deep === true) {
       const progress = createProgressReporter("explain", ctx, onUpdate);
-      const learnConfig = loadYoowaiConfig(ctx.cwd);
-      const learnModelConfig = resolveTaskModel(learnConfig, "explain");
-      const learnModelLabel = secondaryModelLabel(learnModelConfig);
-      const { results, cost } = await verifyLearnedFactsDeep(
-        ctx.cwd,
-        query,
-        signal,
-        (current, total) => progress(current, total, `Verifying fact ${current}/${total} with ${learnModelLabel}…`),
-        ctx.sessionManager,
-        learnDeepCallerOverride,
-      );
-      // Renew only entries actually checked AND all-clear (model-confirmed);
-      // the deep pass is awaited before any renewal.
-      const renewed = applyVerifiedRenewals(ctx.cwd, results);
-      const text = `${formatVerificationReport(results)}\n\nRenewed ${renewed} fact(s) (fresh stamps).`;
-      return {
-        content: [{ type: "text", text }],
-        details: { action: "learn", verify: results, cost, renewed },
-        isError: false,
-      };
+      try {
+        const learnConfig = loadYoowaiConfig(ctx.cwd);
+        const learnModelConfig = resolveTaskModel(learnConfig, "explain");
+        const learnModelLabel = secondaryModelLabel(learnModelConfig);
+        const { results, cost } = await verifyLearnedFactsDeep(
+          ctx.cwd,
+          query,
+          signal,
+          (current, total) => progress(current, total, `Verifying fact ${current}/${total} with ${learnModelLabel}…`),
+          ctx.sessionManager,
+          learnDeepCallerOverride,
+        );
+        // Renew only entries actually checked AND all-clear (model-confirmed);
+        // the deep pass is awaited before any renewal.
+        const renewed = applyVerifiedRenewals(ctx.cwd, results);
+        const text = `${formatVerificationReport(results)}\n\nRenewed ${renewed} fact(s) (fresh stamps).`;
+        return {
+          content: [{ type: "text", text }],
+          details: { action: "learn", verify: results, cost, renewed },
+          isError: false,
+        };
+      } finally {
+        cleanupProgressReporter(progress);
+      }
     }
 
     if (r.verify === true) {

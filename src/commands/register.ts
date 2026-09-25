@@ -11,7 +11,7 @@ import {
   parseSecurityCommandArgs,
   parseLearnCommandArgs,
 } from "./arg-parsers.js";
-import { createProgressReporter, clearWaiStatus } from "../progress.js";
+import { cleanupProgressReporter, createProgressReporter, clearWaiStatus } from "../progress.js";
 import { callSecondaryModel, clearPiSessionId } from "../secondary-model.js";
 import { getPiAiCompat } from "../backends/sdk-backend.js";
 import { formatTokenCount, secondaryModelLabel } from "../actions/shared.js";
@@ -1446,8 +1446,13 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
     const signal = undefined;
     const progress = createProgressReporter("explain", ctx);
-    const result = await executeWaiExplain(ctx.cwd, { target, files }, signal, progress, ctx.sessionManager);
-    clearWaiStatus(ctx);
+    const result = await (async () => {
+      try {
+        return await executeWaiExplain(ctx.cwd, { target, files }, signal, progress, ctx.sessionManager);
+      } finally {
+        cleanupProgressReporter(progress);
+      }
+    })();
     if ("error" in result) {
       ctx.ui.notify(`wai-explain error: ${result.error}`, "error");
       return;
@@ -1476,8 +1481,13 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
     const signal = undefined;
     const progress = createProgressReporter("vision", ctx);
-    const result = await executeWaiVision(ctx.cwd, { path, question }, signal, progress, ctx.sessionManager);
-    clearWaiStatus(ctx);
+    const result = await (async () => {
+      try {
+        return await executeWaiVision(ctx.cwd, { path, question }, signal, progress, ctx.sessionManager);
+      } finally {
+        cleanupProgressReporter(progress);
+      }
+    })();
     if ("error" in result) {
       ctx.ui.notify(`wai-vision error: ${result.error}`, "error");
       return;
@@ -1551,14 +1561,20 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         const learnConfig = loadYoowaiConfig(ctx.cwd);
         const learnModelConfig = resolveTaskModel(learnConfig, "explain");
         const learnModelLabel = secondaryModelLabel(learnModelConfig);
-        const { results, cost } = await verifyLearnedFactsDeep(
-          ctx.cwd,
-          query,
-          signal,
-          (current, total) => progress(current, total, `Verifying fact ${current}/${total} with ${learnModelLabel}…`),
-          ctx.sessionManager,
-        );
-        clearWaiStatus(ctx);
+        const { results, cost } = await (async () => {
+          try {
+            return await verifyLearnedFactsDeep(
+              ctx.cwd,
+              query,
+              signal,
+              (current, total) =>
+                progress(current, total, `Verifying fact ${current}/${total} with ${learnModelLabel}…`),
+              ctx.sessionManager,
+            );
+          } finally {
+            cleanupProgressReporter(progress);
+          }
+        })();
         // Renewal happens only AFTER the deep pass resolves (awaited above)
         // and only for model-confirmed all-clear entries.
         const renewed = applyVerifiedRenewals(ctx.cwd, results);

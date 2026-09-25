@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
-import { getDiff, getVcsInfo } from "../diff-grabber.js";
+import { DEFAULT_MAX_DIFF_CHARS, getDiff, getVcsInfo } from "../diff-grabber.js";
 import { buildCodemap } from "../codemap.js";
 import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { capActionInstructions } from "../instructions.js";
@@ -99,6 +99,7 @@ export async function executeWaiJudge(
   // silently as a fragment. A per-file cap stays flagged as truncated.
   let diff = rawDiff;
   let diffTruncated = false;
+  let truncatedFiles: Array<{ file: string; totalChars: number }> = [];
   let omittedRefetches: string[] = [];
   if (truncated) {
     const rebuilt = rebuiltDiff(
@@ -108,6 +109,7 @@ export async function executeWaiJudge(
     );
     diff = rebuilt.diff;
     diffTruncated = rebuilt.perFileTruncated;
+    truncatedFiles = rebuilt.truncatedFiles;
     omittedRefetches = rebuilt.omitted;
   }
   if (omittedRefetches.length > 0) {
@@ -125,9 +127,15 @@ export async function executeWaiJudge(
     // splitting, so it cannot judge the file completely — fail closed with
     // guidance instead of judging a fragment (same contract as test/security;
     // judge takes no file scope, so the guidance is raise-the-cap-only).
+    const cap = config.reviewMaxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
+    const files = truncatedFiles
+      .map(({ file, totalChars }) => `${file} (${totalChars.toLocaleString()} chars)`)
+      .join(", ");
     return {
       action: "judge",
-      error: `A changed file's diff exceeds pi-yoowai.reviewMaxDiffChars, so it cannot be judged completely. Raise the cap or split the work into smaller scopes.`,
+      error:
+        `Cannot judge completely: ${files || "a changed file"} exceeds pi-yoowai.reviewMaxDiffChars (${cap.toLocaleString()} chars). ` +
+        "This guard prevents a partial verdict. Run a passing wai.review after smaller coherent edit batches, or raise the cap only when the configured judge model has enough context for the larger complete diff.",
       model: modelProfile,
     };
   }
