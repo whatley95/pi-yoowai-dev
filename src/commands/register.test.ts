@@ -15,6 +15,7 @@ import {
   buildModelConfigEntry,
   buildReviewLevelItems,
   isScopeConfigured,
+  buildModelScopeOptions,
   resetModelSelection,
   parseLanguageCommandArgs,
   applyLanguageSetting,
@@ -30,10 +31,12 @@ import { getSessionCost } from "../cost-tracker.js";
 import { setSearchFnForTests, resetSearchFnForTests } from "../doc-fetcher.js";
 import type { SearchResults } from "duck-duck-scrape";
 import type { RecentModel } from "../model-history.js";
+import type { YoowaiConfig } from "../types.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
 
 const canonicalLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -636,11 +639,195 @@ describe("isScopeConfigured", () => {
   });
 
   it("marks a task scope current only when that task override is set (independent of base)", () => {
-    assert.strictEqual(isScopeConfigured("Use for review only", taskConfigured), true);
-    assert.strictEqual(isScopeConfigured("Use for suggest only", taskConfigured), false);
+    assert.strictEqual(isScopeConfigured("review", taskConfigured), true);
+    assert.strictEqual(isScopeConfigured("suggest", taskConfigured), false);
     // Base configured but no task override: task scope is NOT current.
-    assert.strictEqual(isScopeConfigured("Use for review only", baseConfigured), false);
+    assert.strictEqual(isScopeConfigured("review", baseConfigured), false);
   });
+});
+
+describe("model role display", () => {
+  it("shows advisor and review fallbacks without marking inherited models as own overrides", () => {
+    const config: YoowaiConfig = {
+      secondary: { provider: "openai", id: "base-model" },
+      reviewLevel: "high",
+      taskModels: {
+        suggest: { id: "advice-model", thinking: "low" },
+        review: { id: "general-review" },
+        reviewHigh: { id: "deep-review" },
+        test: { thinking: "off" },
+      },
+    };
+    const scopes = buildModelScopeOptions(config);
+    const row = (task: string) => scopes.find((scope) => scope.task === task)!.text;
+    assert.match(row("advisor"), /openai:advice-model.*low.*via suggest/);
+    assert.ok(!row("advisor").includes("✓ configured"));
+    assert.match(
+      row("review"),
+      /openai:deep-review.*via reviewHigh.*active depth: high.*fallback setting: openai:general-review/,
+    );
+    assert.match(row("reviewMin"), /openai:general-review.*via review/);
+    assert.ok(!row("reviewMin").includes("✓ configured"));
+    assert.ok(row("reviewHigh").includes("✓ configured"));
+    assert.ok(row("test").includes("✓ configured"), "thinking-only overrides must be visible and resettable");
+    assert.match(row("plan"), /also plan updates/);
+    assert.match(row("explain"), /also deep fact verification/);
+    assert.match(row("done"), /when enabled/);
+    assert.ok(scopes.every((scope) => !scope.text.includes(" only")));
+  });
+});
+
+describe("effective model requests in commands", () => {
+  const originalAgentDir = getAgentDir();
+  afterEach(() => setAgentDirForTests(() => originalAgentDir));
+
+  for (const task of ["reviewMin", "REVIEWMED", "reviewhigh", "advisor", "review", ""]) {
+    it(`/wai-test ${task} calls the effective model and endpoint`, async () => {
+      const agentDir = mkdtempSync(join(tmpdir(), "wai-routing-agent-"));
+      const cwd = mkdtempSync(join(tmpdir(), "wai-routing-cwd-"));
+      const bodies: Array<{ model: string }> = [];
+      const server = createServer((req, res) => {
+        let body = "";
+        req.on("data", (chunk: Buffer) => (body += chunk.toString()));
+        req.on("end", () => {
+          bodies.push(JSON.parse(body));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ choices: [{ message: { content: "wai connection OK" } }] }));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        setAgentDirForTests(() => agentDir);
+        const address = server.address();
+        assert.ok(address && typeof address !== "string");
+        const baseUrl = `http://127.0.0.1:${address.port}`;
+        writeFileSync(
+          join(agentDir, "settings.json"),
+          JSON.stringify({
+            "pi-yoowai": {
+              secondary: {
+                provider: "openai",
+                id: "base-model",
+                backend: "http",
+                baseUrl: task ? "http://127.0.0.1:9" : baseUrl,
+                apiKey: "test-key",
+                thinking: "off",
+              },
+              reviewLevel: "high",
+              taskModels: {
+                review: { id: "review-fallback", baseUrl },
+                reviewMed: { id: "medium-review", baseUrl },
+                reviewHigh: { id: "deep-review", baseUrl },
+                suggest: { id: "suggest-fallback", baseUrl },
+              },
+            },
+          }),
+        );
+        const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+        registerWaiCommands(
+          {
+            registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+              commands.set(name, def),
+          } as unknown as ExtensionAPI,
+          new Map(),
+        );
+        const notifications: string[] = [];
+        const ctx = {
+          cwd,
+          ui: { notify: (message: string) => notifications.push(message), setStatus: () => {} },
+        } as unknown as ExtensionContext;
+        await commands.get("wai-test")!.handler(task, ctx);
+        const expected =
+          task === "reviewMin"
+            ? "review-fallback"
+            : task === "REVIEWMED"
+              ? "medium-review"
+              : task === "advisor"
+                ? "suggest-fallback"
+                : "deep-review";
+        assert.deepStrictEqual(
+          bodies.map((body) => body.model),
+          task ? [expected] : ["base-model", "deep-review", "review-fallback", "medium-review", "suggest-fallback"],
+        );
+        assert.ok(
+          notifications.some((message) => message.includes("wai-test OK")),
+          notifications.join("\n"),
+        );
+      } finally {
+        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+        rmSync(agentDir, { recursive: true, force: true });
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const task of ["advisor", "reviewMin", "review"]) {
+    it(`/wai-model preselects the effective ${task} model`, async () => {
+      const agentDir = mkdtempSync(join(tmpdir(), "wai-picker-routing-"));
+      const cwd = mkdtempSync(join(tmpdir(), "wai-picker-cwd-"));
+      try {
+        setAgentDirForTests(() => agentDir);
+        const settingsPath = join(agentDir, "settings.json");
+        const settings = JSON.stringify({
+          "pi-yoowai": {
+            secondary: { provider: "base-provider", id: "base-model", thinking: "off" },
+            reviewLevel: "high",
+            taskModels: {
+              suggest: { provider: "selected-provider", id: "selected-model" },
+              review: { provider: "selected-provider", id: "selected-model" },
+              reviewHigh: { provider: "selected-provider", id: "selected-model" },
+            },
+          },
+        });
+        writeFileSync(settingsPath, settings);
+        const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+        registerWaiCommands(
+          {
+            registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+              commands.set(name, def),
+          } as unknown as ExtensionAPI,
+          new Map(),
+        );
+        const models = [
+          { provider: "base-provider", id: "base-model" },
+          { provider: "selected-provider", id: "selected-model", reasoning: false },
+        ];
+        let providers: string[] = [];
+        let modelItems: string[] = [];
+        const ctx = {
+          cwd,
+          modelRegistry: {
+            getAll: () => models,
+            getAvailable: () => models,
+            getProviderAuthStatus: () => ({ configured: true }),
+            find: () => models[1],
+          },
+          ui: {
+            notify: () => {},
+            select: async (title: string, items: string[]) => {
+              if (title.startsWith("Which wai model role")) return items.find((item) => item.startsWith(`${task} (`));
+              if (title.startsWith("Pick provider")) {
+                providers = items;
+                return items.find((item) => item.includes("✓ current"));
+              }
+              if (title.startsWith("Pick model")) {
+                modelItems = items;
+                return undefined;
+              }
+              return undefined;
+            },
+          },
+        } as unknown as ExtensionContext;
+        await commands.get("wai-model")!.handler("", ctx);
+        assert.ok(providers.some((item) => item.startsWith("selected-provider") && item.includes("✓ current")));
+        assert.ok(modelItems.includes("selected-model ✓ current"));
+        assert.equal(readFileSync(settingsPath, "utf-8"), settings, "cancelling must preserve settings");
+      } finally {
+        rmSync(agentDir, { recursive: true, force: true });
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 describe("buildModelConfigEntry", () => {
@@ -1066,6 +1253,46 @@ describe("resetModelSelection", () => {
     assert.equal(notified!.type, "warning");
   });
 
+  it("interactive reset clears a partial override by role and reports the actual fallback", async () => {
+    const agentDir = makeTempAgentDir();
+    const cwd = makeTempDir("wai-reset-partial-cwd-");
+    setAgentDirForTests(() => agentDir);
+    writeSettings(agentDir, {
+      secondary: { provider: "openai", id: "base-model" },
+      taskModels: { advisor: { thinking: "low" }, suggest: { id: "suggest-model" } },
+    });
+    const messages: string[] = [];
+    const ctx = {
+      ...fakeContext(),
+      cwd,
+      ui: {
+        ...fakeContext().ui,
+        select: async (_title: string, options: string[]) => {
+          const row = options.find((item) => item.startsWith("advisor ("));
+          assert.ok(row?.includes("✓ configured"));
+          return row;
+        },
+        notify: (message: string) => messages.push(message),
+      },
+    } as ExtensionContext;
+    await resetModelSelection(ctx, undefined, async () => {});
+    const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"))["pi-yoowai"];
+    assert.deepStrictEqual(settings.taskModels, { suggest: { id: "suggest-model" } });
+    assert.ok(messages.some((message) => message.includes("openai:suggest-model") && message.includes("via suggest")));
+  });
+
+  it("accepts depth reset targets case-insensitively", async () => {
+    const agentDir = makeTempAgentDir();
+    const cwd = makeTempDir("wai-reset-depth-cwd-");
+    setAgentDirForTests(() => agentDir);
+    writeSettings(agentDir, {
+      secondary: { provider: "openai", id: "base-model" },
+      taskModels: { reviewHigh: { id: "depth-model" } },
+    });
+    await resetModelSelection(resetCtx(cwd), "REVIEWHIGH", async () => {});
+    assert.equal(loadYoowaiConfig(cwd).taskModels?.reviewHigh, undefined);
+  });
+
   it("interactive picker marks only scopes that are actually configured", async () => {
     const agentDir = makeTempAgentDir();
     const cwd = makeTempDir("wai-reset-marker-cwd-");
@@ -1090,12 +1317,12 @@ describe("resetModelSelection", () => {
 
     await resetModelSelection(ctx, undefined, async () => {});
 
-    assert.ok(items[0]?.startsWith("Base secondary model — ✓ current"), `base row: ${items[0]}`);
-    const reviewRow = items.find((i) => i.startsWith("Use for review only"));
-    const judgeRow = items.find((i) => i.startsWith("Use for judge only"));
-    assert.ok(reviewRow?.includes("✓ current"), `review row: ${reviewRow}`);
-    assert.ok(judgeRow?.includes("not configured"), `judge row: ${judgeRow}`);
-    assert.ok(!judgeRow?.includes("✓ current"), `judge row must not be marked current: ${judgeRow}`);
+    assert.ok(items[0]?.includes("✓ configured"), `base row: ${items[0]}`);
+    const reviewRow = items.find((i) => i.startsWith("review ("));
+    const judgeRow = items.find((i) => i.startsWith("judge —"));
+    assert.ok(reviewRow?.includes("✓ configured"), `review row: ${reviewRow}`);
+    assert.ok(judgeRow?.includes("via secondary"), `judge row: ${judgeRow}`);
+    assert.ok(!judgeRow?.includes("✓ configured"), `judge row must not be marked configured: ${judgeRow}`);
   });
 });
 
@@ -1158,7 +1385,7 @@ describe("live thinking levels in model and council commands", () => {
           select: async (title: string, items: string[]) => {
             selections.push({ title, items });
             if (title.startsWith("Judge council")) return councilPicks++ === 0 ? "Add member…" : "Done";
-            if (title.startsWith("Which wai tool")) return items[0];
+            if (title.startsWith("Which wai model role")) return items[0];
             if (title.startsWith("Pick model")) return items[0];
             if (title.startsWith("Pick thinking")) return cancelThinking ? undefined : "max";
             return undefined;

@@ -61,6 +61,7 @@ export async function verifyResult<T>(
     cwd,
     sessionManager: options.sessionManager,
     task: options.task,
+    secondaryOverride: modelConfig,
     structuredOutput: true,
   });
 

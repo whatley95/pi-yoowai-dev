@@ -40,6 +40,7 @@ import { handleWaiSearchCommand } from "../wai-search.js";
 import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
 import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
 import { resolveReviewLevel } from "../review-level.js";
+import { modelTaskLabel, resolveModelTask } from "../model-task-routing.js";
 import type { YoowaiConfig } from "../types.js";
 import {
   getState,
@@ -272,16 +273,36 @@ export function buildReviewLevelItems(currentLevel: ReviewLevel | undefined, sug
     .map((x) => x.text);
 }
 
-/** Whether a given /wai-model scope option has its own configured model entry.
- *  Used to mark scope options with "✓ current" independently, since the base
- *  secondary model and per-tool task models can each be configured at once. */
+/** Whether a model role has its own override, independently of its fallback. */
 export function isScopeConfigured(scope: string, config: YoowaiConfig): boolean {
   if (scope === "Base secondary model") {
     return !!(config.secondary.provider && config.secondary.id);
   }
-  const action = scope.replace(/^Use for /, "").replace(/ only$/, "") as WaiModelTask;
+  const action = scope as WaiModelTask;
   const override = config.taskModels?.[action];
-  return !!(override?.provider && override?.id);
+  return !!override && Object.values(override).some((value) => value !== undefined);
+}
+
+export function buildModelScopeOptions(config: YoowaiConfig): Array<{ task?: WaiModelTask; text: string }> {
+  const display = (model: SecondaryModelConfig): string =>
+    model.provider && model.id ? modelStatusLine(model) : "not configured";
+  return [
+    {
+      text: `Base secondary model — ${display(config.secondary)}${isScopeConfigured("Base secondary model", config) ? " ✓ configured" : ""}`,
+    },
+    ...WAI_MODEL_TASKS.map((task) => {
+      const { model, source } = resolveModelTask(config, task);
+      const configured = isScopeConfigured(task, config);
+      const fallback =
+        task === "review"
+          ? `; active depth: ${resolveReviewLevel(config)}; fallback setting: ${display(resolveTaskModel(config, "review"))}`
+          : "";
+      return {
+        task,
+        text: `${modelTaskLabel(task)} — ${display(model)} (via ${source})${fallback}${configured ? " ✓ configured" : ""}`,
+      };
+    }),
+  ];
 }
 
 export interface ModelRef {
@@ -586,10 +607,10 @@ export async function resetModelSelection(
 
   let target: "base" | WaiModelTask | undefined;
   if (directTarget) {
-    if (directTarget === "base") {
+    if (directTarget.toLowerCase() === "base") {
       target = "base";
-    } else if (WAI_MODEL_TASKS.includes(directTarget as WaiModelTask)) {
-      target = directTarget as WaiModelTask;
+    } else if (WAI_MODEL_TASKS.some((task) => task.toLowerCase() === directTarget.toLowerCase())) {
+      target = WAI_MODEL_TASKS.find((task) => task.toLowerCase() === directTarget.toLowerCase())!;
     } else {
       ctx.ui.notify(
         `Invalid reset target "${directTarget}". Use "base" or one of: ${WAI_MODEL_TASKS.join(", ")}.`,
@@ -599,29 +620,28 @@ export async function resetModelSelection(
     }
   } else {
     const currentConfig = loadYoowaiConfig(ctx.cwd);
-    const baseConfigured = Boolean(currentConfig.secondary.provider && currentConfig.secondary.id);
-    const items = [
-      `Base secondary model — ${baseConfigured ? `✓ current (${modelStatusLine(currentConfig.secondary)})` : "not configured"}`,
-      ...WAI_MODEL_TASKS.map((action) => {
-        // Mark from the raw override, not the merged resolution — otherwise
-        // every task shows ✓ current with the base model even when there is
-        // no override to clear.
-        const override = currentConfig.taskModels?.[action];
-        if (!override?.provider && !override?.id) return `Use for ${action} only — not configured`;
-        return `Use for ${action} only — ✓ current (${modelStatusLine(resolveTaskModel(currentConfig, action))})`;
-      }),
-    ];
-    const picked = await ctx.ui.select("Reset which model selection?", items);
+    const scopes = buildModelScopeOptions(currentConfig);
+    const picked = await ctx.ui.select(
+      "Reset which model selection?",
+      scopes.map((scope) => scope.text),
+    );
     if (!picked) return;
-    const scope = picked.split(" — ")[0];
-    target =
-      scope === "Base secondary model"
-        ? "base"
-        : (scope.replace(/^Use for /, "").replace(/ only$/, "") as WaiModelTask);
+    const scope = scopes.find((scope) => scope.text === picked);
+    if (!scope) return;
+    target = scope.task ?? "base";
   }
 
   if (target === "base") {
     delete waiSettings.secondary;
+  } else {
+    const taskModels = (waiSettings.taskModels as Record<string, unknown>) || {};
+    delete taskModels[target];
+    if (Object.keys(taskModels).length === 0) delete waiSettings.taskModels;
+    else waiSettings.taskModels = taskModels;
+  }
+
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+  if (target === "base") {
     // A project-level .pi/settings.json secondary would still win in the
     // merged config — say so instead of claiming wai is unconfigured.
     const remaining = loadYoowaiConfig(ctx.cwd).secondary;
@@ -634,14 +654,12 @@ export async function resetModelSelection(
       ctx.ui.notify("Base secondary model cleared. Run /wai-model to pick a new one.", "info");
     }
   } else {
-    const taskModels = (waiSettings.taskModels as Record<string, unknown>) || {};
-    delete taskModels[target];
-    if (Object.keys(taskModels).length === 0) delete waiSettings.taskModels;
-    else waiSettings.taskModels = taskModels;
-    ctx.ui.notify(`Task model override for ${target} cleared. It will use the base secondary model.`, "info");
+    const { model, source } = resolveModelTask(loadYoowaiConfig(ctx.cwd), target);
+    ctx.ui.notify(
+      `Global task model override for ${target} cleared. Effective model: ${modelStatusLine(model)} (via ${source}).`,
+      "info",
+    );
   }
-
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
   await refresh();
 }
 
@@ -1089,32 +1107,20 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
       const currentConfig = loadYoowaiConfig(ctx.cwd);
 
-      // 1. Pick which wai tool this model is for.
-      const scopeOptions = ["Base secondary model", ...WAI_MODEL_TASKS.map((a) => `Use for ${a} only`)];
-      const scopeModelText = (scope: string): string => {
-        const isBase = scope === "Base secondary model";
-        const action = isBase ? undefined : (scope.replace(/^Use for /, "").replace(/ only$/, "") as WaiModelTask);
-        const model = isBase ? currentConfig.secondary : resolveTaskModel(currentConfig, action!);
-        if (!model.provider || !model.id) return "not configured";
-        return `${model.provider}:${model.id}${model.thinking ? ` · ${model.thinking}` : ""}`;
-      };
-      // Each scope is marked "✓ current" based on its own config entry (base and
-      // per-tool task models coexist), rather than pinning the marker to Base.
-      const scopeItems = scopeOptions.map(
-        (s) => `${s} — ${scopeModelText(s)}${isScopeConfigured(s, currentConfig) ? " ✓ current" : ""}`,
+      // 1. Select a model role. Keep identities separate from human-readable labels.
+      const scopes = buildModelScopeOptions(currentConfig);
+      const scopePicked = await ctx.ui.select(
+        "Which wai model role should use this model?",
+        scopes.map((scope) => scope.text),
       );
-      const scopePicked = await ctx.ui.select("Which wai tool should use this model?", scopeItems);
       if (!scopePicked) return;
-      const scope = scopePicked.replace(/ ✓ current$/, "").split(" — ")[0];
-      const action =
-        scope === "Base secondary model"
-          ? undefined
-          : (scope.replace(/^Use for /, "").replace(/ only$/, "") as WaiModelTask);
-
-      const target = action ? currentConfig.taskModels?.[action] : currentConfig.secondary;
-      const effectiveProvider = target?.provider || currentConfig.secondary.provider;
-      const effectiveId = target?.id || currentConfig.secondary.id;
-      const effectiveThinking = target?.thinking ?? currentConfig.secondary.thinking ?? "xhigh";
+      const scope = scopes.find((scope) => scope.text === scopePicked);
+      if (!scope) return;
+      const action = scope.task;
+      const effective = action ? resolveModelTask(currentConfig, action).model : currentConfig.secondary;
+      const effectiveProvider = effective.provider;
+      const effectiveId = effective.id;
+      const effectiveThinking = effective.thinking ?? "xhigh";
 
       // 2. Pick provider/model, with recent-model shortcut and hierarchical grouping
       //    for providers with huge catalogs (e.g. OpenRouter).
@@ -1215,7 +1221,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       if (!settings["pi-yoowai"]) settings["pi-yoowai"] = {};
       const waiSettings = settings["pi-yoowai"] as Record<string, unknown>;
 
-      if (scope === "Base secondary model") {
+      if (!action) {
         // Merge into the existing secondary config instead of replacing it, so
         // provider-specific fields (baseUrl, style, backend, apiKey, cacheRetention,
         // transport, authHeader, authPrefix, contextWindow, maxOutputTokens) are
@@ -1845,27 +1851,36 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   const testHandler = async (args: string, ctx: ExtensionCommandContext) => {
     const config = loadYoowaiConfig(ctx.cwd);
     const requestedTask = args.trim().toLowerCase();
-    const task = WAI_MODEL_TASKS.find((action) => action === requestedTask);
+    const task = WAI_MODEL_TASKS.find((action) => action.toLowerCase() === requestedTask);
     if (requestedTask && !task) {
       ctx.ui.notify(`Unknown wai task "${requestedTask}". Use one of: ${WAI_MODEL_TASKS.join(", ")}.`, "warning");
       return;
     }
 
     const tests: { task?: WaiModelTask; model: SecondaryModelConfig; label: string }[] = [];
+    // Include endpoint, credentials, and thinking overrides in the identity.
+    // Keep this key internal; it may contain credentials.
+    const profileKey = (model: SecondaryModelConfig): string =>
+      JSON.stringify(
+        Object.fromEntries(
+          Object.entries(model)
+            .filter(([, value]) => value !== undefined)
+            .sort(([a], [b]) => a.localeCompare(b)),
+        ),
+      );
     if (task) {
-      const model = resolveTaskModel(config, task);
+      const { model } = resolveModelTask(config, task);
       tests.push({ task, model, label: secondaryModelLabel(model) });
     } else {
       if (config.secondary.provider && config.secondary.id) {
         tests.push({ model: config.secondary, label: secondaryModelLabel(config.secondary) });
       }
-      const defaultKey = `${config.secondary.provider}:${config.secondary.id}:${config.secondary.backend ?? "sdk"}:${config.secondary.baseUrl ?? ""}`;
+      const seen = new Set(tests.map(({ model }) => profileKey(model)));
       for (const action of WAI_MODEL_TASKS) {
-        const override = config.taskModels?.[action];
-        if (!override?.provider && !override?.id) continue;
-        const model = resolveTaskModel(config, action);
-        const key = `${model.provider}:${model.id}:${model.backend ?? "sdk"}:${model.baseUrl ?? ""}`;
-        if (key === defaultKey) continue;
+        const { model } = resolveModelTask(config, action);
+        const key = profileKey(model);
+        if (seen.has(key)) continue;
+        seen.add(key);
         tests.push({ task: action, model, label: secondaryModelLabel(model) });
       }
     }
@@ -1873,12 +1888,10 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     // Council members are judge-time models too — include them in a full run
     // and in a judge-scoped run, deduplicated against what's already listed.
     if (!task || task === "judge") {
-      const seen = new Set(
-        tests.map((t) => `${t.model.provider}:${t.model.id}:${t.model.backend ?? "sdk"}:${t.model.baseUrl ?? ""}`),
-      );
+      const seen = new Set(tests.map((t) => profileKey(t.model)));
       for (const member of resolveJudgeCouncilMembers(config)) {
         if (!member.provider || !member.id) continue;
-        const key = `${member.provider}:${member.id}:${member.backend ?? "sdk"}:${member.baseUrl ?? ""}`;
+        const key = profileKey(member);
         if (seen.has(key)) continue;
         seen.add(key);
         tests.push({ model: member, label: `${secondaryModelLabel(member)} (council)` });
@@ -2091,7 +2104,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-test", {
     description:
-      "Test connectivity to configured secondary models (includes judge council members). Optional: /wai-test <plan|review|suggest|recommend|judge|scan|explain>",
+      "Test model connectivity (includes judge council). Optional: /wai-test <task>, including reviewMin/Med/High, advisor, explain, and vision.",
     handler: testHandler,
   });
 

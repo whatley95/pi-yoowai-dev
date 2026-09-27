@@ -441,8 +441,9 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     verdict?: "pass" | "needs-work" | "blocked" | "inconclusive";
     failOnMarker?: string;
     stepComplete?: boolean;
-  }): Promise<{ url: string; bodies: string[]; peakActive: () => number }> {
+  }): Promise<{ url: string; bodies: string[]; authorizations: Array<string | undefined>; peakActive: () => number }> {
     const bodies: string[] = [];
+    const authorizations: Array<string | undefined> = [];
     const held: Array<() => void> = [];
     let active = 0;
     let peak = 0;
@@ -504,6 +505,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
         });
         req.on("end", () => {
           bodies.push(body);
+          authorizations.push(req.headers.authorization);
           active += 1;
           peak = Math.max(peak, active);
           if (failOnMarker && body.includes(failOnMarker)) {
@@ -533,6 +535,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     return {
       url: `http://127.0.0.1:${address.port}`,
       bodies,
+      authorizations,
       peakActive: () => peak,
     };
   }
@@ -540,6 +543,49 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
   }
+
+  it(
+    "keeps the depth-specific model and endpoint for both review and self-verification",
+    { skip: !hasGit },
+    async () => {
+      const cwd = makeRepoWithChange("hello\nselected model regression\n");
+      const base = await startStubServer();
+      const generic = await startStubServer();
+      const selected = await startStubServer();
+      writeSettings(cwd, {
+        reviewLevel: "high",
+        selfVerify: true,
+        secondary: {
+          provider: "openai",
+          id: "base-model",
+          thinking: "off",
+          contextWindow: 32000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: base.url,
+          apiKey: "test-key",
+        },
+        taskModels: {
+          review: { id: "generic-review", baseUrl: generic.url },
+          reviewHigh: { id: "deep-review", baseUrl: selected.url, apiKey: "deep-review-key" },
+        },
+      });
+      const result = await executeWaiReview(
+        cwd,
+        "routing regression",
+        { cwd } as ExtensionContext,
+        {},
+        undefined,
+        () => {},
+      );
+      assert.equal(result.review?.verdict, "pass", result.error ?? "expected passing review");
+      assert.equal(base.bodies.length, 0);
+      assert.equal(generic.bodies.length, 0);
+      assert.equal(selected.bodies.length, 2, "review and verification must both call the depth model");
+      for (const body of selected.bodies) assert.equal(JSON.parse(body).model, "deep-review");
+      assert.deepEqual(selected.authorizations, ["Bearer deep-review-key", "Bearer deep-review-key"]);
+    },
+  );
 
   it("min level refuses an over-budget diff with guidance instead of truncating", { skip: !hasGit }, async () => {
     // ~100KB diff → ~25k estimated tokens, far above the tiny model budget.

@@ -235,7 +235,7 @@ Starting points for `taskModels` and `judgeCouncil`, from a setup using three su
 | **scan**                | deepseek-v4-flash                 | gpt-5-mini        | mimo-v2.5       |
 | **suggest**             | kimi-k3                           | glm-5.2           | gpt-5-mini      |
 | **recommend**           | glm-5.2                           | kimi-k3           | qwen3.7-plus    |
-| **done**                | _(uses plan model — leave unset)_ | deepseek-v4-flash | gpt-5-mini      |
+| **done**                | _(uses base model — leave unset)_ | deepseek-v4-flash | gpt-5-mini      |
 | **explain**             | kimi-k3                           | deepseek-v4-flash | gpt-5-mini      |
 
 **Main agent rule:** the reviewer and judge must not share a model family with the main agent, or the "independent second opinion" becomes self-grading. Non-verdict lanes (test, suggest, explain) are diagnostics rather than judgments — sharing the writer's family there is fine and saves quota. Three combinations depending on what writes your code (only the verdict lanes change; plan and bulk lanes stay the same):
@@ -528,6 +528,10 @@ Image analysis (including scanned PDFs) requires the **sdk backend** and a model
 | `/wai-plan-update <new task description>`     | Regenerate the active plan; already-completed progress is preserved                                 |
 
 **`/wai-model` selection flow.** Recent model choices are shown first so you can re-select a model in one click. For providers with a huge catalog (e.g. OpenRouter), `/wai-model` opens a real-time searchable picker with fuzzy matching (the same matcher as Pi's own search — `dsr1` finds `deepseek-r1`): type to narrow the list as you type, use ↑↓ to navigate, and press Enter to select — no Enter-to-submit query needed. If you cancel the search or it matches nothing, it falls back to a family-grouped menu. In environments without interactive terminal input (e.g. RPC/print mode), it falls back to a text prompt + list. The final selection is saved to a recent-models list scoped to the project.
+
+The role picker shows the effective model and its source (`via secondary`, `via suggest`, `via review`, or a depth-specific override). A ✓ configured marker means that role has its own settings; inherited models are shown without that marker. The `review` row edits the general fallback and also shows the active depth and model, since `reviewMin`/`reviewMed`/`reviewHigh` take precedence. Self-verification uses the same resolved model, endpoint, and credentials as the original review.
+
+Some roles are shared or conditional: `plan` also handles plan updates, `suggest` is the advisor fallback, `explain` handles deep learned-fact verification, and `done` calls a model only for enabled completion verification. `wai_index`, `wai_scaffold`, and `wai_design_ref` do not call a model. `/wai-test <task>` tests the effective model for that role, including these fallback chains and the active review depth; task names are case-insensitive (for example, `reviewMin` or `reviewmin`).
 
 ### Utilities and diagnostics
 

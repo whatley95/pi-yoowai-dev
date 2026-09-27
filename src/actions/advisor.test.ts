@@ -40,8 +40,13 @@ describe("executeWaiAdvisor (stub-server end-to-end)", () => {
   });
 
   /** OpenAI-compatible stub returning a canned plain-text advice response. */
-  async function startStubServer(): Promise<{ url: string; bodies: string[] }> {
+  async function startStubServer(): Promise<{
+    url: string;
+    bodies: string[];
+    authorizations: Array<string | undefined>;
+  }> {
     const bodies: string[] = [];
+    const authorizations: Array<string | undefined> = [];
     const server = await new Promise<Server>((resolve) => {
       const s = createServer((req: IncomingMessage, res: ServerResponse) => {
         let body = "";
@@ -50,6 +55,7 @@ describe("executeWaiAdvisor (stub-server end-to-end)", () => {
         });
         req.on("end", () => {
           bodies.push(body);
+          authorizations.push(req.headers.authorization);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
@@ -70,13 +76,49 @@ describe("executeWaiAdvisor (stub-server end-to-end)", () => {
     servers.push(server);
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("stub server has no port");
-    return { url: `http://127.0.0.1:${address.port}`, bodies };
+    return { url: `http://127.0.0.1:${address.port}`, bodies, authorizations };
   }
 
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
     const piDir = join(cwd, ".pi");
     mkdirSync(piDir, { recursive: true });
     writeFileSync(join(piDir, "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
+  }
+
+  for (const ownAdvisor of [false, true]) {
+    it(`sends the request to the ${ownAdvisor ? "advisor override" : "suggest fallback"} model and endpoint`, async () => {
+      const cwd = mkdtempSync(join(tmpdir(), "advisor-routing-"));
+      tmpDirs.push(cwd);
+      const base = await startStubServer();
+      const suggest = await startStubServer();
+      const advisor = await startStubServer();
+      writeSettings(cwd, {
+        secondary: {
+          provider: "openai",
+          id: "base-model",
+          thinking: "off",
+          backend: "http",
+          baseUrl: base.url,
+          apiKey: "test-key",
+          contextWindow: 8000,
+          maxOutputTokens: 1024,
+        },
+        taskModels: {
+          suggest: { id: "suggest-model", baseUrl: suggest.url, apiKey: "suggest-key" },
+          ...(ownAdvisor ? { advisor: { id: "advisor-model", baseUrl: advisor.url, apiKey: "advisor-key" } } : {}),
+        },
+      });
+      const result = await executeWaiAdvisor(cwd, "Which cache type?", undefined, () => {});
+      assert.ok(result.advisor, result.error ?? "expected advisor response");
+      assert.equal(base.bodies.length, 0);
+      const selected = ownAdvisor ? advisor : suggest;
+      const unused = ownAdvisor ? suggest : advisor;
+      assert.equal(unused.bodies.length, 0);
+      assert.equal(selected.bodies.length, 1);
+      assert.equal(JSON.parse(selected.bodies[0]).model, ownAdvisor ? "advisor-model" : "suggest-model");
+      assert.deepEqual(selected.authorizations, [ownAdvisor ? "Bearer advisor-key" : "Bearer suggest-key"]);
+      assert.equal(result.model?.id, ownAdvisor ? "advisor-model" : "suggest-model");
+    });
   }
 
   it("returns plain-text advice in one call without a JSON contract", async () => {

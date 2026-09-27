@@ -62,6 +62,7 @@ export async function executeWaiAdvisor(
       cwd,
       sessionManager,
       task: "advisor",
+      secondaryOverride: modelConfig,
       onStreamProgress: createStreamProgressCallback(progress, 2, STAGES.advisor),
     });
     raw = result.content;
