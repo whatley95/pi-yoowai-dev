@@ -40,7 +40,7 @@ import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
 import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
 import { resolveReviewLevel } from "../review-level.js";
 import type { YoowaiConfig } from "../types.js";
-import { getState, getProgress, dropSessionState, resetEditsSinceReview, getEditTracker } from "../session-state.js";
+import { getState, getProgress, dropSessionState, applyReviewOutcome, getEditTracker } from "../session-state.js";
 import { buildPlanView } from "../plan-view.js";
 import { loadRecentModels, saveRecentModel, formatRecentModel, type RecentModel } from "../model-history.js";
 import { searchableSelect } from "./searchable-select.js";
@@ -700,9 +700,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         case "review": {
           const { description, options: reviewOptions } = reviewArgs!;
           result = await executeWaiReview(ctx.cwd, description, ctx, reviewOptions, signal, notifyProgress);
-          // A manual review counts as a review: keep the unreviewed-edits
-          // steer in sync, but only when the review actually ran.
-          if (!result.error) resetEditsSinceReview(ctx.cwd);
+          applyReviewOutcome(ctx.cwd, result, reviewOptions);
           break;
         }
         case "suggest":
@@ -800,8 +798,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     let result: WaiToolResult;
     try {
       result = await executeWaiReview(ctx.cwd, description, ctx, { ...reviewOptions, level }, signal, notifyProgress);
-      // A manual review counts as a review: keep the unreviewed-edits steer in sync.
-      if (!result.error) resetEditsSinceReview(ctx.cwd);
+      applyReviewOutcome(ctx.cwd, result, reviewOptions);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logEvent(ctx.cwd, "error", `wai-review-${level} command failed`, { error: message });
@@ -2185,9 +2182,8 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     try {
       const sections = await executeWaiAudit(ctx.cwd, args, ctx, signal, progress);
       const reviewSection = sections.find((s) => s.name === "review");
-      // A manual audit includes a review: keep the unreviewed-edits steer in
-      // sync, but only when the review actually ran.
-      if (reviewSection?.result && !reviewSection.result.error) resetEditsSinceReview(ctx.cwd);
+      if (reviewSection?.result)
+        applyReviewOutcome(ctx.cwd, reviewSection.result, parseReviewCommandArgs(args).options);
       const text = formatAuditReport(sections, Date.now() - start);
       await ctx.ui.select("wai audit", text.split("\n").filter(Boolean));
     } catch (err) {

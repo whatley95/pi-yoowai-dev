@@ -1,4 +1,4 @@
-import { recordCost } from "../cost-tracker.js";
+import { recordCost, inheritCostAccounting } from "../cost-tracker.js";
 import { loadYoowaiConfig } from "../config.js";
 import { logEvent } from "../logger.js";
 import { parseJsonResponse, getJsonParseError } from "../prompts.js";
@@ -49,13 +49,17 @@ export function continuationMeta(rounds: number | undefined, truncated: boolean)
 }
 
 export function mergeUsageCost(a: UsageCost, b: UsageCost): UsageCost {
-  return {
-    estimatedInputTokens: a.estimatedInputTokens + b.estimatedInputTokens,
-    estimatedOutputTokens: a.estimatedOutputTokens + b.estimatedOutputTokens,
-    estimatedCostUsd: a.estimatedCostUsd + b.estimatedCostUsd,
-    // Both sessionCostUsd values are cumulative totals; keep the latest.
-    sessionCostUsd: Math.max(a.sessionCostUsd, b.sessionCostUsd),
-  };
+  return inheritCostAccounting(
+    {
+      estimatedInputTokens: a.estimatedInputTokens + b.estimatedInputTokens,
+      estimatedOutputTokens: a.estimatedOutputTokens + b.estimatedOutputTokens,
+      estimatedCostUsd: a.estimatedCostUsd + b.estimatedCostUsd,
+      // Both sessionCostUsd values are cumulative totals; keep the latest.
+      sessionCostUsd: Math.max(a.sessionCostUsd, b.sessionCostUsd),
+    },
+    a,
+    b,
+  );
 }
 
 export function formatTokenCount(n: number): string {

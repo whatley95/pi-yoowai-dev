@@ -36,7 +36,7 @@ import { updateWaiStatus } from "./status.js";
 import { publishWaiResult } from "./publish.js";
 import { auditUnreviewedEdits } from "./audit.js";
 import { setWaiToolExecuting } from "./context-injector.js";
-import { flushSessionState, resetEditsSinceReview } from "../session-state.js";
+import { flushSessionState, applyReviewOutcome } from "../session-state.js";
 import { unregisterWaiProvider } from "./provider.js";
 
 const STEER_COOLDOWN_MS = 30_000;
@@ -109,7 +109,7 @@ export async function triggerAutoJudge(
       notify,
       ctx.sessionManager,
     );
-    markJudgeCompleted(ctx.cwd);
+    if (judgeResult.judge && !judgeResult.error) markJudgeCompleted(ctx.cwd);
     // Publish so the auto-judge verdict is audited and the footer/widget
     // reflect any tracker sync immediately, not after the next wai call.
     publishWaiResult(ctx, judgeResult);
@@ -177,7 +177,7 @@ export async function triggerAutoReview(
       ctx.ui.notify(`Auto-review failed: ${result.error}`, "error");
       return undefined;
     }
-    resetEditsSinceReview(ctx.cwd);
+    applyReviewOutcome(ctx.cwd, result);
     // Publish so the auto-review verdict is audited and the footer/widget
     // reflect the cleared edit counter immediately.
     publishWaiResult(ctx, result);

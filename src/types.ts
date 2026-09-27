@@ -301,6 +301,10 @@ export interface YoowaiSessionState {
   unreviewedEditsFlushed?: number;
   lastSteerAt?: number;
   lastReviewedCommit?: string;
+  /** Stable base for the entire active plan; incremental reviews never advance it. */
+  planBaseCommit?: string;
+  /** A whole-tree review failed or was incomplete; only a complete pass clears it. */
+  reviewBlocked?: boolean;
   /** Stable anchor for the next clean-tree review when the last review did
    *  NOT pass and no baseline existed: keeps the failed round inside the
    *  next diff's range (the dynamic HEAD~1 fallback would otherwise skip it

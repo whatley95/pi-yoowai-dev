@@ -997,6 +997,8 @@ describe("lifecycle", () => {
     assert.deepEqual(steer?.options, { deliverAs: "steer" });
     assert.ok((steer?.message ?? "").includes("needs-work"));
     assert.ok((steer?.message ?? "").includes("broken"));
+    assert.equal(getEditTracker(cwd).editsSinceLastReview, 1);
+    assert.equal(getState(cwd).reviewBlocked, true);
   });
 
   it("truncates the delivered auto-review body to 1200 characters", async () => {

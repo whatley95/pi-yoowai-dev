@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isSafeRelativePath, resolveProjectPath, validateRevision } from "./path-security.js";
@@ -34,6 +34,45 @@ describe("path-security", () => {
     assert.equal(validateRevision("origin/main"), "origin/main");
     assert.equal(validateRevision("../.."), undefined);
     assert.equal(validateRevision("-flag"), undefined);
+  });
+
+  it("rejects external junctions for existing files and missing descendants", () => {
+    const outside = mkdtempSync(join(tmpdir(), "wai-path-outside-"));
+    const link = join(cwd, "external");
+    try {
+      writeFileSync(join(outside, "secret.txt"), "outside marker");
+      symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
+      assert.equal(resolveProjectPath(cwd, "external/secret.txt"), null);
+      assert.equal(resolveProjectPath(cwd, "external/new/file.txt"), null);
+    } finally {
+      rmSync(link, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("allows internal links and a project root reached through a junction", () => {
+    const internal = join(cwd, "internal");
+    const aliasRoot = mkdtempSync(join(tmpdir(), "wai-path-alias-"));
+    const alias = join(aliasRoot, "project");
+    mkdirSync(internal);
+    writeFileSync(join(internal, "ok.txt"), "inside marker");
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    try {
+      symlinkSync(internal, join(cwd, "internal-link"), linkType);
+      symlinkSync(cwd, alias, linkType);
+      assert.equal(resolveProjectPath(cwd, "internal-link/ok.txt"), join(cwd, "internal-link", "ok.txt"));
+      assert.equal(resolveProjectPath(alias, "safe.txt"), join(alias, "safe.txt"));
+      assert.equal(resolveProjectPath(cwd, "missing/child.txt"), join(cwd, "missing", "child.txt"));
+    } finally {
+      rmSync(aliasRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on broken links", () => {
+    const link = join(cwd, "broken");
+    symlinkSync(join(cwd, "missing-target"), link, process.platform === "win32" ? "junction" : "dir");
+    assert.equal(resolveProjectPath(cwd, "broken"), null);
+    assert.equal(resolveProjectPath(cwd, "broken/child.txt"), null);
   });
 
   it("cleans up temp dir", () => {

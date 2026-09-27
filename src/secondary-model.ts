@@ -1,6 +1,6 @@
 import { resolveApiKey } from "./auth-reader.js";
 import { formatLanguageDirective, loadYoowaiConfig, resolveTaskModel } from "./config.js";
-import { formatCost, getSessionCost } from "./cost-tracker.js";
+import { formatCost, getSessionCost, reserveCost, releaseCost, recordCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveModelInfo } from "./model-registry.js";
 import { executeToolLoop } from "./tool-loop.js";
@@ -163,26 +163,7 @@ async function runSingleAttempt(
   const thinkingEnabledForBudget = Boolean(thinking) && thinking?.toLowerCase() !== "off";
   const modelInfoForBudget = cwd ? resolveModelInfo(provider, model, sdkModelInfo ?? modelInfoOverride) : undefined;
 
-  if (cwd) {
-    const budgetUsd = config?.costBudgetUsd;
-    if (budgetUsd !== undefined && budgetUsd >= 0) {
-      const estimatedInputTokens = estimateTokens(systemPrompt + userPrompt);
-      const estimatedOutputTokens = thinkingEnabledForBudget ? (modelInfoForBudget?.maxOutputTokens ?? 8192) : 2048;
-      const projectedCost = estimateCost(provider, model, estimatedInputTokens, estimatedOutputTokens);
-      const sessionCost = getSessionCost(cwd).costUsd;
-      if (sessionCost + projectedCost > budgetUsd) {
-        // The review.test.ts cost-budget probe asserts on the word "budget"
-        // to prove the model gate was passed without any backend call — keep
-        // the wording in sync when editing this message.
-        throw new Error(
-          `wai call would exceed cost budget: projected ${formatCost(sessionCost + projectedCost)} / ${formatCost(budgetUsd)}. ` +
-            `Increase pi-yoowai.costBudgetUsd in settings or use /wai-clear to reset.`,
-        );
-      }
-    }
-  }
-
-  const doCall = async (
+  const invokeBackend = async (
     sys: string,
     user: string,
     opts: Omit<CallSecondaryModelOptions, "enableToolLoop" | "maxToolIterations">,
@@ -294,6 +275,22 @@ async function runSingleAttempt(
     }
   };
 
+  const doCall: typeof invokeBackend = async (sys, user, opts) => {
+    if (!cwd) return invokeBackend(sys, user, opts);
+    const outputTokens =
+      thinkingEnabledForBudget || opts.structuredOutput ? (modelInfoForBudget?.maxOutputTokens ?? 8192) : 2048;
+    const projected = estimateCost(provider, model, estimateTokens(sys + user), outputTokens);
+    // Admission and reservation are synchronous: parallel council/audit calls
+    // see one another's in-flight spend, including every tool/continuation round.
+    reserveCost(cwd, projected, config?.costBudgetUsd);
+    try {
+      const result = await invokeBackend(sys, user, opts);
+      return { ...result, usage: recordCost(cwd, { ...result.usage }) };
+    } finally {
+      releaseCost(cwd, projected);
+    }
+  };
+
   if (options.enableToolLoop && cwd) {
     // NOTE: The tool-loop path is intentionally excluded from continuation handling.
     // It manages its own multi-turn flow (tool requests/results) and decides when the
@@ -389,17 +386,13 @@ async function runContinuationLoop(
   totalUsage: UsageCost,
   truncated: boolean,
 ): Promise<{ content: string; usage: UsageCost; rounds: number; truncated: boolean }> {
-  // Capture the session cost once at the start; the action executor records cost
-  // AFTER callSecondaryModel returns, so getSessionCost won't reflect in-flight calls.
-  // We track the continuation's own accumulated cost via totalUsage.estimatedCostUsd.
-  const sessionCostAtStart = cwd ? getSessionCost(cwd).costUsd : 0;
   let rounds = 0;
   for (let i = 0; i < maxContinuations && truncated; i++) {
     rounds++;
     // Re-check the cost budget between rounds so continuation cannot silently
     // exceed costBudgetUsd (the pre-check in runSingleAttempt only estimates one call).
     if (cwd && costBudgetUsd !== undefined && costBudgetUsd >= 0) {
-      const inFlightCost = sessionCostAtStart + totalUsage.estimatedCostUsd;
+      const inFlightCost = getSessionCost(cwd).costUsd;
       if (inFlightCost > costBudgetUsd) {
         logEvent(cwd, "warn", "Continuation stopped; cost budget reached", {
           provider,

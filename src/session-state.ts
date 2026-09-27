@@ -1,6 +1,7 @@
 import { loadState, saveState, normalizeReviewedFiles, MAX_REVIEWED_FILES } from "./plan-store.js";
 import { planStepDescription } from "./types.js";
-import type { YoowaiSessionState, PlanResult, ReviewVerdict } from "./types.js";
+import { getVcsInfo, resolveEmptyTree } from "./diff-grabber.js";
+import type { YoowaiSessionState, PlanResult, ReviewVerdict, WaiToolResult } from "./types.js";
 
 const sessionStates = new Map<string, YoowaiSessionState>();
 
@@ -42,9 +43,9 @@ export function setPlan(cwd: string, plan: PlanResult): void {
   state.reviewRounds = new Array(plan.todo.length).fill(0);
   state.reviewedSteps = new Array(plan.todo.length).fill(false);
   state.judgeCompleted = false;
-  state.editsSinceLastReview = 0;
-  state.editsSinceLastDone = 0;
-  state.editedFiles = [];
+  // Creating/replacing a plan must not certify outstanding edits.
+  const vcs = getVcsInfo(cwd);
+  state.planBaseCommit = vcs.type === "git" ? (vcs.revision ?? resolveEmptyTree(cwd)) : undefined;
   state.unreviewedTurns = 0;
   state.noPlanTurns = 0;
   state.unreviewedEditsTotal = 0;
@@ -241,6 +242,39 @@ export function resetEditsSinceReview(cwd: string): void {
   state.editedFiles = [];
   state.unreviewedTurns = 0;
   state.unreviewedEditsFlushed = 0;
+}
+
+/** Shared certification rule for tools, commands, audits, and automatic review.
+ * Scoped/historical reviews cannot certify the current whole working tree. */
+export function isWholeTreeReview(scope: {
+  files?: string[];
+  exclude?: string[];
+  revision?: string;
+  since?: string;
+  untracked?: boolean;
+}): boolean {
+  return !scope.files?.length && !scope.exclude?.length && !scope.revision && !scope.since && scope.untracked !== false;
+}
+
+export function applyReviewOutcome(
+  cwd: string,
+  result: WaiToolResult,
+  scope: { files?: string[]; exclude?: string[]; revision?: string; since?: string; untracked?: boolean } = {},
+): boolean {
+  if (!isWholeTreeReview(scope)) return false;
+  const review = result.review;
+  const passed =
+    !result.error &&
+    review?.verdict === "pass" &&
+    !review.inconclusive &&
+    !review.truncated &&
+    !review.droppedFiles?.length &&
+    result.continuation?.status !== "truncated-after-cap";
+  const state = getState(cwd);
+  state.reviewBlocked = !passed;
+  if (passed) resetEditsSinceReview(cwd);
+  saveState(cwd, state);
+  return passed;
 }
 
 /** Record that a turn ended with unreviewed edits pending and no review call

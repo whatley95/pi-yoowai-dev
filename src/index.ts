@@ -43,7 +43,7 @@ import {
 } from "./wai-learn.js";
 import { runWaiScaffold, type WaiScaffoldParams } from "./wai-scaffold.js";
 import { listDesignRefDocs, readDesignRefDoc, DESIGN_REF_TOPIC_DESCRIPTIONS } from "./design-ref.js";
-import { dropSessionState, resetEditsSinceDone, resetEditsSinceReview } from "./session-state.js";
+import { dropSessionState, resetEditsSinceDone, applyReviewOutcome } from "./session-state.js";
 import { secondaryModelLabel } from "./actions/shared.js";
 import { executeWaiPlan } from "./actions/plan.js";
 import { executeWaiReview } from "./actions/review.js";
@@ -338,10 +338,7 @@ export default async function (pi: ExtensionAPI) {
         result = await executeWaiScan(ctx.cwd, signal, progress, ctx.sessionManager, p.scanDeep);
       }
 
-      // Only clear the review-edit counter when the review actually ran. An
-      // errored review (e.g. model unavailable) saw nothing, so resetting here
-      // would suppress the unreviewed-edits steer for work no one looked at.
-      if (p.review && !result.error) resetEditsSinceReview(ctx.cwd);
+      if (p.review) applyReviewOutcome(ctx.cwd, result, p);
       // Only clear the done-edit counter when the step actually advanced. A
       // failed verification or a review-gate block returns early without
       // advancing, so clearing here would let the next retry bypass the gate.
@@ -459,7 +456,7 @@ export default async function (pi: ExtensionAPI) {
         signal,
         progress,
       );
-      if (!result.error) resetEditsSinceReview(ctx.cwd);
+      applyReviewOutcome(ctx.cwd, result, p);
     } catch (err) {
       logEvent(ctx.cwd, "error", `wai_review_${level} failed`, {
         error: err instanceof Error ? err.message : String(err),

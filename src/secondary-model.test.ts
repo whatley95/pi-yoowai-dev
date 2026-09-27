@@ -15,7 +15,9 @@ import {
   setSdkRuntimeGetModelOverride,
   setSdkStreamSimpleOverride,
   stripLeadingOverlap,
+  estimateCost,
 } from "./secondary-model.js";
+import { getReservedCost, getSessionCost, recordCost } from "./cost-tracker.js";
 import { setSdkOAuthResolverOverride } from "./backends/sdk-backend.js";
 import { setAgentDirForTests, getAgentDir } from "./pi-paths.js";
 import { readRecentLogs, clearLogs } from "./logger.js";
@@ -909,6 +911,77 @@ describe("sdk backend", () => {
     setSdkOAuthResolverOverride(null);
     setPiSpawnResolver(null);
     setAgentDirForTests(() => originalAgentDir);
+  });
+
+  it("reserves parallel calls atomically and settles before callers record their usage", async () => {
+    const cwd = makeTempDir("wai-parallel-budget-");
+    tmpDirs.push(cwd);
+    const agentDir = makeTempDir("wai-parallel-agent-");
+    tempAgentDirs.push(agentDir);
+    setAgentDirForTests(() => agentDir);
+    const projected = estimateCost("openai", "gpt-4o-mini", 3, 100);
+    writeSettings(
+      cwd,
+      {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        backend: "sdk",
+        apiKey: "test",
+        thinking: "off",
+        maxOutputTokens: 100,
+      },
+      { costBudgetUsd: projected * 1.5 },
+    );
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let calls = 0;
+    setSdkStreamSimpleOverride(() => {
+      calls++;
+      started();
+      return {
+        result: async () => {
+          await held;
+          return fakeSdkAssistantMessage("ok", { input: 10, output: 5 });
+        },
+      } as unknown as import("@earendil-works/pi-ai").AssistantMessageEventStream;
+    });
+    const first = callSecondaryModel("openai", "gpt-4o-mini", "system", "user", { cwd, structuredOutput: true });
+    try {
+      await entered;
+      assert.ok(getReservedCost(cwd) > 0);
+      await assert.rejects(
+        () => callSecondaryModel("openai", "gpt-4o-mini", "system", "user", { cwd, structuredOutput: true }),
+        /budget/,
+      );
+      assert.equal(calls, 1, "rejected call must not reach the provider");
+    } finally {
+      release();
+    }
+    const result = await first;
+    assert.equal(getReservedCost(cwd), 0);
+    assert.equal(getSessionCost(cwd).calls, 1);
+    recordCost(cwd, result.usage);
+    assert.equal(getSessionCost(cwd).calls, 1, "action bookkeeping must not charge the settled call again");
+  });
+
+  it("releases reservations when the provider fails", async () => {
+    const cwd = makeTempDir("wai-failed-reservation-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "sdk", apiKey: "test" }, { costBudgetUsd: 1 });
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    setSdkStreamSimpleOverride(() => {
+      throw new Error("provider rejected request: 400");
+    });
+    await assert.rejects(() => callSecondaryModel("openai", "gpt-4o-mini", "system", "user", { cwd }), /400/);
+    assert.equal(getReservedCost(cwd), 0);
+    assert.equal(getSessionCost(cwd).calls, 0);
   });
 
   it("resolves runtime-registry providers (extension/models.json) on the sdk backend", async () => {

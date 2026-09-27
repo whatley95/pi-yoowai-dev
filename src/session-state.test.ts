@@ -26,14 +26,57 @@ import {
   flushSessionState,
   planStaleSuggestionDue,
   dropSessionState,
+  applyReviewOutcome,
 } from "./session-state.js";
 import type { PlanResult } from "./types.js";
+import type { WaiToolResult } from "./types.js";
 
 function tempCwd(): string {
   return mkdtempSync(join(tmpdir(), "wai-ss-test-"));
 }
 
 const plan: PlanResult = { summary: "demo", todo: ["step one", "step two", "step three"], acceptanceCriteria: [] };
+
+test("only a complete current whole-tree pass certifies edits", () => {
+  const cwd = tempCwd();
+  setPlan(cwd, plan);
+  recordFileEdit(cwd, "a.ts");
+  const pass: WaiToolResult = {
+    action: "review",
+    review: {
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+    },
+  };
+  for (const result of [
+    { action: "review" as const, error: "unavailable" },
+    { ...pass, review: { ...pass.review!, inconclusive: true } },
+    { ...pass, review: { ...pass.review!, truncated: true } },
+    { ...pass, review: { ...pass.review!, droppedFiles: ["b.ts"] } },
+    { ...pass, continuation: { rounds: 1, status: "truncated-after-cap" as const } },
+  ]) {
+    assert.equal(applyReviewOutcome(cwd, result), false);
+    assert.equal(getEditTracker(cwd).editsSinceLastReview, 1);
+  }
+  for (const scope of [
+    { files: ["a.ts"] },
+    { exclude: ["b.ts"] },
+    { since: "HEAD~1" },
+    { revision: "HEAD" },
+    { untracked: false },
+  ]) {
+    assert.equal(applyReviewOutcome(cwd, pass, scope), false);
+    assert.equal(getState(cwd).reviewBlocked, true);
+  }
+  setPlan(cwd, plan);
+  assert.equal(getEditTracker(cwd).editsSinceLastReview, 1, "replanning cannot certify edits");
+  assert.equal(getState(cwd).reviewBlocked, true);
+  assert.equal(applyReviewOutcome(cwd, pass), true);
+  assert.equal(getEditTracker(cwd).editsSinceLastReview, 0);
+  assert.equal(getState(cwd).reviewBlocked, false);
+});
 
 test("getProgress exposes completed count (renamed from current)", () => {
   const cwd = tempCwd();
@@ -295,18 +338,18 @@ test("recordFileEdit tracks edited file paths, deduped, cleared on review reset"
   assert.deepEqual(getEditTracker(cwd).editedFiles, []);
 });
 
-test("setPlan resets the edited-files tracker so a new plan starts clean", () => {
+test("setPlan preserves pending edits so replanning cannot bypass review", () => {
   const cwd = tempCwd();
   setPlan(cwd, plan);
   recordFileEdit(cwd, "src/old-task.ts");
   assert.deepEqual(getEditTracker(cwd).editedFiles, ["src/old-task.ts"]);
 
-  // Moving to a new task/plan must not leak the old task's files or counters.
+  // A different plan does not turn outstanding changes into reviewed work.
   setPlan(cwd, { summary: "next task", todo: ["new step"], acceptanceCriteria: [] });
   const tracker = getEditTracker(cwd);
-  assert.deepEqual(tracker.editedFiles, []);
-  assert.equal(tracker.editsSinceLastReview, 0);
-  assert.equal(tracker.editsSinceLastDone, 0);
+  assert.deepEqual(tracker.editedFiles, ["src/old-task.ts"]);
+  assert.equal(tracker.editsSinceLastReview, 1);
+  assert.equal(tracker.editsSinceLastDone, 1);
 });
 
 test("flushSessionState folds pending edits into unreviewedEditsTotal without double counting", () => {

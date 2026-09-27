@@ -89,6 +89,8 @@ export function loadState(cwd: string): YoowaiSessionState | null {
           ? data.lastReviewedCommit
           : undefined,
       reviewedFiles,
+      planBaseCommit: typeof data.planBaseCommit === "string" ? data.planBaseCommit : undefined,
+      reviewBlocked: data.reviewBlocked === true,
     };
     // Repair malformed legacy reviewedFiles on disk once, so repeated loads
     // stop reprocessing bad data: trigger when the raw value is present but
@@ -150,6 +152,8 @@ export function saveState(cwd: string, state: YoowaiSessionState): void {
           reviewedFiles: normalizeReviewedFiles(state.reviewedFiles),
           pendingReviewCommit: state.pendingReviewCommit,
           lastReviewedCommit: state.lastReviewedCommit,
+          planBaseCommit: state.planBaseCommit,
+          reviewBlocked: state.reviewBlocked === true,
           planStaleSuggestedRound: state.planStaleSuggestedRound,
         },
         null,

@@ -6,8 +6,16 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeWaiJudge } from "./judge.js";
+import { executeWaiPlanUpdate } from "./plan-update.js";
 import { getDiff } from "../diff-grabber.js";
-import { getLastReviewedCommit, getPendingReviewCommit } from "../session-state.js";
+import {
+  getLastReviewedCommit,
+  getPendingReviewCommit,
+  setLastReviewedCommit,
+  setPlan,
+  getState,
+  dropSessionState,
+} from "../session-state.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import { gitSpawnEnv } from "../git-env.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -59,6 +67,41 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
     return { stdio: "pipe" as const, env: gitSpawnEnv() };
   }
 
+  it("judges the whole persisted plan span after incremental reviews advance to HEAD", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("whole-plan-a\n");
+    setPlan(cwd, { summary: "two changes", todo: ["change a", "add b"], acceptanceCriteria: [] });
+    const originalBase = getState(cwd).planBaseCommit;
+    assert.ok(originalBase);
+    execFileSync("git", ["add", "a.txt"], { cwd, ...gitOpts() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "first step"], { cwd, ...gitOpts() });
+    writeFileSync(join(cwd, "b.txt"), "whole-plan-b\n");
+    execFileSync("git", ["add", "b.txt"], { cwd, ...gitOpts() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "second step"], { cwd, ...gitOpts() });
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd, ...gitOpts() })
+      .toString()
+      .trim();
+    setLastReviewedCommit(cwd, head);
+    dropSessionState(cwd);
+    assert.equal(getState(cwd).planBaseCommit, originalBase);
+    const { url, bodies } = await startStubServer();
+    writeSettings(cwd, {
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test",
+      },
+    });
+    const result = await executeWaiJudge(cwd, "final whole-task check", undefined, () => {});
+    assert.equal(result.error, undefined);
+    assert.equal(bodies.length, 1);
+    const user = JSON.parse(bodies[0]).messages.find((m: { role: string }) => m.role === "user").content;
+    assert.match(user, /diff --git a\/a\.txt b\/a\.txt/);
+    assert.match(user, /diff --git a\/b\.txt b\/b\.txt/);
+    assert.equal(getLastReviewedCommit(cwd), head);
+  });
+
   function makeRepoWithChange(change: string): string {
     const cwd = mkdtempSync(join(tmpdir(), "judge-guard-repo-"));
     tmpDirs.push(cwd);
@@ -79,7 +122,7 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
 
   /** A locally stubbed OpenAI-compatible endpoint: counts requests and returns
    *  a canned passing judgment. */
-  async function startStubServer(): Promise<{ url: string; bodies: string[] }> {
+  async function startStubServer(responseContent?: string): Promise<{ url: string; bodies: string[] }> {
     const bodies: string[] = [];
     const server = await new Promise<Server>((resolve) => {
       const s = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -95,13 +138,15 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
               choices: [
                 {
                   message: {
-                    content: JSON.stringify({
-                      verdict: "pass",
-                      issues: [],
-                      suggestions: [],
-                      consensus: true,
-                      summary: "ok",
-                    }),
+                    content:
+                      responseContent ??
+                      JSON.stringify({
+                        verdict: "pass",
+                        issues: [],
+                        suggestions: [],
+                        consensus: true,
+                        summary: "ok",
+                      }),
                   },
                 },
               ],
@@ -117,6 +162,30 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
     if (!address || typeof address === "string") throw new Error("stub server has no port");
     return { url: `http://127.0.0.1:${address.port}`, bodies };
   }
+
+  it("plan regeneration retains and persists the original task base", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("plan-update-change\n");
+    setPlan(cwd, { summary: "original", todo: ["first"], acceptanceCriteria: [] });
+    const originalBase = getState(cwd).planBaseCommit;
+    execFileSync("git", ["add", "a.txt"], { cwd, ...gitOpts() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "work"], { cwd, ...gitOpts() });
+    const { url } = await startStubServer(
+      JSON.stringify({ summary: "updated", todo: ["first", "second"], acceptanceCriteria: [] }),
+    );
+    writeSettings(cwd, {
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test",
+      },
+    });
+    const result = await executeWaiPlanUpdate(cwd, "add another step", undefined, () => {}, undefined);
+    assert.equal(result.totalSteps, 2);
+    dropSessionState(cwd);
+    assert.equal(getState(cwd).planBaseCommit, originalBase);
+  });
 
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");

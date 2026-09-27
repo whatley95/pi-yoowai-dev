@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
-import { DEFAULT_MAX_DIFF_CHARS, getDiff, getVcsInfo } from "../diff-grabber.js";
+import { DEFAULT_MAX_DIFF_CHARS, getDiff, getVcsInfo, resolveGitCommit, resolveGitTree } from "../diff-grabber.js";
 import { buildCodemap } from "../codemap.js";
 import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
 import { capActionInstructions } from "../instructions.js";
@@ -77,13 +77,28 @@ export async function executeWaiJudge(
     !state.reviewedSteps[currentStepIndex];
 
   progress(1, STAGES.judge, "Collecting diff and conventions…");
-  // Holistic range: the final judgment covers everything since the last
-  // accepted review baseline (falling back to the last commit on a clean
-  // tree without a baseline, or the empty tree for root commits). A passing
-  // judge is a verdict, not a review: it never mutates the review range
-  // state.
+  // Judge the entire plan from its creation base, independently of accepted
+  // incremental reviews. Legacy plans without a base keep the existing fallback.
   const vcsInfo = getVcsInfo(cwd);
-  const range = resolveRangeBase(cwd, "holistic", vcsInfo, getLastReviewedCommit(cwd), getPendingReviewCommit(cwd), {});
+  if (
+    state.planBaseCommit &&
+    !resolveGitCommit(cwd, state.planBaseCommit) &&
+    !resolveGitTree(cwd, state.planBaseCommit)
+  ) {
+    return {
+      action: "judge",
+      error: "The plan's original Git base is unavailable. Restore that history or create a new plan before judging.",
+      model: modelProfile,
+    };
+  }
+  const range = resolveRangeBase(
+    cwd,
+    "holistic",
+    vcsInfo,
+    getLastReviewedCommit(cwd),
+    getPendingReviewCommit(cwd),
+    state.planBaseCommit ? { revision: state.planBaseCommit } : {},
+  );
   const {
     diff: rawDiff,
     truncated,

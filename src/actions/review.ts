@@ -16,7 +16,7 @@ import { findLearnedFacts, isFactFresh } from "../wai-learn.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
 import { resolveEffectivePreReviewCommands, resolveEffectiveToolLoop } from "./context-shared.js";
 import { calculateReviewBudget, estimateTokens, truncateToTokenBudget, type ReviewBudget } from "../token-budget.js";
-import { getSessionCost, formatCost, reserveCost, releaseCost } from "../cost-tracker.js";
+import { getSessionCost, getReservedCost, formatCost } from "../cost-tracker.js";
 import { logEvent } from "../logger.js";
 import {
   getState,
@@ -29,6 +29,7 @@ import {
   getReviewedFiles,
   recordReviewedFiles,
   planStaleSuggestionDue,
+  isWholeTreeReview,
 } from "../session-state.js";
 import { planStepDescription } from "../types.js";
 import { auditStepDone } from "../integration/audit.js";
@@ -566,7 +567,7 @@ export async function executeWaiReview(
       );
       if (config.costBudgetUsd !== undefined && config.costBudgetUsd >= 0) {
         const sessionCost = getSessionCost(cwd).costUsd;
-        if (sessionCost + projectedCost > config.costBudgetUsd) {
+        if (sessionCost + getReservedCost(cwd) + projectedCost > config.costBudgetUsd) {
           pinAttemptedRange(cwd, vcsInfo, diffOptions);
           return {
             action: "review",
@@ -574,7 +575,6 @@ export async function executeWaiReview(
           };
         }
       }
-      reserveCost(cwd, projectedCost);
 
       const hunkTasks = hunks.map((hunk) => async () => {
         const result = await runReviewBatch({
@@ -611,17 +611,12 @@ export async function executeWaiReview(
         return { review: result.review, usage: result.usage, rounds: result.rounds, truncated: result.truncated };
       });
 
-      let outcomes: ConcurrencyOutcome<{
+      const outcomes: ConcurrencyOutcome<{
         review: ReviewResult;
         usage: UsageCost;
         rounds?: number;
         truncated?: boolean;
-      }>[];
-      try {
-        outcomes = await runWithConcurrencyLimit(hunkTasks, maxConcurrency, signal);
-      } finally {
-        releaseCost(cwd, projectedCost);
-      }
+      }>[] = await runWithConcurrencyLimit(hunkTasks, maxConcurrency, signal);
 
       const successes: { review: ReviewResult; usage: UsageCost; rounds?: number; truncated?: boolean }[] = [];
       const failures: string[] = [];
@@ -742,7 +737,7 @@ export async function executeWaiReview(
     }
     if (config.costBudgetUsd !== undefined && config.costBudgetUsd >= 0) {
       const sessionCost = getSessionCost(cwd).costUsd;
-      if (sessionCost + projectedCost > config.costBudgetUsd) {
+      if (sessionCost + getReservedCost(cwd) + projectedCost > config.costBudgetUsd) {
         pinAttemptedRange(cwd, vcsInfo, diffOptions);
         return {
           action: "review",
@@ -750,7 +745,6 @@ export async function executeWaiReview(
         };
       }
     }
-    reserveCost(cwd, projectedCost);
 
     const tasks = preps.map((p) => async () => {
       const result = await runReviewBatch({
@@ -797,19 +791,14 @@ export async function executeWaiReview(
       };
     });
 
-    let outcomes: ConcurrencyOutcome<{
+    const outcomes: ConcurrencyOutcome<{
       file: string;
       review: ReviewResult;
       usage: UsageCost;
       dropped: string[];
       rounds?: number;
       truncated?: boolean;
-    }>[];
-    try {
-      outcomes = await runWithConcurrencyLimit(tasks, maxConcurrency, signal);
-    } finally {
-      releaseCost(cwd, projectedCost);
-    }
+    }>[] = await runWithConcurrencyLimit(tasks, maxConcurrency, signal);
 
     const successes: {
       file: string;
@@ -1143,11 +1132,13 @@ export async function executeWaiReview(
 
   // Guarded auto-completion: consensus (pass with zero issues) advances as
   // before; an explicit stepComplete signal advances exactly the current step.
-  const advance = planAdvanceFromReview(
-    review,
-    state.plan !== undefined && state.totalSteps > 0,
-    state.completedSteps >= state.totalSteps,
-  );
+  const advance = isWholeTreeReview(options)
+    ? planAdvanceFromReview(
+        review,
+        state.plan !== undefined && state.totalSteps > 0,
+        state.completedSteps >= state.totalSteps,
+      )
+    : null;
   if (advance) {
     if (advance.count > 0) {
       const newCompleted = Math.min(state.completedSteps + advance.count, state.totalSteps);
@@ -1193,7 +1184,6 @@ export async function executeWaiReview(
             continuation: continuationMeta(continuationRounds, continuationTruncated),
           };
         } else if (judgeResult.error) {
-          markJudgeCompleted(cwd);
           review.suggestions.push(`Auto-judge failed: ${judgeResult.error}`);
         }
       } catch (err) {

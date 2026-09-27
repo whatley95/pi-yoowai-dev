@@ -1,5 +1,5 @@
 import { executeWaiPlan } from "./plan.js";
-import { getState, setPlan, markStepsComplete } from "../session-state.js";
+import { getState, markStepsComplete, flushSessionState } from "../session-state.js";
 import { logEvent } from "../logger.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DoneResult, PlanResult } from "../types.js";
@@ -14,6 +14,7 @@ export async function executeWaiPlanUpdate(
 ): Promise<DoneResult> {
   const before = getState(cwd);
   const previousCompleted = before.completedSteps;
+  const previousBase = before.planBaseCommit;
 
   const planResult = await executeWaiPlan(cwd, description, signal, progress, sessionManager, "plan", "planUpdate");
   if (planResult.error || !planResult.plan) {
@@ -26,7 +27,8 @@ export async function executeWaiPlanUpdate(
   }
 
   const newPlan: PlanResult = planResult.plan;
-  setPlan(cwd, newPlan);
+  // Regenerating the plan retains the task's original judgment span.
+  getState(cwd).planBaseCommit = previousBase ?? getState(cwd).planBaseCommit;
   // Preserve completed progress up to the new plan length. Completed-via-done
   // steps are marked "not reviewed" (not "reviewed and passed") so judge
   // history isn't falsified, and the advanced state is persisted via
@@ -46,6 +48,7 @@ export async function executeWaiPlanUpdate(
     markStepsComplete(cwd, restored, false);
   }
   const after = getState(cwd);
+  flushSessionState(cwd);
 
   const nextStep = after.plan?.todo[after.completedSteps]
     ? typeof after.plan.todo[after.completedSteps] === "string"

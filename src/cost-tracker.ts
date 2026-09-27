@@ -16,6 +16,15 @@ function getCostPath(cwd: string): string {
 }
 
 const costCache = new Map<string, CostLog>();
+// Backend calls settle immediately. Preserve that accounting through usage
+// aggregation so existing action executors cannot charge the same call twice.
+const recordedUsage = new WeakMap<UsageCost, string>();
+
+export function inheritCostAccounting(merged: UsageCost, a: UsageCost, b: UsageCost): UsageCost {
+  const cwd = recordedUsage.get(a);
+  if (cwd && recordedUsage.get(b) === cwd) recordedUsage.set(merged, cwd);
+  return merged;
+}
 
 function loadCost(cwd: string): CostLog {
   const cached = costCache.get(cwd);
@@ -44,11 +53,11 @@ function loadCost(cwd: string): CostLog {
 }
 
 function saveCost(cwd: string, log: CostLog): void {
+  costCache.set(cwd, { ...log });
   try {
     const dir = getSessionConfigDir(cwd, "cost.json");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(getCostPath(cwd), JSON.stringify(log, null, 2), { encoding: "utf-8", mode: 0o600 });
-    costCache.set(cwd, { ...log });
   } catch (err) {
     logEvent(cwd, "error", "Failed to save wai cost log", { error: err instanceof Error ? err.message : String(err) });
   }
@@ -56,17 +65,21 @@ function saveCost(cwd: string, log: CostLog): void {
 
 export function recordCost(cwd: string, usage: UsageCost, budgetUsd?: number): UsageCost {
   const log = loadCost(cwd);
-  log.calls++;
-  log.inputTokens += usage.estimatedInputTokens;
-  log.outputTokens += usage.estimatedOutputTokens;
-  log.costUsd += usage.estimatedCostUsd;
-  log.updatedAt = new Date().toISOString();
-  saveCost(cwd, log);
+  if (recordedUsage.get(usage) !== cwd) {
+    log.calls++;
+    log.inputTokens += usage.estimatedInputTokens;
+    log.outputTokens += usage.estimatedOutputTokens;
+    log.costUsd += usage.estimatedCostUsd;
+    log.updatedAt = new Date().toISOString();
+    saveCost(cwd, log);
+    recordedUsage.set(usage, cwd);
+  }
 
   const result = {
     ...usage,
     sessionCostUsd: log.costUsd,
   };
+  recordedUsage.set(result, cwd);
 
   if (budgetUsd !== undefined && budgetUsd >= 0 && log.costUsd > budgetUsd) {
     throw new Error(
@@ -88,7 +101,14 @@ export function resetCost(cwd: string): void {
 
 const reservedUsd = new Map<string, number>();
 
-export function reserveCost(cwd: string, amountUsd: number): void {
+export function reserveCost(cwd: string, amountUsd: number, budgetUsd?: number): void {
+  const projected = getSessionCost(cwd).costUsd + getReservedCost(cwd) + amountUsd;
+  if (budgetUsd !== undefined && budgetUsd >= 0 && projected > budgetUsd) {
+    throw new Error(
+      `wai call would exceed cost budget: projected ${formatCost(projected)} / ${formatCost(budgetUsd)}. ` +
+        "Increase pi-yoowai.costBudgetUsd or wait for pending calls to settle.",
+    );
+  }
   reservedUsd.set(cwd, (reservedUsd.get(cwd) ?? 0) + amountUsd);
 }
 

@@ -83,7 +83,7 @@ export async function executeWaiDone(
   // the step is then recorded as manually marked (not reviewed).
   const advancing = targetStep === undefined || targetStep > before.completed;
   const pendingEdits = getEditTracker(cwd).editsSinceLastReview;
-  if (config.requireReviewBeforeDone === true && !force && advancing && pendingEdits > 0) {
+  if (config.requireReviewBeforeDone === true && !force && advancing && (pendingEdits > 0 || state.reviewBlocked)) {
     return {
       completedStep: before.completed,
       totalSteps: before.total,
@@ -91,7 +91,9 @@ export async function executeWaiDone(
       allDone: false,
       blocked: true,
       message:
-        `Completion blocked: ${pendingEdits} file edit(s) have not been reviewed. ` +
+        (pendingEdits > 0
+          ? `Completion blocked: ${pendingEdits} file edit(s) have not been reviewed. `
+          : "Completion blocked: the last whole-tree review did not pass completely. ") +
         `Run \`wai({ review: '...' })\` and pass review before marking the step done, ` +
         `or override with \`wai({ done: true, force: true })\` / \`/wai-done --force\`.`,
     };
@@ -112,20 +114,31 @@ export async function executeWaiDone(
   // both block legitimate corrections and check the wrong step.
   if (
     targetStep === undefined &&
+    !force &&
     config.verifyDoneClaims !== false &&
     getEditTracker(cwd).editsSinceLastDone > 0 &&
     stepDescription
   ) {
     try {
-      const { diff } = getDiff(cwd, { maxDiffChars: config.reviewMaxDiffChars, untracked: true, revision: "HEAD" });
+      const { diff, truncated: diffTruncated } = getDiff(cwd, {
+        maxDiffChars: config.reviewMaxDiffChars,
+        untracked: true,
+        revision: "HEAD",
+      });
+      if (diffTruncated) throw new Error("Incomplete diff for done verification");
       const modelConfig = resolveTaskModel(config, "done");
+      if (!modelConfig.provider || !modelConfig.id) throw new Error("No done-verification model configured");
       if (modelConfig.provider && modelConfig.id) {
         const { system, user } = buildStepVerificationPrompt(
           stepDescription,
           diff,
           capActionInstructions(cwd, "done", config.instructionsMaxTokens ?? 800),
         );
-        const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
+        const {
+          content: raw,
+          usage,
+          truncated,
+        } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
           signal,
           thinking: modelConfig.thinking,
           cwd,
@@ -133,7 +146,9 @@ export async function executeWaiDone(
           structuredOutput: true,
         });
         recordCostWithBudget(cwd, usage);
+        if (truncated) throw new Error("Incomplete done-verification response");
         const parsed = parseStepVerificationResponse(raw);
+        if (!parsed) throw new Error("Invalid done-verification response");
         if (parsed) {
           verified = parsed.satisfied;
           if (!parsed.satisfied) {
@@ -151,9 +166,19 @@ export async function executeWaiDone(
       }
     } catch (err) {
       if (signal?.aborted) throw err;
-      logEvent(cwd, "warn", "Done-claim verification failed; allowing step to advance", {
+      logEvent(cwd, "warn", "Done-claim verification failed; completion blocked", {
         error: err instanceof Error ? err.message : String(err),
       });
+      return {
+        completedStep: before.completed,
+        totalSteps: before.total,
+        nextStep: before.nextStep,
+        allDone: false,
+        blocked: true,
+        verificationReason: err instanceof Error ? err.message : String(err),
+        message:
+          "Completion blocked: could not verify this step. Retry verification or use /wai-done --force to mark it manually.",
+      };
     }
   }
 

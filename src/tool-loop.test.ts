@@ -1,6 +1,6 @@
 import { describe, it, before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeToolLoop } from "./tool-loop.js";
@@ -49,6 +49,39 @@ describe("executeToolLoop", () => {
     const secondUser = calls[1].user;
     assert.equal(secondUser.includes("export function foo"), true);
     assert.equal(secondUser.includes("Tool result: read_file src/foo.ts"), true);
+  });
+
+  it("never sends external junction contents back to the reviewer", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "wai-tool-outside-"));
+    const link = join(cwd, "outside-link");
+    try {
+      writeFileSync(join(outside, "private.txt"), "EXTERNAL_PRIVATE_MARKER");
+      symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
+      const users: string[] = [];
+      await executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        {},
+        async (_system, user) => {
+          users.push(user);
+          return {
+            content:
+              users.length === 1
+                ? JSON.stringify({ tool: "read_file", path: "outside-link/private.txt" })
+                : '{"verdict":"pass"}',
+            usage: zeroUsage(),
+          };
+        },
+        2,
+      );
+      assert.equal(users.length, 2);
+      assert.match(users[1], /Path is not allowed/);
+      assert.ok(!users[1].includes("EXTERNAL_PRIVATE_MARKER"));
+    } finally {
+      rmSync(link, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("executes a run_command tool request and appends the result", async () => {
