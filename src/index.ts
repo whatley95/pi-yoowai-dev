@@ -61,7 +61,11 @@ import { executeWaiExplain, validateWaiExplainParams } from "./wai-explain.js";
 import { executeWaiVision, validateWaiVisionParams } from "./wai-vision.js";
 import { registerWaiCommands } from "./commands/register.js";
 import { formatResultText } from "./format.js";
-import { registerContextInjector, setWaiToolExecuting } from "./integration/context-injector.js";
+import {
+  registerContextInjector,
+  beginWaiToolExecution,
+  clearWaiToolExecution,
+} from "./integration/context-injector.js";
 import { registerLifecycleHandlers, flushSessionStateWithAudit } from "./integration/lifecycle.js";
 import { updateWaiStatus, clearWaiStatusLines } from "./integration/status.js";
 import { setAuditExtensionAPI } from "./integration/audit.js";
@@ -72,6 +76,9 @@ import { registerDesignSkillDiscovery } from "./integration/skills.js";
 import { updateWaiPlanWidget, hideWaiPlanWidget } from "./integration/widget.js";
 import { registerWaiProvider, unregisterWaiProvider } from "./integration/provider.js";
 import { isRegistryStreamCapable, setSdkSessionRegistry } from "./backends/sdk-backend.js";
+import { createNativeToolRegistrar } from "./integration/native-tools.js";
+import { cancelSessionWork } from "./integration/session-work.js";
+import { restoreBranchState } from "./integration/branch-state.js";
 
 const loopStates = new Map<string, LoopDetectionState>();
 function getLoopState(cwd: string): LoopDetectionState {
@@ -164,8 +171,11 @@ function attachSessionRegistry(ctx: ExtensionContext): void {
 
 export default async function (pi: ExtensionAPI) {
   setAuditExtensionAPI(pi);
+  const registerTool = createNativeToolRegistrar(pi);
 
   pi.on("session_start", async (_event, ctx) => {
+    cancelSessionWork(ctx.cwd);
+    clearWaiToolExecution(ctx.cwd);
     // Probe sessionManager once; it may be unavailable in some Pi versions.
     let sessionId: string | undefined;
     try {
@@ -193,7 +203,9 @@ export default async function (pi: ExtensionAPI) {
     }
 
     // cost.json tracks estimated spend for the current Pi session.
+    dropSessionState(ctx.cwd);
     resetCost(ctx.cwd);
+    restoreBranchState(ctx);
     syncWorkspaceChanges(ctx.cwd);
     updateWaiStatus(ctx);
     updateWaiPlanWidget(ctx);
@@ -207,6 +219,8 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    cancelSessionWork(ctx.cwd);
+    clearWaiToolExecution(ctx.cwd);
     flushSessionStateWithAudit(ctx);
     dropSessionState(ctx.cwd);
     loopStates.delete(ctx.cwd);
@@ -251,7 +265,7 @@ export default async function (pi: ExtensionAPI) {
     const action = validation.action;
     const config = loadYoowaiConfig(ctx.cwd);
 
-    setWaiToolExecuting(ctx.cwd, true);
+    const finishExecution = beginWaiToolExecution(ctx.cwd);
 
     const start = Date.now();
     const progressAction = (action === "planUpdate" ? "plan" : action) as WaiModelTask;
@@ -264,6 +278,8 @@ export default async function (pi: ExtensionAPI) {
       p.review ? resolveReviewLevel(config) : undefined,
     );
     let result: WaiToolResult;
+    const abortProgress = () => cleanupProgressReporter(progress);
+    signal?.addEventListener("abort", abortProgress, { once: true });
 
     try {
       if (p.plan) {
@@ -339,6 +355,7 @@ export default async function (pi: ExtensionAPI) {
         result = await executeWaiScan(ctx.cwd, signal, progress, ctx.sessionManager, p.scanDeep);
       }
 
+      signal?.throwIfAborted();
       if (p.review) applyReviewOutcome(ctx.cwd, result, p);
       // Only clear the done-edit counter when the step actually advanced. A
       // failed verification or a review-gate block returns early without
@@ -352,10 +369,12 @@ export default async function (pi: ExtensionAPI) {
       });
       result = { action, error: err instanceof Error ? err.message : String(err) };
     } finally {
-      setWaiToolExecuting(ctx.cwd, false);
-      clearWaiStatus(ctx);
+      finishExecution();
+      signal?.removeEventListener("abort", abortProgress);
+      if (!signal?.aborted) clearWaiStatus(ctx);
     }
 
+    signal?.throwIfAborted();
     publishWaiResult(ctx, result);
 
     result.elapsedMs = Date.now() - start;
@@ -435,10 +454,12 @@ export default async function (pi: ExtensionAPI) {
     const p = validation.params;
     const config = loadYoowaiConfig(ctx.cwd);
 
-    setWaiToolExecuting(ctx.cwd, true);
+    const finishExecution = beginWaiToolExecution(ctx.cwd);
     const start = Date.now();
     const progress = createProgressReporter("review", ctx, onUpdate, level);
     let result: WaiToolResult;
+    const abortProgress = () => cleanupProgressReporter(progress);
+    signal?.addEventListener("abort", abortProgress, { once: true });
 
     try {
       result = await executeWaiReview(
@@ -457,6 +478,7 @@ export default async function (pi: ExtensionAPI) {
         signal,
         progress,
       );
+      signal?.throwIfAborted();
       applyReviewOutcome(ctx.cwd, result, p);
     } catch (err) {
       logEvent(ctx.cwd, "error", `wai_review_${level} failed`, {
@@ -464,10 +486,12 @@ export default async function (pi: ExtensionAPI) {
       });
       result = { action: "review", error: err instanceof Error ? err.message : String(err) };
     } finally {
-      setWaiToolExecuting(ctx.cwd, false);
-      clearWaiStatus(ctx);
+      finishExecution();
+      signal?.removeEventListener("abort", abortProgress);
+      if (!signal?.aborted) clearWaiStatus(ctx);
     }
 
+    signal?.throwIfAborted();
     publishWaiResult(ctx, result);
     result.elapsedMs = Date.now() - start;
 
@@ -535,7 +559,7 @@ export default async function (pi: ExtensionAPI) {
     });
   }
 
-  pi.registerTool({
+  registerTool({
     name: "wai",
     label: "Wai — Pair Programmer Advisor",
     description:
@@ -696,7 +720,7 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "wai_review_min",
     label: "Wai Review — Minimal",
     description:
@@ -715,7 +739,7 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "wai_review_med",
     label: "Wai Review — Standard",
     description:
@@ -734,7 +758,7 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "wai_review_high",
     label: "Wai Review — Deep",
     description:
@@ -780,7 +804,7 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
-  pi.registerTool({
+  registerTool({
     name: "wai_index",
     label: "Wai Index — Project Context",
     description:
@@ -883,7 +907,7 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
-  pi.registerTool({
+  registerTool({
     name: "wai_explain",
     label: "Wai Explain — Code & Error Explanations",
     description:
@@ -960,7 +984,7 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
-  pi.registerTool({
+  registerTool({
     name: "wai_vision",
     label: "Wai Vision — Image Analysis",
     description:
@@ -1111,14 +1135,24 @@ export default async function (pi: ExtensionAPI) {
               text: `Ambiguous — multiple facts match this text; reaffirm a specific entry: ${r.reaffirm}`,
             },
           ],
-          details: { action: "learn", reaffirmed: false, reason: outcome },
+          details: {
+            action: "learn",
+            reaffirmed: false,
+            reason: outcome,
+            error: "Multiple facts match; reaffirm a specific entry.",
+          },
           isError: true,
         };
       }
       if (outcome === "write-failed") {
         return {
           content: [{ type: "text", text: "Reaffirm failed — the freshness stamp could not be written to disk." }],
-          details: { action: "learn", reaffirmed: false, reason: outcome },
+          details: {
+            action: "learn",
+            reaffirmed: false,
+            reason: outcome,
+            error: "The freshness stamp could not be written to disk.",
+          },
           isError: true,
         };
       }
@@ -1160,7 +1194,7 @@ export default async function (pi: ExtensionAPI) {
     };
   }
 
-  pi.registerTool({
+  registerTool({
     name: "wai_learn",
     label: "Wai Learn — Project Facts",
     description:
@@ -1235,7 +1269,7 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "wai_scaffold",
     label: "Wai Scaffold — Guidance Templates",
     description:
@@ -1330,7 +1364,7 @@ export default async function (pi: ExtensionAPI) {
     }
   }
 
-  pi.registerTool({
+  registerTool({
     name: "wai_design_ref",
     label: "Wai Design Ref — UI Design Guidance",
     description:

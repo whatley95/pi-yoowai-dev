@@ -3,7 +3,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { formatCost, reserveCost, releaseCost, getReservedCost, getSessionCost, recordCost } from "./cost-tracker.js";
+import {
+  formatCost,
+  reserveCost,
+  releaseCost,
+  getReservedCost,
+  getSessionCost,
+  recordCost,
+  resetCost,
+} from "./cost-tracker.js";
 import { mergeUsageCost } from "./actions/shared.js";
 
 const cwd = mkdtempSync(join(tmpdir(), "wai-cost-reservation-"));
@@ -34,6 +42,17 @@ it("settled backend usage and its merged result are recorded exactly once", () =
   assert.equal(getSessionCost(cwd).outputTokens, 10);
   assert.ok(Math.abs(getSessionCost(cwd).costUsd - 0.3) < 1e-10);
   assert.throws(() => reserveCost(cwd, 0.8, 1), /budget/);
+});
+
+it("late cancellation releases only its own reservation, including across a cost reset", () => {
+  const releaseOld = reserveCost(cwd, 0.4);
+  resetCost(cwd);
+  const releaseNew = reserveCost(cwd, 0.7);
+  releaseOld();
+  assert.equal(getReservedCost(cwd), 0.7);
+  releaseNew();
+  releaseNew();
+  assert.equal(getReservedCost(cwd), 0);
 });
 
 describe("formatCost", () => {

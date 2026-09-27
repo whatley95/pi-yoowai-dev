@@ -13,6 +13,8 @@ import { recordLearnedFact, type DeepVerifyModelCaller } from "./wai-learn.js";
 import { setWaiExplainExecutorForTests, setWaiLearnDeepCallerForTests } from "./index.js";
 import initWai from "./index.js";
 import { getSdkRegistry } from "./backends/sdk-backend.js";
+import { getState, setPlan, dropSessionState } from "./session-state.js";
+import { clearSessionId } from "./session-scope.js";
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -334,6 +336,34 @@ describe("wai extension registration", () => {
     assert.equal(getSdkRegistry(), registryA);
     for (const handler of shutdownHandlers) await handler({}, makeCtx(registryA, makeTempDir("wai-registry-d-")));
     assert.equal(getSdkRegistry(), undefined, "session_shutdown must detach the registry");
+  });
+
+  it("switches legacy sessions in the same project without leaking cached progress and resumes their disk plan", async () => {
+    const cwd = makeTempDir("wai-session-cache-");
+    const { pi, eventHandlers } = createMockPi();
+    await initWai(pi);
+    const context = (id: string) =>
+      ({
+        cwd,
+        sessionManager: { getSessionId: () => id, getBranch: () => [] },
+        ui: { setStatus: () => {}, setWidget: () => {}, notify: () => {} },
+      }) as unknown as ExtensionContext;
+    const start = async (id: string) => {
+      for (const handler of eventHandlers.get("session_start") ?? []) await handler({}, context(id));
+    };
+    try {
+      await start("legacy-a");
+      setPlan(cwd, { summary: "session A", todo: ["one"], acceptanceCriteria: [] });
+      await start("legacy-b");
+      assert.equal(getState(cwd).plan, undefined);
+      await start("legacy-a");
+      assert.equal(getState(cwd).plan?.summary, "session A");
+    } finally {
+      for (const handler of eventHandlers.get("session_shutdown") ?? []) await handler({}, context("legacy-a"));
+      dropSessionState(cwd);
+      clearSessionId(cwd);
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   async function callLearnTool(cwd: string, params: Record<string, unknown>): Promise<string> {

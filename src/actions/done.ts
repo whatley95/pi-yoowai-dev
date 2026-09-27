@@ -192,6 +192,7 @@ export async function executeWaiDone(
     }
   }
 
+  signal?.throwIfAborted();
   if (targetStep !== undefined) {
     // Explicit targets are corrections and work in both directions: a target
     // below the current progress regresses the tracker.

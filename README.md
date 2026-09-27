@@ -177,7 +177,7 @@ When `registerProvider` is enabled, `/wai-config`, `/wai-model`, and `/wai-backe
 
 ### Pi host compatibility
 
-pi-yoowai targets Pi **>= 0.82.1** (peer floor). On Pi **0.86+** hosts the SDK backend streams the secondary model through Pi's own model registry (`ctx.modelRegistry.streamSimple()`) when available: Pi resolves authentication and the live catalog (built-in, `models.json`, and extension-registered models) at request time, with no pi-yoowai auth resolution on that route. Explicit `secondary.apiKey` / `baseUrl` / `authHeader` overrides fall back to the built-in pi-ai path, and registry execution failures are never silently retried through it — only an unresolvable model falls back. Both routes share one request builder, so headers, thinking, retries, timeouts, cache retention, and usage handling behave identically. OAuth resolution deduplicates concurrent same-credential resolutions in-process; cross-process refresh serialization remains Pi's AuthStorage lockfile (a second `getAuth` call is not a second refresh). Validated against Pi 0.82.1 (full test suite) and 0.86.1 (focused SDK/lifecycle/vision/auth suites plus a real-`ModelRegistry` runtime smoke, mirrored by an advisory `compat-086` CI job).
+pi-yoowai targets Pi **>= 0.82.1** (peer floor). On Pi **0.86+** hosts the SDK backend streams the secondary model through Pi's own model registry (`ctx.modelRegistry.streamSimple()`) when available: Pi resolves authentication and the live catalog (built-in, `models.json`, and extension-registered models) at request time, with no pi-yoowai auth resolution on that route. Explicit `secondary.apiKey` / `baseUrl` / `authHeader` overrides fall back to the built-in pi-ai path, and registry execution failures are never silently retried through it — only an unresolvable model falls back. Both routes share one request builder, so headers, thinking, retries, timeouts, cache retention, and usage handling behave identically. OAuth resolution deduplicates concurrent same-credential resolutions in-process; cross-process refresh serialization remains Pi's AuthStorage lockfile (a second `getAuth` call is not a second refresh). CI checks the supported 0.82.1 host and a disposable Pi **0.87.1** install. The required `compat-latest` job typechecks all source and tests, runs the focused integration suites, and exercises Pi's real agent execution loop and actionable boundary dispatcher.
 
 ### Custom providers via `models.json`
 
@@ -278,12 +278,16 @@ When `autoInjectContext` is enabled, pi-yoowai prepends the active plan summary,
 
 pi-yoowai also listens to Pi lifecycle events:
 
-- **`tool_result`** — successful file-mutating tool calls increment the internal edit counter and refresh the footer status; failed calls do not.
+- **`tool_result`** — successful file-mutating tool calls increment the internal edit counter and refresh the footer status; failed calls do not. Wai configuration/backend failures set Pi's native error flag while preserving structured details; a review finding is a successful tool result.
 - **`turn_end`** — if unreviewed edits exist, a steer reminds the main agent to call `wai.review` before continuing. The reminder respects a cooldown so it does not spam, and escalates to a stop directive after repeated ignored turns — see [Review enforcement](#review-enforcement).
-- **`agent_settled`** — auto-review on settle runs first when enabled (see [Review enforcement](#review-enforcement)); then, when `autoJudge` is enabled and the active plan is complete, `wai.judge` runs automatically.
+- **`agent_before_settle` (Pi 0.87+)** — auto-review runs first when enabled, then auto-judge when the plan is complete. Verdicts enter the conversation as boundary messages. Findings request a continuation only when Pi permits it; a clean pass adds no extra turn. The same workspace/progress state is attempted once per session generation to prevent repeated continuation without changes.
+- **`agent_settled` (older Pi)** — preserves the review-then-judge workflow and delivers results as steers.
 - **`model_select`** — the prompt cache is cleared so prompts are rebuilt for the new model.
 - **`session_before_compact`** — if a plan is active, its summary, progress, and current step are added to the compaction custom instructions so they survive context compression.
-- **`session_before_switch`** / **`session_before_fork`** — volatile counters and plan progress are flushed to disk so they survive session navigation.
+- **`session_before_switch`** / **`session_before_fork`** / **`session_before_tree`** / **`session_shutdown`** — cancel outstanding wai work before session navigation or shutdown. Late automatic results cannot publish or update the replacement session.
+- **`session_tree`** — restores plan/progress/review state from the active branch's wai audit snapshots. Navigating before the first snapshot clears future progress. Files remain in the working tree; mismatched workspace fingerprints invalidate restored approval. Older sessions without snapshots retain disk state on startup until the first tree navigation.
+
+Workflow tools execute sequentially, with an additional per-project queue protecting direct concurrent calls. Context injection remains suppressed until all overlapping wai executions finish. SDK-backed wai tool results attach actual provider `usage` for Pi's native session totals, including nested verification/council/tool-loop responses. Cache hits add no usage. Slash commands, automatic actions, and HTTP/Pi CLI backends retain wai's separate cost tracker; they do not attach estimated usage to native tool totals.
 
 ### Footer status and session audit trail
 
@@ -775,7 +779,7 @@ When the agent edits without any active plan, the reminder also nudges plan crea
 
 3. **Done gate (default: on).** With `requireReviewBeforeDone` enabled, `wai.done` / `/wai-done` refuses to mark a step complete while unreviewed edits are pending and reports the pending count instead. Override explicitly with `wai({ done: true, force: true })` or `/wai-done --force`; the step is then recorded as manually marked (not reviewed).
 
-4. **Auto-review on settle (default: on).** With `autoReviewOnSettle` enabled, settling the agent with unreviewed edits pending triggers `wai.review` automatically before any auto-judge. If the review would exceed `costBudgetUsd`, it is logged and skipped quietly. When enabled, the verdict is also delivered to the main agent as a visible steer message. Set `autoReviewOnSettle: false` for an explicit review workflow (recommended when the agent calls `wai.review`/`wai.judge` itself).
+4. **Auto-review on settle (default: on).** With `autoReviewOnSettle` enabled, settling the agent with unreviewed edits pending triggers `wai.review` automatically before any auto-judge. If the review would exceed `costBudgetUsd`, it is logged and skipped quietly. On Pi 0.87+, the verdict enters the pre-settle boundary and findings can request one continuation; clean passes do not force another turn. Older Pi hosts receive a visible steer. Set `autoReviewOnSettle: false` for an explicit review workflow (recommended when the agent calls `wai.review`/`wai.judge` itself).
 
 ### Loop detection
 

@@ -36,7 +36,11 @@ import { planStepDescription, type WaiToolResult } from "../types.js";
 import { updateWaiStatus } from "./status.js";
 import { publishWaiResult } from "./publish.js";
 import { auditUnreviewedEdits } from "./audit.js";
-import { setWaiToolExecuting } from "./context-injector.js";
+import { beginWaiToolExecution, clearWaiToolExecution } from "./context-injector.js";
+import { beginSessionWork, cancelSessionWork } from "./session-work.js";
+import { restoreBranchState } from "./branch-state.js";
+import { supportsActionableSettle } from "./host-capabilities.js";
+import { updateWaiPlanWidget } from "./widget.js";
 import { flushSessionState, applyReviewOutcome } from "../session-state.js";
 import { unregisterWaiProvider } from "./provider.js";
 
@@ -44,11 +48,11 @@ const STEER_COOLDOWN_MS = 30_000;
 
 /** Tracks cwd's with an in-flight auto-judge so overlapping triggers
  *  (e.g. /wai-done + agent_settled) do not run judge twice. */
-const judgingCwds = new Set<string>();
+const judgingCwds = new Map<string, ReturnType<typeof beginSessionWork>>();
 
 /** Tracks cwd's with an in-flight auto-review so a settle-triggered review
  *  cannot retrigger itself or run twice for the same settle. */
-const reviewingCwds = new Set<string>();
+const reviewingCwds = new Map<string, ReturnType<typeof beginSessionWork>>();
 
 export type JudgeRunner = (
   cwd: string,
@@ -73,6 +77,7 @@ export interface LifecycleDeps {
   executeWaiJudge?: JudgeRunner;
   executeWaiReview?: ReviewRunner;
   clearPromptCache?: () => void;
+  actionableBoundaries?: boolean;
 }
 
 /** Trigger auto-judge when the plan is complete and autoJudge is enabled.
@@ -82,7 +87,7 @@ export async function triggerAutoJudge(
   situation?: string,
   runJudge: JudgeRunner = executeWaiJudge,
 ): Promise<WaiToolResult | undefined> {
-  if (judgingCwds.has(ctx.cwd)) return undefined;
+  if (judgingCwds.get(ctx.cwd)?.isCurrent()) return undefined;
 
   const config = loadYoowaiConfig(ctx.cwd);
   if (!config.autoJudge) return undefined;
@@ -93,9 +98,12 @@ export async function triggerAutoJudge(
     return undefined;
   }
 
-  judgingCwds.add(ctx.cwd);
+  const work = beginSessionWork(ctx.cwd, ctx.signal);
+  judgingCwds.set(ctx.cwd, work);
+  const finishExecution = beginWaiToolExecution(ctx.cwd);
 
   const notify = (stage: number, total: number, message: string) => {
+    if (!work.isCurrent()) return;
     try {
       ctx.ui.notify(`[${stage}/${total}] ${message}`, "info");
     } catch {
@@ -107,10 +115,11 @@ export async function triggerAutoJudge(
     const judgeResult = await runJudge(
       ctx.cwd,
       situation ?? `All ${state.totalSteps} plan steps completed.`,
-      undefined,
+      work.signal,
       notify,
       ctx.sessionManager,
     );
+    if (!work.isCurrent()) return undefined;
     if (judgeResult.judge && !judgeResult.error) markJudgeCompleted(ctx.cwd);
     // Publish so the auto-judge verdict is audited and the footer/widget
     // reflect any tracker sync immediately, not after the next wai call.
@@ -120,13 +129,15 @@ export async function triggerAutoJudge(
     if (judgeResult.error) return undefined;
     return judgeResult;
   } catch (err) {
+    if (!work.isCurrent()) return undefined;
     const message = err instanceof Error ? err.message : String(err);
     logEvent(ctx.cwd, "error", "Auto-judge failed", { error: message });
     ctx.ui.notify(`Auto-judge failed: ${message}`, "error");
     return undefined;
   } finally {
-    judgingCwds.delete(ctx.cwd);
-    clearWaiStatus(ctx);
+    if (judgingCwds.get(ctx.cwd) === work) judgingCwds.delete(ctx.cwd);
+    finishExecution();
+    if (work.isCurrent()) clearWaiStatus(ctx);
   }
 }
 
@@ -138,7 +149,7 @@ export async function triggerAutoReview(
   ctx: ExtensionContext | ExtensionCommandContext,
   runReview: ReviewRunner = defaultReviewRunner,
 ): Promise<WaiToolResult | undefined> {
-  if (reviewingCwds.has(ctx.cwd)) return undefined;
+  if (reviewingCwds.get(ctx.cwd)?.isCurrent()) return undefined;
 
   const config = loadYoowaiConfig(ctx.cwd);
   if (!config.autoReviewOnSettle) return undefined;
@@ -147,13 +158,15 @@ export async function triggerAutoReview(
   const pendingEdits = getEditTracker(ctx.cwd).editsSinceLastReview;
   if (pendingEdits <= 0) return undefined;
 
-  reviewingCwds.add(ctx.cwd);
+  const work = beginSessionWork(ctx.cwd, ctx.signal);
+  reviewingCwds.set(ctx.cwd, work);
   // Suppress context injection while the review runs so the injector does not
   // feed the workflow reminder back into the review prompt.
-  setWaiToolExecuting(ctx.cwd, true);
+  const finishExecution = beginWaiToolExecution(ctx.cwd);
 
   const level = resolveReviewLevel(config);
   const notify = (stage: number, total: number, message: string) => {
+    if (!work.isCurrent()) return;
     try {
       ctx.ui.notify(`${level ? `(${level}) ` : ""}[${stage}/${total}] ${message}`, "info");
     } catch {
@@ -166,9 +179,10 @@ export async function triggerAutoReview(
       ctx.cwd,
       `Auto-review of ${pendingEdits} unreviewed edit(s) after the agent settled.`,
       ctx,
-      undefined,
+      work.signal,
       notify,
     );
+    if (!work.isCurrent()) return undefined;
     if (result.error) {
       // A budget error means the review was intentionally skipped to respect
       // the configured cost cap — log it and stay quiet.
@@ -188,13 +202,14 @@ export async function triggerAutoReview(
     ctx.ui.notify(text.slice(0, 500), "info");
     return result;
   } catch (err) {
+    if (!work.isCurrent()) return undefined;
     const message = err instanceof Error ? err.message : String(err);
     logEvent(ctx.cwd, "error", "Auto-review failed", { error: message });
     ctx.ui.notify(`Auto-review failed: ${message}`, "error");
     return undefined;
   } finally {
-    reviewingCwds.delete(ctx.cwd);
-    setWaiToolExecuting(ctx.cwd, false);
+    if (reviewingCwds.get(ctx.cwd) === work) reviewingCwds.delete(ctx.cwd);
+    finishExecution();
   }
 }
 
@@ -208,7 +223,7 @@ function autoResultMessage(action: "review" | "judge", result: WaiToolResult, fi
   }
   const verdict = action === "review" ? result.review?.verdict : result.judge?.verdict;
   const issueCount = action === "review" ? (result.review?.issues?.length ?? 0) : (result.judge?.issues?.length ?? 0);
-  if (verdict === "pass" && issueCount === 0) {
+  if (verdict === "pass" && issueCount === 0 && (!result.judge || result.judge.verdict === "pass")) {
     return action === "review"
       ? `Auto-review (${fileCount ?? "?"} files): pass — no issues`
       : "Auto-judge result: pass — no issues";
@@ -251,6 +266,75 @@ export function registerLifecycleHandlers(
   _loopStates: Map<string, LoopDetectionState>,
   deps: LifecycleDeps = {},
 ): void {
+  const actionable = deps.actionableBoundaries ?? supportsActionableSettle();
+  const observedBoundaries = new Set<string>();
+  const boundaryAttempts = new Map<string, { work: ReturnType<typeof beginSessionWork>; signature: string }>();
+  pi.on("input", async (_event, ctx) => {
+    boundaryAttempts.delete(ctx.cwd);
+  });
+  if (actionable) {
+    const onBoundary = pi.on as unknown as (
+      event: string,
+      handler: (
+        event: { entries: unknown[]; context: { canContinue: boolean }; outcome?: string },
+        ctx: ExtensionContext,
+      ) => Promise<unknown>,
+    ) => void;
+    onBoundary("agent_before_settle", async (event, ctx) => {
+      observedBoundaries.add(ctx.cwd);
+      if (event.outcome && event.outcome !== "completed") return;
+      const work = beginSessionWork(ctx.cwd, ctx.signal);
+      syncWorkspaceChanges(ctx.cwd);
+      const state = getState(ctx.cwd);
+      const config = loadYoowaiConfig(ctx.cwd);
+      const signature = JSON.stringify([
+        state.observedFingerprint,
+        state.editsSinceLastReview,
+        state.completedSteps,
+        state.totalSteps,
+        state.judgeCompleted,
+        state.plan,
+        config.autoReviewOnSettle,
+        config.autoJudge,
+        config.costBudgetUsd,
+        config.secondary,
+        config.taskModels,
+      ]);
+      const previous = boundaryAttempts.get(ctx.cwd);
+      if (previous?.work.isCurrent() && previous.signature === signature) return;
+      boundaryAttempts.set(ctx.cwd, { work, signature });
+      const pendingEdits = state.editsSinceLastReview;
+      const review = await triggerAutoReview(ctx, deps.executeWaiReview);
+      if (!work.isCurrent()) return;
+      const judge = await triggerAutoJudge(ctx, undefined, deps.executeWaiJudge);
+      if (!work.isCurrent()) return;
+      const results: ["review" | "judge", WaiToolResult | undefined][] = [
+        ["review", review],
+        ["judge", judge],
+      ];
+      const messages = results.flatMap(([action, result]) =>
+        result
+          ? [
+              {
+                type: "custom_message",
+                customType: "wai-auto-result",
+                content: autoResultMessage(action, result, pendingEdits),
+                display: true,
+              },
+            ]
+          : [],
+      );
+      if (!messages.length) return;
+      const needsWork =
+        review?.review?.verdict === "needs-work" ||
+        review?.judge?.verdict === "needs-work" ||
+        judge?.judge?.verdict === "needs-work";
+      return {
+        entries: [...event.entries, ...messages],
+        ...(needsWork && event.context.canContinue ? { continue: true } : {}),
+      };
+    });
+  }
   pi.on("tool_result", async (event: ToolResultEvent, ctx) => {
     try {
       // Count successful file mutations accurately. Failed/aborted/error results
@@ -347,18 +431,25 @@ export function registerLifecycleHandlers(
 
   pi.on("agent_settled", async (_event: AgentSettledEvent, ctx) => {
     try {
+      if (actionable && observedBoundaries.has(ctx.cwd)) {
+        updateWaiStatus(ctx);
+        return;
+      }
+      const work = beginSessionWork(ctx.cwd, ctx.signal);
       // Auto-review runs first: pending edits get reviewed before the judge
       // looks at the whole plan, and a passing review may complete the plan.
       // Snapshot BEFORE the review: the trigger resets the pending-edit
       // counter, and the compact pass message needs the original count.
       const pendingEdits = getEditTracker(ctx.cwd).editsSinceLastReview;
       const reviewOutcome = await triggerAutoReview(ctx, deps.executeWaiReview);
+      if (!work.isCurrent()) return;
       if (reviewOutcome) {
         pi.sendUserMessage(autoResultMessage("review", reviewOutcome, pendingEdits), {
           deliverAs: "steer",
         });
       }
       const judgeResult = await triggerAutoJudge(ctx, undefined, deps.executeWaiJudge);
+      if (!work.isCurrent()) return;
       if (judgeResult) {
         pi.sendUserMessage(autoResultMessage("judge", judgeResult), { deliverAs: "steer" });
       }
@@ -394,6 +485,8 @@ export function registerLifecycleHandlers(
   });
 
   pi.on("session_before_switch", async (_event: SessionBeforeSwitchEvent, ctx) => {
+    cancelSessionWork(ctx.cwd);
+    clearWaiToolExecution(ctx.cwd);
     try {
       flushSessionStateWithAudit(ctx);
       unregisterWaiProvider(pi, ctx.cwd);
@@ -408,6 +501,8 @@ export function registerLifecycleHandlers(
   });
 
   pi.on("session_before_fork", async (_event: SessionBeforeForkEvent, ctx) => {
+    cancelSessionWork(ctx.cwd);
+    clearWaiToolExecution(ctx.cwd);
     try {
       flushSessionStateWithAudit(ctx);
       unregisterWaiProvider(pi, ctx.cwd);
@@ -416,6 +511,21 @@ export function registerLifecycleHandlers(
     } finally {
       setSdkSessionRegistry(null);
     }
+  });
+
+  pi.on("session_before_tree", async (_event, ctx) => {
+    cancelSessionWork(ctx.cwd);
+    clearWaiToolExecution(ctx.cwd);
+    flushSessionStateWithAudit(ctx);
+  });
+  pi.on("session_tree", async (_event, ctx) => {
+    restoreBranchState(ctx, true);
+    updateWaiStatus(ctx);
+    updateWaiPlanWidget(ctx);
+  });
+  pi.on("session_shutdown", async (_event, ctx) => {
+    cancelSessionWork(ctx.cwd);
+    clearWaiToolExecution(ctx.cwd);
   });
 
   pi.on("session_compact", async (_event: SessionCompactEvent, ctx) => {

@@ -77,6 +77,8 @@ declare module "@earendil-works/pi-ai" {
     toolCallId: string;
     toolName: string;
     content: (TextContent | ImageContent)[];
+    details?: unknown;
+    usage?: Usage;
     isError: boolean;
     timestamp: number;
   }

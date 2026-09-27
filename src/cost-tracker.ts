@@ -96,12 +96,15 @@ export function getSessionCost(cwd: string): CostLog {
 }
 
 export function resetCost(cwd: string): void {
+  reservedUsd.delete(cwd);
+  reservationEpochs.delete(cwd);
   saveCost(cwd, { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, updatedAt: new Date().toISOString() });
 }
 
 const reservedUsd = new Map<string, number>();
+const reservationEpochs = new Map<string, object>();
 
-export function reserveCost(cwd: string, amountUsd: number, budgetUsd?: number): void {
+export function reserveCost(cwd: string, amountUsd: number, budgetUsd?: number): () => void {
   const projected = getSessionCost(cwd).costUsd + getReservedCost(cwd) + amountUsd;
   if (budgetUsd !== undefined && budgetUsd >= 0 && projected > budgetUsd) {
     throw new Error(
@@ -110,6 +113,14 @@ export function reserveCost(cwd: string, amountUsd: number, budgetUsd?: number):
     );
   }
   reservedUsd.set(cwd, (reservedUsd.get(cwd) ?? 0) + amountUsd);
+  const epoch = reservationEpochs.get(cwd) ?? {};
+  reservationEpochs.set(cwd, epoch);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    if (reservationEpochs.get(cwd) === epoch) releaseCost(cwd, amountUsd);
+  };
 }
 
 export function releaseCost(cwd: string, amountUsd: number): void {

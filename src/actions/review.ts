@@ -111,6 +111,7 @@ export async function executeWaiReview(
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
 ): Promise<WaiToolResult> {
+  signal?.throwIfAborted();
   const config = loadYoowaiConfig(cwd);
   const reviewSettings = resolveReviewSettings(config, options.level);
   const level = reviewSettings.level;
@@ -985,6 +986,7 @@ export async function executeWaiReview(
     return { action: "review", error: "Review could not be produced", model: modelProfile };
   }
 
+  signal?.throwIfAborted();
   progress(8, STAGES.review, "Review response received");
   if (changedFiles.length > 0) {
     const changedFilesSet = new Set(changedFiles);
@@ -1210,6 +1212,7 @@ export async function executeWaiReview(
           judgeProgress,
           ctx.sessionManager,
         );
+        signal?.throwIfAborted();
         if (judgeResult.judge) {
           review.autoJudged = true;
           markJudgeCompleted(cwd);
@@ -1229,6 +1232,7 @@ export async function executeWaiReview(
           review.suggestions.push(`Auto-judge failed: ${judgeResult.error}`);
         }
       } catch (err) {
+        signal?.throwIfAborted();
         logEvent(cwd, "warn", "Auto-judge failed; keeping review result", {
           error: err instanceof Error ? err.message : String(err),
         });

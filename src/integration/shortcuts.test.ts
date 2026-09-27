@@ -50,6 +50,7 @@ function makeContext(cwd: string, notifications: string[]): ExtensionContext {
     model: undefined,
     mode: "tui",
     hasUI: true,
+    ...{ scopedModels: [] },
     isIdle: () => true,
     isProjectTrusted: () => true,
     signal: undefined,

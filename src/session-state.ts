@@ -405,6 +405,24 @@ export function dropSessionState(cwd: string): void {
   sessionStates.delete(cwd);
 }
 
+/** Round-trip branch snapshots through the same validation used for persisted state. */
+export function replaceSessionState(cwd: string, state?: YoowaiSessionState): void {
+  saveState(
+    cwd,
+    state ?? {
+      completedSteps: 0,
+      totalSteps: 0,
+      reviewRounds: [],
+      reviewedSteps: [],
+      judgeCompleted: false,
+      editsSinceLastReview: 0,
+      editsSinceLastDone: 0,
+    },
+  );
+  dropSessionState(cwd);
+  getState(cwd);
+}
+
 /** Flush the in-memory session state to disk. Useful before session
  *  navigation events (switch/fork) so counters survive. Edits still pending
  *  review at flush time are folded into the unreviewed-edits total (only the

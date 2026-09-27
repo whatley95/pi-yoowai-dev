@@ -10,6 +10,7 @@ import { getPiSessionId } from "./pi-backend.js";
 import { buildUsage, applyReportedUsage, extractTextFromContent, isLengthStop } from "./shared.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { reportNativeUsage } from "../integration/native-tools.js";
 
 type PiAiCompatModule = typeof import("@earendil-works/pi-ai/compat");
 type PiAiOAuthModule = typeof import("@earendil-works/pi-ai/oauth");
@@ -680,6 +681,7 @@ export async function callSdkBackend(
     }
 
     const message = await stream.result();
+    if (message.usage) reportNativeUsage(message.usage);
 
     if (message.stopReason === "error" || message.stopReason === "aborted") {
       const detail = message.errorMessage ? `: ${message.errorMessage}` : "";

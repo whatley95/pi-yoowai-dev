@@ -22,6 +22,7 @@ function makeContext(cwd: string, capture: Map<string, string[] | undefined>): E
     model: undefined,
     mode: "tui",
     hasUI: true,
+    ...{ scopedModels: [] },
     isIdle: () => true,
     isProjectTrusted: () => true,
     signal: undefined,

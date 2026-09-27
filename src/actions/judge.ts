@@ -55,6 +55,7 @@ export async function executeWaiJudge(
   progress: ProgressReporter,
   sessionManager?: ExtensionContext["sessionManager"],
 ): Promise<WaiToolResult> {
+  signal?.throwIfAborted();
   const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "judge");
   if (!modelConfig.provider || !modelConfig.id) {
@@ -450,6 +451,7 @@ export async function executeWaiJudge(
     judge.summary = `Configured checks failed. ${judge.summary}`;
     judge.suggestions.push("Configured checks failed. A model judgment cannot override failed execution evidence.");
   }
+  signal?.throwIfAborted();
   recordCompletionEvidence(cwd, workspaceFingerprint, checks, `Judge: ${judge.verdict}. ${judge.summary}`);
 
   // The judge is the holistic authority on which plan steps the code actually

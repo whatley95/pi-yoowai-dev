@@ -4,7 +4,12 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI, ContextEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { registerContextInjector, setWaiToolExecuting } from "./context-injector.js";
+import {
+  registerContextInjector,
+  setWaiToolExecuting,
+  beginWaiToolExecution,
+  clearWaiToolExecution,
+} from "./context-injector.js";
 import { setPlan, recordFileEdit, setPlanProgress } from "../session-state.js";
 import { recordIssues } from "../review-memory.js";
 import { recordLearnedFact } from "../wai-learn.js";
@@ -54,6 +59,7 @@ function makeContext(cwd: string): ExtensionContext {
     model: undefined,
     mode: "tui",
     hasUI: true,
+    ...{ scopedModels: [] },
     isIdle: () => true,
     isProjectTrusted: () => true,
     signal: undefined,
@@ -101,7 +107,31 @@ describe("context-injector", () => {
   });
 
   afterEach(() => {
+    clearWaiToolExecution(cwd);
     rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("keeps injection suppressed until every overlapping execution finishes and ignores stale cleanup", () => {
+    setPlan(cwd, { summary: "overlap", todo: ["one"], acceptanceCriteria: [] });
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const first = beginWaiToolExecution(cwd);
+    const second = beginWaiToolExecution(cwd);
+    first();
+    first();
+    const suppressed = makeMessages();
+    emitContext(suppressed, makeContext(cwd));
+    assert.ok(!JSON.stringify(suppressed).includes("<wai_context>"));
+    clearWaiToolExecution(cwd);
+    const replacement = beginWaiToolExecution(cwd);
+    second();
+    const stillSuppressed = makeMessages();
+    emitContext(stillSuppressed, makeContext(cwd));
+    assert.ok(!JSON.stringify(stillSuppressed).includes("<wai_context>"));
+    replacement();
+    const restored = makeMessages();
+    emitContext(restored, makeContext(cwd));
+    assert.ok(JSON.stringify(restored).includes("<wai_context>"));
   });
 
   it("appends context when state exists and autoInjectContext is true", () => {

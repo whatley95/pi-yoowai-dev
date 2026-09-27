@@ -107,6 +107,7 @@ export async function executeWaiPlan(
     };
   }
 
+  signal?.throwIfAborted();
   setPlan(cwd, plan);
   return {
     action: "plan",

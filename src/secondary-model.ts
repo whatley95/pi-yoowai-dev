@@ -1,6 +1,6 @@
 import { resolveApiKey } from "./auth-reader.js";
 import { formatLanguageDirective, loadYoowaiConfig, resolveTaskModel } from "./config.js";
-import { formatCost, getSessionCost, reserveCost, releaseCost, recordCost } from "./cost-tracker.js";
+import { formatCost, getSessionCost, reserveCost, recordCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveModelInfo } from "./model-registry.js";
 import { executeToolLoop } from "./tool-loop.js";
@@ -25,6 +25,8 @@ import {
 import type { CallSecondaryModelOptions, UsageCost } from "./types.js";
 import type { SecondaryModelConfig } from "./types/secondary-model.js";
 import type { YoowaiConfig } from "./types.js";
+import { getSessionId } from "./session-scope.js";
+import { beginSessionWork } from "./integration/session-work.js";
 
 export {
   estimateCost,
@@ -112,11 +114,15 @@ export async function callSecondaryModel(
 
   const lastErrors: string[] = [];
   for (let i = 0; i < attempts.length; i++) {
+    options.signal?.throwIfAborted();
     const attempt = attempts[i];
     try {
       const promptWithLanguage = languageDirective ? `${systemPrompt}\n\n${languageDirective}` : systemPrompt;
-      return await runSingleAttempt(attempt, promptWithLanguage, userPrompt, options, config, cwd);
+      const result = await runSingleAttempt(attempt, promptWithLanguage, userPrompt, options, config, cwd);
+      options.signal?.throwIfAborted();
+      return result;
     } catch (err) {
+      options.signal?.throwIfAborted();
       const msg = err instanceof Error ? err.message : String(err);
       lastErrors.push(`${attempt.provider}:${attempt.model} -> ${msg}`);
       if (cwd) {
@@ -226,6 +232,7 @@ async function runSingleAttempt(
         secondary?.maxRetries,
       );
     } catch (err) {
+      opts.signal?.throwIfAborted();
       // Never fall back to the pi backend with images attached — it cannot carry
       // them, so the model would answer about an image it cannot see.
       if (backend === "sdk" && !opts.images?.length && (isRetryableBackendError(err) || isMissingApiKeyError(err))) {
@@ -276,18 +283,24 @@ async function runSingleAttempt(
   };
 
   const doCall: typeof invokeBackend = async (sys, user, opts) => {
+    opts.signal?.throwIfAborted();
     if (!cwd) return invokeBackend(sys, user, opts);
+    const sessionId = getSessionId(cwd);
+    const work = beginSessionWork(cwd, opts.signal);
     const outputTokens =
       thinkingEnabledForBudget || opts.structuredOutput ? (modelInfoForBudget?.maxOutputTokens ?? 8192) : 2048;
     const projected = estimateCost(provider, model, estimateTokens(sys + user), outputTokens);
     // Admission and reservation are synchronous: parallel council/audit calls
     // see one another's in-flight spend, including every tool/continuation round.
-    reserveCost(cwd, projected, config?.costBudgetUsd);
+    const releaseReservation = reserveCost(cwd, projected, config?.costBudgetUsd);
     try {
       const result = await invokeBackend(sys, user, opts);
+      opts.signal?.throwIfAborted();
+      if (getSessionId(cwd) !== sessionId || !work.isGenerationCurrent())
+        throw new Error("Wai work cancelled: session changed.");
       return { ...result, usage: recordCost(cwd, { ...result.usage }) };
     } finally {
-      releaseCost(cwd, projected);
+      releaseReservation();
     }
   };
 

@@ -27,13 +27,12 @@ jobs:
       - run: npm run format:check
       - run: npm test
 
-  # Advisory compatibility job: runs the focused SDK/lifecycle/vision suites
+  # Required compatibility job: checks types and focused integration suites
   # against a disposable install pinned to a recent Pi host (0.87.1). The repo
   # itself stays on its >=0.82.1 peer floor; this job only proves the registry
-  # adapter against a real newer host. continue-on-error keeps it advisory.
-  compat-086:
+  # adapter against a real newer host, including its actual agent execution loop.
+  compat-latest:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,8 +40,8 @@ jobs:
           node-version: 22
       - name: Stage disposable 0.87.1 tree
         run: |
-          mkdir -p "$RUNNER_TEMP/pi-yoowai-086"
-          cd "$RUNNER_TEMP/pi-yoowai-086"
+          mkdir -p "$RUNNER_TEMP/pi-yoowai-latest"
+          cd "$RUNNER_TEMP/pi-yoowai-latest"
           cat > package.json << 'PKG'
           {
             "name": "pi-yoowai-087-validation",
@@ -50,7 +49,8 @@ jobs:
             "private": true,
             "type": "module",
             "scripts": {
-              "test-focused": "node --import tsx --test src/backends/sdk-backend.test.ts src/integration/lifecycle.test.ts src/index.test.ts src/wai-vision.test.ts src/secondary-model.test.ts src/auth-reader.test.ts"
+              "typecheck": "tsc --noEmit",
+              "test-focused": "node --import tsx --test src/backends/sdk-backend.test.ts src/integration/*.test.ts src/index.test.ts src/wai-vision.test.ts src/secondary-model.test.ts src/auth-reader.test.ts"
             },
             "dependencies": {
               "@earendil-works/pi-agent-core": "0.87.1",
@@ -60,7 +60,7 @@ jobs:
               "@sinclair/typebox": "^0.34.49",
               "@types/node": "^26.0.0",
               "duck-duck-scrape": "^2.2.7",
-              "mupdf": "^1.28.0",
+              "mupdf": "1.28.0",
               "tsx": "^4.0.0",
               "typescript": "^6.0.3"
             }
@@ -68,7 +68,8 @@ jobs:
           PKG
           cp -r "${{ github.workspace }}/src" ./src
           cp -r "${{ github.workspace }}/templates" ./templates
+          cp -r "${{ github.workspace }}/design-refs" ./design-refs
           cp "${{ github.workspace }}/tsconfig.json" ./tsconfig.json
           npm install --no-audit --no-fund
-      - name: Focused suites under 0.87.1
-        run: cd "$RUNNER_TEMP/pi-yoowai-086" && npm run test-focused
+      - name: Types and integration suites under 0.87.1
+        run: cd "$RUNNER_TEMP/pi-yoowai-latest" && npm run typecheck && npm run test-focused

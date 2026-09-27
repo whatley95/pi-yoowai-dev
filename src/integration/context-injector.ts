@@ -8,17 +8,36 @@ import { getState, getEditTracker } from "../session-state.js";
 import { getPastIssuesForFiles } from "../review-memory.js";
 import { estimateTokens, truncateToTokenBudget } from "../token-budget.js";
 
-const executingCwds = new Set<string>();
+const executingCwds = new Map<string, { count: number }>();
 
 /** Mark whether a wai tool is currently executing for the given cwd.
  *  The context injector skips injection while a wai tool is running to avoid
  *  self-referential context. */
 export function setWaiToolExecuting(cwd: string, executing: boolean): void {
   if (executing) {
-    executingCwds.add(cwd);
+    const active = executingCwds.get(cwd) ?? { count: 0 };
+    active.count++;
+    executingCwds.set(cwd, active);
   } else {
-    executingCwds.delete(cwd);
+    const active = executingCwds.get(cwd);
+    if (active && --active.count <= 0) executingCwds.delete(cwd);
   }
+}
+
+/** The disposer only touches its own generation, even after session replacement. */
+export function beginWaiToolExecution(cwd: string): () => void {
+  setWaiToolExecuting(cwd, true);
+  const active = executingCwds.get(cwd)!;
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    if (executingCwds.get(cwd) === active) setWaiToolExecuting(cwd, false);
+  };
+}
+
+export function clearWaiToolExecution(cwd: string): void {
+  executingCwds.delete(cwd);
 }
 
 type ContextMessage = ContextEvent["messages"][number];

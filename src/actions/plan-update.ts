@@ -17,6 +17,7 @@ export async function executeWaiPlanUpdate(
   const previousBase = before.planBaseCommit;
 
   const planResult = await executeWaiPlan(cwd, description, signal, progress, sessionManager, "plan", "planUpdate");
+  signal?.throwIfAborted();
   if (planResult.error || !planResult.plan) {
     return {
       completedStep: previousCompleted,

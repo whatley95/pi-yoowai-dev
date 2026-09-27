@@ -14,7 +14,7 @@ import type {
   SessionBeforeForkEvent,
   SessionCompactEvent,
 } from "@earendil-works/pi-coding-agent";
-import { registerLifecycleHandlers, triggerAutoJudge, type LifecycleDeps } from "./lifecycle.js";
+import { registerLifecycleHandlers as registerHandlers, triggerAutoJudge, type LifecycleDeps } from "./lifecycle.js";
 import { setAuditExtensionAPI } from "./audit.js";
 import { getSdkRegistry, setSdkSessionRegistry } from "../backends/sdk-backend.js";
 import {
@@ -28,6 +28,9 @@ import {
 } from "../session-state.js";
 import { createLoopDetectionState, type LoopDetectionState } from "../loop-detector.js";
 import type { WaiToolResult } from "../types.js";
+
+const registerLifecycleHandlers: typeof registerHandlers = (pi, loops, deps = {}) =>
+  registerHandlers(pi, loops, { actionableBoundaries: false, ...deps });
 
 type EmitToolResult = (event: ToolResultEvent, ctx: ExtensionContext) => void;
 type EmitTurnEnd = (event: TurnEndEvent, ctx: ExtensionContext) => void;
@@ -105,6 +108,7 @@ function makeContext(cwd: string): ExtensionContext {
     model: undefined,
     mode: "tui",
     hasUI: true,
+    ...{ scopedModels: [] },
     isIdle: () => true,
     isProjectTrusted: () => true,
     signal: undefined,

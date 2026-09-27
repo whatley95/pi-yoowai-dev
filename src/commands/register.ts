@@ -26,6 +26,9 @@ import { executeWaiRecommend } from "../actions/recommend.js";
 import { executeWaiDone } from "../actions/done.js";
 import { executeWaiJudge } from "../actions/judge.js";
 import { triggerAutoJudge } from "../integration/lifecycle.js";
+import { cancelSessionWork } from "../integration/session-work.js";
+import { clearWaiToolExecution } from "../integration/context-injector.js";
+import { auditStateCleared } from "../integration/audit.js";
 import { publishWaiResult } from "../integration/publish.js";
 import { updateWaiStatus } from "../integration/status.js";
 import { updateWaiPlanWidget } from "../integration/widget.js";
@@ -1718,6 +1721,8 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   });
 
   const clearHandler = async (_args: string, ctx: ExtensionContext) => {
+    cancelSessionWork(ctx.cwd);
+    clearWaiToolExecution(ctx.cwd);
     dropSessionState(ctx.cwd);
     loopStates.delete(ctx.cwd);
     clearPiSessionId(ctx.cwd);
@@ -1729,6 +1734,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     clearLearnedFacts(ctx.cwd);
     clearPromptCache();
     clearReviewCache(ctx.cwd);
+    auditStateCleared(ctx);
     // Refresh the UI surfaces so the cleared plan does not linger on screen.
     updateWaiStatus(ctx);
     updateWaiPlanWidget(ctx);

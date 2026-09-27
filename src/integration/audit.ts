@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { planStepDescription } from "../types.js";
 import { getState } from "../session-state.js";
+import { branchStateSnapshot } from "./branch-state.js";
+import type { YoowaiSessionState } from "../types.js";
 
 export type WaiAuditEntryType =
   | "plan-created"
@@ -11,9 +13,12 @@ export type WaiAuditEntryType =
   | "judge-pass"
   | "judge-needs-work"
   | "scan-complete"
-  | "session-unreviewed";
+  | "session-unreviewed"
+  | "state-cleared";
 
 export interface WaiAuditEntry {
+  stateVersion?: 1;
+  state?: YoowaiSessionState;
   type: WaiAuditEntryType;
   timestamp: string;
   cwd: string;
@@ -37,10 +42,18 @@ export function setAuditExtensionAPI(pi: ExtensionAPI): void {
 function appendEntry(entry: Omit<WaiAuditEntry, "timestamp">): void {
   if (!extensionAPI) return;
   try {
-    extensionAPI.appendEntry("wai", { ...entry, timestamp: new Date().toISOString() });
+    extensionAPI.appendEntry("wai", {
+      ...entry,
+      ...branchStateSnapshot(entry.cwd),
+      timestamp: new Date().toISOString(),
+    });
   } catch {
     // best-effort audit logging
   }
+}
+
+export function auditStateCleared(ctx: ExtensionContext): void {
+  appendEntry({ type: "state-cleared", cwd: ctx.cwd });
 }
 
 /** Append a session entry recording that a plan was created or updated. */
