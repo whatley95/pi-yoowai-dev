@@ -7,7 +7,9 @@ import {
   getState,
   getEditTracker,
   resetEditsSinceDone,
+  syncWorkspaceChanges,
 } from "../session-state.js";
+import { captureWorkspace, workspaceMatches } from "../workspace-fingerprint.js";
 import { callSecondaryModel } from "../secondary-model.js";
 import { buildStepVerificationPrompt, parseStepVerificationResponse } from "../prompts.js";
 import { capActionInstructions } from "../instructions.js";
@@ -42,6 +44,7 @@ export async function executeWaiDone(
   signal?: AbortSignal,
   force = false,
 ): Promise<DoneResult> {
+  syncWorkspaceChanges(cwd);
   const before = getProgress(cwd);
   if (before.total === 0) {
     return {
@@ -65,7 +68,12 @@ export async function executeWaiDone(
     };
   }
 
-  if (before.completed >= before.total && (targetStep === undefined || targetStep >= before.completed)) {
+  if (
+    before.completed >= before.total &&
+    (targetStep === undefined || targetStep >= before.completed) &&
+    !getState(cwd).reviewBlocked &&
+    getEditTracker(cwd).editsSinceLastReview === 0
+  ) {
     return {
       completedStep: before.completed,
       totalSteps: before.total,
@@ -120,6 +128,7 @@ export async function executeWaiDone(
     stepDescription
   ) {
     try {
+      const verificationSnapshot = captureWorkspace(cwd);
       const { diff, truncated: diffTruncated } = getDiff(cwd, {
         maxDiffChars: config.reviewMaxDiffChars,
         untracked: true,
@@ -149,6 +158,7 @@ export async function executeWaiDone(
         if (truncated) throw new Error("Incomplete done-verification response");
         const parsed = parseStepVerificationResponse(raw);
         if (!parsed) throw new Error("Invalid done-verification response");
+        if (!workspaceMatches(cwd, verificationSnapshot)) throw new Error("Workspace changed during done verification");
         if (parsed) {
           verified = parsed.satisfied;
           if (!parsed.satisfied) {

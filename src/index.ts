@@ -43,7 +43,7 @@ import {
 } from "./wai-learn.js";
 import { runWaiScaffold, type WaiScaffoldParams } from "./wai-scaffold.js";
 import { listDesignRefDocs, readDesignRefDoc, DESIGN_REF_TOPIC_DESCRIPTIONS } from "./design-ref.js";
-import { dropSessionState, resetEditsSinceDone, applyReviewOutcome } from "./session-state.js";
+import { dropSessionState, resetEditsSinceDone, applyReviewOutcome, syncWorkspaceChanges } from "./session-state.js";
 import { secondaryModelLabel } from "./actions/shared.js";
 import { executeWaiPlan } from "./actions/plan.js";
 import { executeWaiReview } from "./actions/review.js";
@@ -194,6 +194,7 @@ export default async function (pi: ExtensionAPI) {
 
     // cost.json tracks estimated spend for the current Pi session.
     resetCost(ctx.cwd);
+    syncWorkspaceChanges(ctx.cwd);
     updateWaiStatus(ctx);
     updateWaiPlanWidget(ctx);
 

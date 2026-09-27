@@ -24,6 +24,7 @@ import {
   markJudgeCompleted,
   recordUnreviewedTurn,
   recordNoPlanTurn,
+  syncWorkspaceChanges,
 } from "../session-state.js";
 import { executeWaiJudge } from "../actions/judge.js";
 import { executeWaiReview } from "../actions/review.js";
@@ -85,6 +86,7 @@ export async function triggerAutoJudge(
 
   const config = loadYoowaiConfig(ctx.cwd);
   if (!config.autoJudge) return undefined;
+  syncWorkspaceChanges(ctx.cwd);
 
   const state = getState(ctx.cwd);
   if (state.judgeCompleted || state.totalSteps === 0 || state.completedSteps < state.totalSteps) {
@@ -140,6 +142,7 @@ export async function triggerAutoReview(
 
   const config = loadYoowaiConfig(ctx.cwd);
   if (!config.autoReviewOnSettle) return undefined;
+  syncWorkspaceChanges(ctx.cwd);
 
   const pendingEdits = getEditTracker(ctx.cwd).editsSinceLastReview;
   if (pendingEdits <= 0) return undefined;
@@ -263,10 +266,11 @@ export function registerLifecycleHandlers(
 
   pi.on("turn_end", async (event: TurnEndEvent, ctx) => {
     try {
+      const workspaceChanged = syncWorkspaceChanges(ctx.cwd);
       // Do not send workflow steers from wai tool results; only from real edits.
       const toolResults = event.toolResults;
       const hadRealEdit = toolResults.some((tr) => isFileWriteTool(tr.toolName) && !tr.isError);
-      if (!hadRealEdit) return;
+      if (!hadRealEdit && !workspaceChanged) return;
 
       const state = getState(ctx.cwd);
       // Count plan-less edit turns right after the real-edit gate — before the
@@ -274,7 +278,7 @@ export function registerLifecycleHandlers(
       // reviewing every edit within the same turn. Creating a plan resets the
       // streak.
       const noActivePlan = !state.plan || state.totalSteps === 0;
-      if (noActivePlan) recordNoPlanTurn(ctx.cwd);
+      if (noActivePlan && (hadRealEdit || workspaceChanged)) recordNoPlanTurn(ctx.cwd);
 
       const editState = getEditTracker(ctx.cwd);
       const reviewPending = editState.editsSinceLastReview > 0;

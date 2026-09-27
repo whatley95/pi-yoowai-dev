@@ -1,5 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
+import { captureWorkspace, workspaceMatches } from "../workspace-fingerprint.js";
+import { recordCompletionEvidence } from "../completion-evidence.js";
+import { recordFindingRound, findingGuidance } from "../finding-tracker.js";
 import { loadYoowaiConfig, resolveReviewTaskModel } from "../config.js";
 import { resolveProjectPath } from "../path-security.js";
 import { getDiff, splitDiffByFile, splitDiffByHunk, getVcsInfo } from "../diff-grabber.js";
@@ -138,6 +141,8 @@ export async function executeWaiReview(
   const loopConfig = { ...config, toolUseLoop: effectiveToolUseLoop };
 
   const state = getState(cwd);
+  const workspace = captureWorkspace(cwd);
+  const workspaceFingerprint = workspace.status === "ready" ? workspace.fingerprint : undefined;
   const currentStep =
     state.plan && state.completedSteps < state.plan.todo.length
       ? planStepDescription(state.plan.todo[state.completedSteps])
@@ -185,7 +190,7 @@ export async function executeWaiReview(
   }
 
   const memoryContext = truncateToTokenBudget(
-    getPastIssuesForFiles(cwd, changedFiles, description),
+    `${getPastIssuesForFiles(cwd, changedFiles, description)}\n${findingGuidance(cwd)}`.trim(),
     effectiveConfig.reviewMaxMemoryTokens ?? 800,
   );
 
@@ -328,6 +333,7 @@ export async function executeWaiReview(
     // stepComplete/consensus auto-advance could replay after a tracker
     // regression (identical step description + identical diff within the
     // TTL) and advance the plan without a fresh model call.
+    workspaceFingerprint,
     planProgress: state.plan ? `${state.completedSteps}/${state.totalSteps}` : "none",
     options,
     reviewMaxDiffChars: effectiveConfig.reviewMaxDiffChars,
@@ -357,9 +363,12 @@ export async function executeWaiReview(
   });
 
   {
-    const cached = getCachedReview(cwd, cacheKey);
+    const cached = effectivePreReviewCommands.length ? undefined : getCachedReview(cwd, cacheKey);
     if (cached) {
       progress(3, STAGES.review, "Using cached review result…");
+      if (!workspaceMatches(cwd, workspace))
+        return { action: "review", error: "Workspace changed during cached review." };
+      recordCompletionEvidence(cwd, workspaceFingerprint, [], `Cached review: ${cached.review.verdict}`);
       // A cached pass is still a completed review: keep the baseline in sync
       // so a baseline reset (new plan/session) cannot leave the next review
       // re-diffing already-reviewed commits.
@@ -367,6 +376,7 @@ export async function executeWaiReview(
       recordReviewedFiles(cwd, changedFiles, cached.review.verdict);
       return {
         action: "review",
+        workspaceFingerprint,
         review: cached.review,
         model: cached.model,
         cost: cached.cost,
@@ -397,9 +407,11 @@ export async function executeWaiReview(
   // commands. Explicitly empty preReviewCommands does NOT trigger auto mode.
   // (Already resolved above for the cache key.)
   let preReviewOutput = "";
+  let checks: Array<{ command: string; exitCode: number }> = [];
   if (effectivePreReviewCommands.length > 0) {
     progress(4, STAGES.review, "Running pre-review commands…");
     const results = await runPreReviewCommands(cwd, effectivePreReviewCommands);
+    checks = results.map(({ command, exitCode }) => ({ command, exitCode }));
     preReviewOutput = formatPreReviewOutput(results);
     const preReviewChars = baseBudget.availableInputTokens * 4;
     if (preReviewChars <= 0) {
@@ -513,7 +525,7 @@ export async function executeWaiReview(
     const hunks = splitDiffByHunk(fileDiffs[file] ?? "");
     if (hunks.length > 1) {
       const fileMemoryContext = truncateToTokenBudget(
-        getPastIssuesForFiles(cwd, [file], description),
+        `${getPastIssuesForFiles(cwd, [file], description)}\n${findingGuidance(cwd)}`.trim(),
         effectiveConfig.reviewMaxMemoryTokens ?? 800,
       );
       const fileBudget = calculateReviewBudget(
@@ -698,7 +710,7 @@ export async function executeWaiReview(
     const preps = await Promise.all(
       filesWithDiff.map(async (file): Promise<FilePrep> => {
         const fileMemoryContext = truncateToTokenBudget(
-          getPastIssuesForFiles(cwd, [file], description),
+          `${getPastIssuesForFiles(cwd, [file], description)}\n${findingGuidance(cwd)}`.trim(),
           effectiveConfig.reviewMaxMemoryTokens ?? 800,
         );
         const fileBudget = calculateReviewBudget(
@@ -989,7 +1001,24 @@ export async function executeWaiReview(
       });
     }
   }
+  if (!workspaceMatches(cwd, workspace)) {
+    return {
+      action: "review",
+      error: "Workspace changed or could not be fingerprinted during review. Review the current tree again.",
+      cost,
+      model: modelProfile,
+      level,
+    };
+  }
   recordIssues(cwd, review.issues);
+  if (checks.some((check) => check.exitCode !== 0)) {
+    review.verdict = "needs-work";
+    review.consensus = false;
+    review.stepComplete = false;
+    review.suggestions.push(
+      "Configured checks failed. A model pass cannot certify failing checks; fix them and review again.",
+    );
+  }
 
   // Merge the model's own truncation signal into the diff-truncation flag for
   // every path (the single-batch path computes finalDiffTruncated before the
@@ -1012,6 +1041,7 @@ export async function executeWaiReview(
   // suggestion must not claim the round was inconclusive).
   if (
     !reviewIncomplete &&
+    !checks.some((check) => check.exitCode !== 0) &&
     (review.verdict === "needs-work" || review.verdict === "blocked") &&
     review.issues.length === 0
   ) {
@@ -1082,6 +1112,17 @@ export async function executeWaiReview(
     review.consensus = false;
     review.inconclusive = false;
   }
+
+  if (
+    !reviewIncomplete &&
+    !review.inconclusive &&
+    !finalDiffTruncated &&
+    !finalDroppedFiles.length &&
+    isWholeTreeReview(options)
+  ) {
+    review.suggestions.push(...recordFindingRound(cwd, review.issues));
+  }
+  recordCompletionEvidence(cwd, workspaceFingerprint, checks, `Review: ${review.verdict}`);
 
   // Incomplete and inconclusive reviews are never cached: a retry must
   // re-run the model (the inconclusive suggestion explicitly recommends a
@@ -1176,6 +1217,7 @@ export async function executeWaiReview(
             cost && judgeResult.cost ? mergeUsageCost(cost, judgeResult.cost) : (cost ?? judgeResult.cost);
           return {
             action: "review",
+            workspaceFingerprint,
             review,
             judge: judgeResult.judge,
             cost: mergedCost,
@@ -1195,7 +1237,7 @@ export async function executeWaiReview(
         );
       }
     }
-  } else if (!review.inconclusive) {
+  } else if (!review.inconclusive && review.verdict !== "pass") {
     // Inconclusive reviews (verdict with zero issues) are not failed rounds —
     // the model gave us nothing to act on, so they must not feed escalation.
     incrementReviewRounds(cwd);
@@ -1211,6 +1253,7 @@ export async function executeWaiReview(
   progress(10, STAGES.review, "Finalizing review…");
   return {
     action: "review",
+    workspaceFingerprint,
     review,
     cost,
     model: modelProfile,

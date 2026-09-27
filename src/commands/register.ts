@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { VERSION, HOMEPAGE } from "../version.js";
+import { dismissFinding, formatFindings, clearFindings } from "../finding-tracker.js";
 import { getAgentDir } from "../pi-paths.js";
 import { formatResultText } from "../format.js";
 import { clearPromptCache } from "../prompts.js";
@@ -40,7 +41,14 @@ import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
 import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
 import { resolveReviewLevel } from "../review-level.js";
 import type { YoowaiConfig } from "../types.js";
-import { getState, getProgress, dropSessionState, applyReviewOutcome, getEditTracker } from "../session-state.js";
+import {
+  getState,
+  getProgress,
+  dropSessionState,
+  applyReviewOutcome,
+  getEditTracker,
+  syncWorkspaceChanges,
+} from "../session-state.js";
 import { buildPlanView } from "../plan-view.js";
 import { loadRecentModels, saveRecentModel, formatRecentModel, type RecentModel } from "../model-history.js";
 import { searchableSelect } from "./searchable-select.js";
@@ -1379,6 +1387,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   });
 
   const planViewHandler = async (_args: string, ctx: ExtensionContext) => {
+    syncWorkspaceChanges(ctx.cwd);
     const state = getState(ctx.cwd);
     const unreviewedEdits = getEditTracker(ctx.cwd).editsSinceLastReview;
     const lines = buildPlanView(state, getSessionCost(ctx.cwd), { unreviewedEdits });
@@ -1709,6 +1718,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     clearState(ctx.cwd);
     resetCost(ctx.cwd);
     clearMemory(ctx.cwd);
+    clearFindings(ctx.cwd);
     clearConventions(ctx.cwd);
     clearLearnedFacts(ctx.cwd);
     clearPromptCache();
@@ -2199,6 +2209,21 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     description:
       "Run review, security, and test concurrently over the current diff and show one combined report. Usage: /wai-audit [description] [review flags]",
     handler: auditHandler,
+  });
+  pi.registerCommand("wai-findings", {
+    description: "List recurring findings or record a dismissal with evidence: /wai-findings dismiss <id> <reason>",
+    handler: async (args, ctx) => {
+      try {
+        if (args.trim() && args.trim() !== "list") {
+          const match = /^dismiss\s+(\S+)\s+([\s\S]+)$/.exec(args.trim());
+          if (!match) throw new Error("Usage: /wai-findings [list | dismiss <id> <reason>]");
+          dismissFinding(ctx.cwd, match[1], match[2]);
+        }
+        ctx.ui.notify(formatFindings(ctx.cwd), "info");
+      } catch (err) {
+        ctx.ui.notify(String(err), "error");
+      }
+    },
   });
 
   const reflectHandler = async (args: string, ctx: ExtensionCommandContext) => {

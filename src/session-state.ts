@@ -1,6 +1,7 @@
 import { loadState, saveState, normalizeReviewedFiles, MAX_REVIEWED_FILES } from "./plan-store.js";
 import { planStepDescription } from "./types.js";
 import { getVcsInfo, resolveEmptyTree } from "./diff-grabber.js";
+import { captureWorkspace } from "./workspace-fingerprint.js";
 import type { YoowaiSessionState, PlanResult, ReviewVerdict, WaiToolResult } from "./types.js";
 
 const sessionStates = new Map<string, YoowaiSessionState>();
@@ -46,6 +47,9 @@ export function setPlan(cwd: string, plan: PlanResult): void {
   // Creating/replacing a plan must not certify outstanding edits.
   const vcs = getVcsInfo(cwd);
   state.planBaseCommit = vcs.type === "git" ? (vcs.revision ?? resolveEmptyTree(cwd)) : undefined;
+  const snapshot = captureWorkspace(cwd);
+  if (snapshot.status === "ready") state.observedFingerprint = snapshot.fingerprint;
+  state.completionEvidence = undefined;
   state.unreviewedTurns = 0;
   state.noPlanTurns = 0;
   state.unreviewedEditsTotal = 0;
@@ -228,6 +232,7 @@ export function recordFileEdit(cwd: string, filePath?: string): void {
   const state = getState(cwd);
   state.editsSinceLastReview++;
   state.editsSinceLastDone++;
+  state.judgeCompleted = false;
   if (filePath) {
     state.editedFiles ??= [];
     if (!state.editedFiles.includes(filePath) && state.editedFiles.length < MAX_TRACKED_EDITED_FILES) {
@@ -263,7 +268,12 @@ export function applyReviewOutcome(
 ): boolean {
   if (!isWholeTreeReview(scope)) return false;
   const review = result.review;
+  const snapshot = captureWorkspace(cwd);
+  const matches =
+    snapshot.status === "unsupported" ||
+    (snapshot.status === "ready" && result.workspaceFingerprint === snapshot.fingerprint);
   const passed =
+    matches &&
     !result.error &&
     review?.verdict === "pass" &&
     !review.inconclusive &&
@@ -272,9 +282,42 @@ export function applyReviewOutcome(
     result.continuation?.status !== "truncated-after-cap";
   const state = getState(cwd);
   state.reviewBlocked = !passed;
-  if (passed) resetEditsSinceReview(cwd);
+  if (passed) {
+    resetEditsSinceReview(cwd);
+    state.reviewedFingerprint = result.workspaceFingerprint;
+    state.observedFingerprint = result.workspaceFingerprint;
+  }
   saveState(cwd, state);
   return passed;
+}
+
+/** Reconcile shell/editor changes at workflow boundaries, without counting
+ * every read-only shell command as an edit. */
+export function syncWorkspaceChanges(cwd: string): boolean {
+  const snapshot = captureWorkspace(cwd);
+  const state = getState(cwd);
+  if (snapshot.status === "unsupported" && !state.observedFingerprint && !state.reviewedFingerprint) return false;
+  const changed =
+    snapshot.status === "ready" &&
+    Boolean(state.observedFingerprint ? state.observedFingerprint !== snapshot.fingerprint : snapshot.dirty);
+  if (snapshot.status !== "ready") {
+    state.reviewBlocked = true;
+    state.judgeCompleted = false;
+  } else {
+    if (
+      (snapshot.dirty && !state.reviewedFingerprint) ||
+      (state.observedFingerprint && state.observedFingerprint !== snapshot.fingerprint) ||
+      (state.reviewedFingerprint && state.reviewedFingerprint !== snapshot.fingerprint)
+    ) {
+      state.editsSinceLastReview = Math.max(1, state.editsSinceLastReview);
+      state.editsSinceLastDone = Math.max(1, state.editsSinceLastDone);
+      state.reviewBlocked = true;
+      state.judgeCompleted = false;
+    }
+    state.observedFingerprint = snapshot.fingerprint;
+  }
+  saveState(cwd, state);
+  return changed;
 }
 
 /** Record that a turn ended with unreviewed edits pending and no review call

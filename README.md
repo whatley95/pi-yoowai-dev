@@ -777,10 +777,20 @@ When the agent edits without any active plan, the reminder also nudges plan crea
 
 wai watches for repetitive patterns and sends a steering message if:
 
-- `wai` tools are called 3+ times in a row without real code edits
+- `wai` tools are called 5+ times in a row without real code edits
 - The same `wai` call is repeated with the same description
 
 This prevents the main agent from spinning in review-fix-review cycles.
+
+Fresh, complete whole-tree reviews also track recurring findings by normalized text and file, independent of line shifts. After three consecutive rounds reporting the same finding, the result asks for a concrete fix, reproduction, or evidence-based dismissal. `/wai-findings list` shows IDs and recurrence counts; `/wai-findings dismiss <id> <reason>` records evidence for the reviewer to assess. A dismissal never changes the verdict or completion gate. Cache hits, scoped reviews, and incomplete reviews do not count as fresh rounds. `/wai-clear` clears this history.
+
+### Approval and completion evidence
+
+For Git projects, wai fingerprints tracked and non-ignored untracked file contents, the index, and HEAD at workflow boundaries. Shell commands and external editor changes therefore invalidate old approvals without treating every shell command as an edit. `.pi/` runtime metadata is excluded. A review or judgment whose workspace changes during execution returns an error before advancing review baselines or plan progress. A passing whole-tree review clears pending edits only when its captured fingerprint still matches the current tree. New edits also re-arm final judgment.
+
+`/wai-plan` shows configured check commands and exit codes, the model assessment separately, and whether the evidence is stale. Acceptance criteria remain explicitly unverified: passing a generic command or receiving model agreement does not prove an arbitrary criterion. Configured checks run afresh on each review/judge request; these requests bypass the model-result cache, and any failing check prevents a passing verdict. Commands still run only when configured or enabled through `autoPreReviewCommands`.
+
+Content fingerprints currently apply to Git projects; SVN and projects without Git retain tool-based edit tracking. Fingerprinting reads the project contents and adds filesystem/Git overhead, especially for large repositories. It detects changes between snapshots, and does not lock files against concurrent mutation.
 
 ## How it works
 
@@ -982,6 +992,14 @@ You can also use **any OpenAI-compatible or Anthropic-compatible endpoint** by s
 ```
 
 ## Development scripts
+
+### Review benchmark
+
+The starter corpus has four injected defects (array bounds, missing await, cache-key collisions, HTML injection) and four clean controls. Run `npm run benchmark -- --fixtures` to inspect the rubric. `npm run benchmark -- --live --output report.json` runs the configured min-level reviewer on isolated temporary Git repositories, records raw results, latency, errors, and settled cost, and respects one cumulative configured budget across the corpus. Live runs make provider calls; fixture inspection and scoring do not.
+
+Inspect each report result against its rubric, fill in `detectedDefectIds` and `falsePositiveCount`, then set `adjudicated: true`. `npm run benchmark -- --score report.json` reports precision, recall, missed defects, false positives, clean-control false-alarm rate, median latency, failed calls, and total cost. It refuses incomplete/unadjudicated reports; issue wording alone is not proof of accuracy. This small corpus is a starting point, not evidence of production accuracy; expand it with real project regressions and compare repeated runs.
+
+### Validation
 
 ```bash
 npm run typecheck      # TypeScript type check

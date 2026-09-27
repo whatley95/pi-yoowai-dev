@@ -36,6 +36,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "node --import tsx --test src/**/*.test.ts",
+    "benchmark": "node --import tsx scripts/review-benchmark.ts",
     "format": "prettier --write src",
     "format:check": "prettier --check src",
     "prepublishOnly": "npm run typecheck && npm run lint && npm test",

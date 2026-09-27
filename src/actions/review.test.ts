@@ -659,18 +659,20 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
   );
 
   it(
-    "identical re-review with pre-review commands configured is served from cache (no second model call)",
+    "review reruns configured checks and rejects a previously passing tree when a check fails",
     { skip: !hasGit },
     async () => {
       const marker = "CACHE_HIT_MARKER_555";
       const small = `hello\n\n${marker}\n` + "z".repeat(500) + "\n";
       const cwd = makeRepoWithChange(small);
+      writeFileSync(
+        join(cwd, ".pi", "check.cjs"),
+        "process.exit(require('node:fs').existsSync('.pi/fail') ? 1 : 0);\n",
+      );
       const { url, bodies } = await startStubServer();
       writeSettings(cwd, {
         reviewLevel: "min",
-        // Pre-review commands used to disable the review cache entirely; the
-        // comprehensive key (command LIST, not output) keeps caching correct.
-        preReviewCommands: ["npm --version"],
+        preReviewCommands: ["node .pi/check.cjs"],
         secondary: {
           provider: "openai",
           id: "gpt-4o-mini",
@@ -685,11 +687,13 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
 
       const ctx = { cwd } as unknown as ExtensionContext;
       const first = await executeWaiReview(cwd, "cache probe", ctx, {}, undefined, () => {});
+      writeFileSync(join(cwd, ".pi", "fail"), "fail next check");
       const second = await executeWaiReview(cwd, "cache probe", ctx, {}, undefined, () => {});
 
-      assert.equal(bodies.length, 1, "second identical review must hit the cache, not call the model again");
+      assert.equal(bodies.length, 2, "configured checks require fresh execution and model assessment");
       assert.equal(first.review?.verdict, "pass");
-      assert.equal(second.review?.verdict, "pass");
+      assert.equal(second.review?.verdict, "needs-work");
+      assert.equal(second.review?.inconclusive, undefined, "a failed check is concrete evidence, not a verdict slip");
     },
   );
 

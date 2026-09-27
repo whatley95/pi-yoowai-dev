@@ -231,17 +231,19 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
   });
 
   it(
-    "identical double judge run with pre-review commands is served from cache (one model call total)",
+    "judge reruns configured checks and blocks a previously passing tree when a check fails",
     { skip: !hasGit },
     async () => {
       const marker = "JUDGE_CACHE_MARKER_777";
       const small = `hello\n\n${marker}\n` + "z".repeat(500) + "\n";
       const cwd = makeRepoWithChange(small);
+      writeFileSync(
+        join(cwd, ".pi", "check.cjs"),
+        "process.exit(require('node:fs').existsSync('.pi/fail') ? 1 : 0);\n",
+      );
       const { url, bodies } = await startStubServer();
       writeSettings(cwd, {
-        // Pre-review commands used to disable caching; the key covers the
-        // command LIST, so a hit never re-runs them.
-        preReviewCommands: ["npm --version"],
+        preReviewCommands: ["node .pi/check.cjs"],
         secondary: {
           provider: "openai",
           id: "gpt-4o-mini",
@@ -256,11 +258,13 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
 
       const ctx = { cwd } as unknown as ExtensionContext;
       const first = await executeWaiJudge(cwd, "cache probe", undefined, () => {}, ctx.sessionManager);
+      writeFileSync(join(cwd, ".pi", "fail"), "fail next check");
       const second = await executeWaiJudge(cwd, "cache probe", undefined, () => {}, ctx.sessionManager);
 
-      assert.equal(bodies.length, 1, "second identical judge must hit the cache, not call the model again");
+      assert.equal(bodies.length, 2, "configured checks require fresh execution and model assessment");
       assert.equal(first.judge?.verdict, "pass");
-      assert.equal(second.judge?.verdict, "pass");
+      assert.equal(second.judge?.verdict, "needs-work");
+      assert.match(second.judge?.summary ?? "", /Configured checks failed/);
     },
   );
 

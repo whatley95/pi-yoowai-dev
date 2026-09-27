@@ -305,6 +305,15 @@ export interface YoowaiSessionState {
   planBaseCommit?: string;
   /** A whole-tree review failed or was incomplete; only a complete pass clears it. */
   reviewBlocked?: boolean;
+  observedFingerprint?: string;
+  reviewedFingerprint?: string;
+  completionEvidence?: {
+    fingerprint?: string;
+    recordedAt: string;
+    checks: Array<{ command: string; exitCode: number }>;
+    criteria: Array<{ criterion: string; status: "unverified" }>;
+    modelAssessment?: string;
+  };
   /** Stable anchor for the next clean-tree review when the last review did
    *  NOT pass and no baseline existed: keeps the failed round inside the
    *  next diff's range (the dynamic HEAD~1 fallback would otherwise skip it
@@ -347,6 +356,8 @@ export interface WaiToolParams {
 }
 
 export interface WaiToolResult {
+  /** Actual tree captured before review; approval is invalid if it changes. */
+  workspaceFingerprint?: string;
   action: WaiAction;
   plan?: PlanResult;
   review?: ReviewResult;

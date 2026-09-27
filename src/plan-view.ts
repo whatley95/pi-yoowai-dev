@@ -190,6 +190,16 @@ export function buildPlanView(state: YoowaiSessionState, cost: PlanViewCost, opt
     }
   }
   pushSection(acceptanceLines);
+  const evidence = state.completionEvidence;
+  if (evidence) {
+    const stale = evidence.fingerprint && evidence.fingerprint !== state.observedFingerprint;
+    const lines = [`Execution evidence${stale ? " (stale — workspace changed)" : ""}:`];
+    if (!evidence.checks.length) lines.push("· No configured checks were executed.");
+    for (const check of evidence.checks)
+      lines.push(`${check.exitCode === 0 ? "✓" : "⚠"} ${check.command} · exit ${check.exitCode}`);
+    if (evidence.modelAssessment) lines.push(`Model assessment (not criterion proof): ${evidence.modelAssessment}`);
+    pushSection(lines);
+  }
 
   // Completion state.
   if (completed >= total) {

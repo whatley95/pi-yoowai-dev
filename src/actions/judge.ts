@@ -1,4 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { captureWorkspace, workspaceMatches } from "../workspace-fingerprint.js";
+import { recordCompletionEvidence } from "../completion-evidence.js";
 import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { DEFAULT_MAX_DIFF_CHARS, getDiff, getVcsInfo, resolveGitCommit, resolveGitTree } from "../diff-grabber.js";
@@ -80,6 +82,8 @@ export async function executeWaiJudge(
   // Judge the entire plan from its creation base, independently of accepted
   // incremental reviews. Legacy plans without a base keep the existing fallback.
   const vcsInfo = getVcsInfo(cwd);
+  const workspace = captureWorkspace(cwd);
+  const workspaceFingerprint = workspace.status === "ready" ? workspace.fingerprint : undefined;
   if (
     state.planBaseCommit &&
     !resolveGitCommit(cwd, state.planBaseCommit) &&
@@ -173,10 +177,11 @@ export async function executeWaiJudge(
   // explicit preReviewCommands list, including [], always wins.
   const effectivePreReviewCommands = resolveEffectivePreReviewCommands(cwd, config, "high");
 
-  // Cache key: every stable prompt input (command LISTS, not their output —
-  // commands are deterministic given cwd, and a hit must not re-run them).
+  // Cache key: stable prompt inputs. Requests with configured checks bypass
+  // lookup so changed execution outcomes cannot be hidden behind a pass.
   // Session context is intentionally excluded (changes every turn).
   const cacheKey = buildCacheKey("judge", {
+    workspaceFingerprint,
     diff,
     description,
     modelProfile,
@@ -204,18 +209,23 @@ export async function executeWaiJudge(
     toolUseLoop: config.toolUseLoop,
   });
   {
-    const cached = getCachedJudge(cwd, cacheKey);
+    const cached = effectivePreReviewCommands.length ? undefined : getCachedJudge(cwd, cacheKey);
     if (cached) {
       progress(2, STAGES.judge, "Using cached judgment…");
+      if (!workspaceMatches(cwd, workspace))
+        return { action: "judge", error: "Workspace changed during cached judgment." };
+      recordCompletionEvidence(cwd, workspaceFingerprint, [], `Cached judge: ${cached.judge.verdict}`);
       return { action: "judge", judge: cached.judge, model: cached.model, cost: cached.cost };
     }
   }
 
   progress(2, STAGES.judge, "Calculating token budget…");
   let preReviewOutput = "";
+  let checks: Array<{ command: string; exitCode: number }> = [];
   if (effectivePreReviewCommands.length > 0) {
     progress(2, STAGES.judge, "Running pre-review commands…");
     const results = await runPreReviewCommands(cwd, effectivePreReviewCommands);
+    checks = results.map(({ command, exitCode }) => ({ command, exitCode }));
     preReviewOutput = formatPreReviewOutput(results);
   }
 
@@ -425,6 +435,22 @@ export async function executeWaiJudge(
       "Verdict was downgraded from 'blocked' to 'needs-work' because the judgment context was incomplete (truncated diff or omitted files); the judgment is inconclusive.",
     );
   }
+
+  if (!workspaceMatches(cwd, workspace)) {
+    return {
+      action: "judge",
+      error: "Workspace changed or could not be fingerprinted during judgment. Judge the current tree again.",
+      cost,
+      model: modelProfile,
+    };
+  }
+  if (checks.some((check) => check.exitCode !== 0)) {
+    judge.verdict = "needs-work";
+    judge.consensus = false;
+    judge.summary = `Configured checks failed. ${judge.summary}`;
+    judge.suggestions.push("Configured checks failed. A model judgment cannot override failed execution evidence.");
+  }
+  recordCompletionEvidence(cwd, workspaceFingerprint, checks, `Judge: ${judge.verdict}. ${judge.summary}`);
 
   // The judge is the holistic authority on which plan steps the code actually
   // completes, so sync the tracker whenever it reports step IDs — even on a

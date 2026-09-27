@@ -5,6 +5,7 @@ import { logEvent } from "./logger.js";
 import type { YoowaiSessionState, PlanResult, ReviewVerdict } from "./types.js";
 import { validatePlanResult } from "./prompts.js";
 import { PlanResultSchema } from "./schemas.js";
+import { normalizeCompletionEvidence } from "./completion-evidence.js";
 
 /** Cap for the reviewedFiles record: oldest entries are evicted first. */
 export const MAX_REVIEWED_FILES = 100;
@@ -91,6 +92,9 @@ export function loadState(cwd: string): YoowaiSessionState | null {
       reviewedFiles,
       planBaseCommit: typeof data.planBaseCommit === "string" ? data.planBaseCommit : undefined,
       reviewBlocked: data.reviewBlocked === true,
+      observedFingerprint: typeof data.observedFingerprint === "string" ? data.observedFingerprint : undefined,
+      reviewedFingerprint: typeof data.reviewedFingerprint === "string" ? data.reviewedFingerprint : undefined,
+      completionEvidence: normalizeCompletionEvidence(data.completionEvidence),
     };
     // Repair malformed legacy reviewedFiles on disk once, so repeated loads
     // stop reprocessing bad data: trigger when the raw value is present but
@@ -154,6 +158,9 @@ export function saveState(cwd: string, state: YoowaiSessionState): void {
           lastReviewedCommit: state.lastReviewedCommit,
           planBaseCommit: state.planBaseCommit,
           reviewBlocked: state.reviewBlocked === true,
+          observedFingerprint: state.observedFingerprint,
+          reviewedFingerprint: state.reviewedFingerprint,
+          completionEvidence: state.completionEvidence,
           planStaleSuggestedRound: state.planStaleSuggestedRound,
         },
         null,

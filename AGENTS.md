@@ -438,6 +438,7 @@ The extension stores per-project runtime data under `.pi/yoowai/`:
 - `instructions/` — optional per-action instruction files (`<action>.md`) injected into that action's secondary-model prompt (see `instructions.ts`).
 - `cost.json` — estimated spend for the current Pi session.
 - `memory.json` — recent issues per file.
+- `findings.json` — stable finding IDs, consecutive fresh whole-tree review counts, and evidence-bearing dismissals; `/wai-findings list` or `dismiss <id> <reason>`. Dismissals never bypass gates.
 - `index.json` — project symbol index (incremental reuse of unchanged files).
 - `review-cache.json` — cached review/test/security/judge results (see `review-cache.ts`).
 - `oauth-cache.json` — cached exchanged OAuth credentials (see `oauth-cache.ts`).
@@ -494,6 +495,11 @@ The extension stores per-project runtime data under `.pi/yoowai/`:
 ---
 
 ## Notes for agents
+
+- `workspace-fingerprint.ts` hashes Git HEAD/index and actual tracked/non-ignored untracked contents, excluding `.pi/`; `syncWorkspaceChanges` reconciles shell/editor edits at session/turn/settle/done boundaries. Passing review results carry `workspaceFingerprint` and are accepted only if it still matches. Review/judge/done verification reject changed workspaces before advancing state; non-Git projects retain host edit tracking.
+- `completion-evidence.ts` persists configured command exit codes and separate model assessments in plan state. Criteria remain unverified rather than deriving proof from generic test success. Configured failing checks prevent passing review/judge verdicts; requests with configured checks bypass model-result caches to execute checks afresh.
+- `finding-tracker.ts` tracks complete fresh whole-tree rounds (no cache/scoped/incomplete counts), supplies documented dismissal context, and is cleared by `/wai-clear`.
+- `review-benchmark.ts` and `scripts/review-benchmark.ts` provide eight paired fixtures, an opt-in live runner, and a scorer requiring human adjudication. `npm run benchmark -- --fixtures`/`--score <report>` are offline; `--live --output <report>` makes provider calls with a cumulative configured budget. Do not report measured model accuracy from fixture or unit-test success.
 
 - This file is maintained alongside the code; it was written from the actual project contents and should be updated whenever the structure, commands, or conventions change.
 - Do not assume a build step. Changes are validated with `npm run typecheck` and `npm run lint`.
