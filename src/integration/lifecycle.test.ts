@@ -1057,7 +1057,7 @@ describe("lifecycle", () => {
     assert.equal(steers.length, 0, "no steer may be sent when nothing ran");
   });
 
-  it("skips auto-review quietly on a cost-budget error and still runs auto-judge", async () => {
+  it("skips auto-review quietly on a cost-budget error and defers auto-judge while edits remain", async () => {
     writeFileSync(
       join(cwd, ".pi", "settings.json"),
       JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: true, autoJudge: true } }),
@@ -1096,7 +1096,7 @@ describe("lifecycle", () => {
     await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, ctx);
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.deepEqual(calls, ["review", "judge"]);
+    assert.deepEqual(calls, ["review"]);
     // Nothing was reviewed, so the pending edits stay and no error surfaces.
     assert.strictEqual(getEditTracker(cwd).editsSinceLastReview, 2);
     assert.ok(!notifications.some((n) => n.level === "error"));

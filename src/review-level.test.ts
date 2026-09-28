@@ -1,6 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolveReviewLevel, resolveReviewSettings, getReviewLevelSettings } from "./review-level.js";
+import {
+  resolveReviewLevel,
+  resolveReviewSettings,
+  getReviewLevelSettings,
+  resolveRiskReviewLevel,
+} from "./review-level.js";
 import type { YoowaiConfig, SecondaryModelConfig } from "./types.js";
 
 function baseConfig(secondary: SecondaryModelConfig): YoowaiConfig {
@@ -58,6 +63,37 @@ describe("resolveReviewLevel", () => {
     const config = baseConfig({ provider: "openai", id: "gpt-4o", thinking: "medium" });
     config.taskModels = { review: { provider: "anthropic", id: "claude-opus-4-5" } };
     assert.equal(resolveReviewLevel(config), "high");
+  });
+});
+
+describe("resolveRiskReviewLevel", () => {
+  const config = {
+    ...baseConfig({ provider: "unknown", id: "unknown-model", thinking: "off" }),
+    riskBasedReview: true,
+  };
+
+  it("deepens sensitive paths, added unsafe code, and truncated diffs", () => {
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["src/auth/token.ts"], "+export const token = 1;"), "high");
+    assert.equal(
+      resolveRiskReviewLevel(config, undefined, ["src\\auth\\token.ts"], "+export const token = 1;"),
+      "high",
+    );
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["src/view.ts"], "+node.innerHTML = value;"), "high");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["src/view.ts"], "", true), "high");
+  });
+
+  it("uses a light pass for documentation-only changes and the normal depth for code", () => {
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["README.md", "docs/guide.mdx"], "+text"), "min");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["src/view.ts"], "+text"), "med");
+  });
+
+  it("honors explicit depth and remains disabled by default", () => {
+    assert.equal(resolveRiskReviewLevel(config, "min", ["src/auth.ts"], "+password = value"), "min");
+    assert.equal(resolveRiskReviewLevel({ ...config, reviewLevel: "med" }, undefined, ["src/auth.ts"], "+x"), "med");
+    assert.equal(
+      resolveRiskReviewLevel({ ...config, riskBasedReview: false }, undefined, ["src/auth.ts"], "+x"),
+      "med",
+    );
   });
 });
 

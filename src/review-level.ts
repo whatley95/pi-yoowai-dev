@@ -101,6 +101,41 @@ export function resolveReviewLevel(config: YoowaiConfig, toolOverride?: ReviewLe
   return "med";
 }
 
+/** Conservative, opt-in routing: deepen security/data changes, and spend less
+ * on documentation-only changes. Explicit review choices remain authoritative. */
+export function resolveRiskReviewLevel(
+  config: YoowaiConfig,
+  toolOverride: ReviewLevel | undefined,
+  changedFiles: string[],
+  diff: string,
+  truncated = false,
+): ReviewLevel {
+  const base = resolveReviewLevel(config, toolOverride);
+  if (!config.riskBasedReview || toolOverride || config.reviewLevel || changedFiles.length === 0) return base;
+  return classifyRiskReviewLevel(base, changedFiles, diff, truncated);
+}
+
+export function classifyRiskReviewLevel(
+  base: ReviewLevel,
+  changedFiles: string[],
+  diff: string,
+  truncated = false,
+): ReviewLevel {
+  if (changedFiles.length === 0) return base;
+  const sensitivePath =
+    /(?:^|[\x2f._-])(auth|security|permission|crypto|payment|billing|migration|schema|database|session|token|credential)(?:[\x2f._-]|$)/i;
+  const sensitiveAddition =
+    /^\+(?!\+).*(?:innerHTML|\beval\s*\(|\bexec\s*\(|\bspawn\s*\(|child_process|password|secret|api[_-]?key|DELETE\s+FROM)/im;
+  if (
+    truncated ||
+    changedFiles.some((file) => sensitivePath.test(file.replace(/\\/g, "/"))) ||
+    sensitiveAddition.test(diff)
+  )
+    return "high";
+  const docsOnly = changedFiles.every((file) => /\.(?:md|mdx|txt|rst)$/i.test(file));
+  return docsOnly && base !== "high" ? "min" : base;
+}
+
 /** Build effective review settings by applying the level defaults and then
  *  letting explicit config values override them. */
 export function getReviewLevelSettings(config: YoowaiConfig, level: ReviewLevel): ReviewLevelSettings {

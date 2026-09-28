@@ -273,9 +273,9 @@ export default async function (pi: ExtensionAPI) {
       progressAction,
       ctx,
       onUpdate,
-      // The generic wai tool has no level param; resolve the effective level
-      // from config so progress lines and the footer status show it.
-      p.review ? resolveReviewLevel(config) : undefined,
+      // The generic wai tool has no level param. Show a configured depth when
+      // fixed; risk routing selects its actual depth after collecting the diff.
+      p.review && !(config.riskBasedReview && !config.reviewLevel) ? resolveReviewLevel(config) : undefined,
     );
     let result: WaiToolResult;
     const abortProgress = () => cleanupProgressReporter(progress);

@@ -102,18 +102,22 @@ function severityIcon(severity: ReviewIssue["severity"]): string {
 
 export function renderCall(args: WaiToolParams, theme: Theme, context?: ToolRenderContext, level?: ReviewLevel): Text {
   const p = args;
-  // The generic wai tool has no level param; the effective level is resolved
-  // from config for display (guarded — a config error only loses the marker).
+  let dynamicRiskReview = false;
+  // The generic wai tool has no level param. Show "auto" while diff-based
+  // routing is pending; otherwise resolve the configured/model default depth.
   if (p.review && !level && context?.cwd) {
     try {
-      level = resolveReviewLevel(loadYoowaiConfig(context.cwd));
+      const config = loadYoowaiConfig(context.cwd);
+      dynamicRiskReview = Boolean(config.riskBasedReview && !config.reviewLevel);
+      if (!dynamicRiskReview) level = resolveReviewLevel(config);
     } catch {
       // display-only; ignore
     }
   }
   let label: string;
   if (p.plan) label = `wai plan: ${truncate(String(p.plan), 80)}`;
-  else if (p.review) label = `wai review${level ? ` (${level})` : ""}: ${truncate(String(p.review), 80)}`;
+  else if (p.review)
+    label = `wai review${dynamicRiskReview ? " (auto)" : level ? ` (${level})` : ""}: ${truncate(String(p.review), 80)}`;
   else if (p.suggest) label = `wai suggest: ${truncate(String(p.suggest), 80)}`;
   else if (p.recommend) label = `wai recommend: ${truncate(String(p.recommend), 80)}`;
   else if (p.judge) label = `wai judge: ${truncate(String(p.judge), 80)}`;

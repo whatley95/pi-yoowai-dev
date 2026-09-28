@@ -912,6 +912,22 @@ describe("loadYoowaiConfig autoPreReviewCommands", () => {
   });
 });
 
+describe("loadYoowaiConfig riskBasedReview", () => {
+  it("defaults off and accepts only boolean settings", () => {
+    const cwd = makeTempDir("config-risk-review-");
+    try {
+      writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" } });
+      assert.equal(loadYoowaiConfig(cwd).riskBasedReview, false);
+      writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" }, riskBasedReview: true });
+      assert.equal(loadYoowaiConfig(cwd).riskBasedReview, true);
+      writeProjectSettings(cwd, { secondary: { provider: "openai", id: "gpt-4o" }, riskBasedReview: "yes" });
+      assert.equal(loadYoowaiConfig(cwd).riskBasedReview, false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("loadYoowaiConfig instructionsMaxTokens", () => {
   const tmpDirs: string[] = [];
 

@@ -128,11 +128,11 @@ function readFileTool(cwd: string, path: string, startLine?: number, endLine?: n
   }
 }
 
-async function runCommandTool(cwd: string, command: string): Promise<ToolResult> {
+async function runCommandTool(cwd: string, command: string, signal?: AbortSignal): Promise<ToolResult> {
   try {
     // Model-generated commands are restricted to read-only subcommands;
     // user-configured preReviewCommands run without this restriction.
-    const [result] = await runPreReviewCommands(cwd, [command], { restrictSubcommands: true });
+    const [result] = await runPreReviewCommands(cwd, [command], { restrictSubcommands: true, signal });
     return {
       output: truncateCommandOutput(result.output),
       error: result.exitCode !== 0 ? `Command exited with code ${result.exitCode}` : undefined,
@@ -231,7 +231,7 @@ function searchCodeTool(cwd: string, request: ToolRequest): ToolResult {
   return { output: truncateFileOutput(header + out.join("\n"), request.path ?? "(search)") };
 }
 
-async function executeTool(cwd: string, request: ToolRequest): Promise<ToolResult> {
+async function executeTool(cwd: string, request: ToolRequest, signal?: AbortSignal): Promise<ToolResult> {
   if (request.tool === "read_file") {
     if (!request.path) return { output: "", error: "read_file requires a path" };
     return readFileTool(cwd, request.path, request.startLine, request.endLine);
@@ -241,7 +241,7 @@ async function executeTool(cwd: string, request: ToolRequest): Promise<ToolResul
   }
   if (request.tool === "run_command") {
     if (!request.command) return { output: "", error: "run_command requires a command" };
-    return runCommandTool(cwd, request.command);
+    return runCommandTool(cwd, request.command, signal);
   }
   return { output: "", error: `Unknown tool: ${request.tool}` };
 }
@@ -326,7 +326,8 @@ export async function executeToolLoop(
       );
     }
 
-    const result = await executeTool(cwd, request);
+    const result = await executeTool(cwd, request, options.signal);
+    options.signal?.throwIfAborted();
     logEvent(cwd, "info", "Tool loop result", {
       iteration: i + 1,
       tool: request.tool,

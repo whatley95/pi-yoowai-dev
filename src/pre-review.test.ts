@@ -91,6 +91,27 @@ describe("pre-review", () => {
     assert.equal(results[1].exitCode, 0);
   });
 
+  it("does not block the event loop and cancels a running command", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "pre-review-async-"));
+    writeFileSync(join(tmpDir, "wait.js"), "setTimeout(() => console.log('finished'), 15000);\n");
+    const controller = new AbortController();
+    try {
+      let commandSettled = false;
+      const pending = runPreReviewCommands(tmpDir, ["node wait.js"], { signal: controller.signal }).then((results) => {
+        commandSettled = true;
+        return results;
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      assert.equal(commandSettled, false, "the event loop should run while the child is active");
+      controller.abort();
+      const [result] = await pending;
+      assert.notEqual(result.exitCode, 0);
+      assert.doesNotMatch(result.output, /finished/);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+    }
+  });
+
   it("formatPreReviewOutput returns empty string for no results", () => {
     assert.equal(formatPreReviewOutput([]), "");
   });
@@ -230,9 +251,18 @@ describe("pre-review", () => {
         assert.ok(results[0].exitCode !== 0, cmd);
         assert.match(results[0].output, /not allowed for model-generated tool calls/, cmd);
       }
-      for (const cmd of ["npm run typecheck", "npm test", "npm --version", "pnpm run lint"]) {
-        const results = await restricted(cmd);
-        assert.doesNotMatch(results[0].output, /not allowed for model-generated tool calls/, cmd);
+      const scriptCwd = mkdtempSync(join(tmpdir(), "pre-review-scripts-"));
+      writeFileSync(
+        join(scriptCwd, "package.json"),
+        JSON.stringify({ scripts: { typecheck: "node --version", test: "node --version", lint: "node --version" } }),
+      );
+      try {
+        for (const cmd of ["npm run typecheck", "npm test", "npm --version", "pnpm run lint"]) {
+          const results = await runPreReviewCommands(scriptCwd, [cmd], { restrictSubcommands: true });
+          assert.doesNotMatch(results[0].output, /not allowed for model-generated tool calls/, cmd);
+        }
+      } finally {
+        rmSync(scriptCwd, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
       }
     });
 

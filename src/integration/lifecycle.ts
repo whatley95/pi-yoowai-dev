@@ -215,8 +215,7 @@ export async function triggerAutoReview(
 
 /** Compact, agent-visible summary of an auto-review/auto-judge result: a
  *  one-liner for a clean pass, otherwise the formatted result (truncated).
- *  Delivered to the main agent as a steer so the verdict lands in the
- *  conversation even though the agent was idle waiting for input. */
+ *  Delivered as a boundary draft on Pi 0.87+, or as a steer on older hosts. */
 function autoResultMessage(action: "review" | "judge", result: WaiToolResult, fileCount?: number): string {
   if (result.error) {
     return `Auto-${action} failed: ${result.error}`;
@@ -269,8 +268,8 @@ export function registerLifecycleHandlers(
   const actionable = deps.actionableBoundaries ?? supportsActionableSettle();
   const observedBoundaries = new Set<string>();
   const boundaryAttempts = new Map<string, { work: ReturnType<typeof beginSessionWork>; signature: string }>();
-  pi.on("input", async (_event, ctx) => {
-    boundaryAttempts.delete(ctx.cwd);
+  pi.on("input", async (event, ctx) => {
+    if (event.source === "interactive" || event.source === "rpc") boundaryAttempts.delete(ctx.cwd);
   });
   if (actionable) {
     const onBoundary = pi.on as unknown as (
@@ -306,7 +305,12 @@ export function registerLifecycleHandlers(
       const pendingEdits = state.editsSinceLastReview;
       const review = await triggerAutoReview(ctx, deps.executeWaiReview);
       if (!work.isCurrent()) return;
-      const judge = await triggerAutoJudge(ctx, undefined, deps.executeWaiJudge);
+      // A failed or skipped review leaves edits pending; judging that state
+      // would allow a final verdict to outrun unresolved findings.
+      const judge =
+        getEditTracker(ctx.cwd).editsSinceLastReview === 0
+          ? await triggerAutoJudge(ctx, undefined, deps.executeWaiJudge)
+          : undefined;
       if (!work.isCurrent()) return;
       const results: ["review" | "judge", WaiToolResult | undefined][] = [
         ["review", review],
@@ -348,7 +352,16 @@ export function registerLifecycleHandlers(
     }
   });
 
-  pi.on("turn_end", async (event: TurnEndEvent, ctx) => {
+  // Pi 0.87+ accepts context drafts at turn_end. Keep the steer path for
+  // earlier hosts, whose turn_end payload has only tool results.
+  const onTurnEnd = pi.on as unknown as (
+    event: string,
+    handler: (
+      event: TurnEndEvent & { entries?: unknown[]; context?: { canContinue: boolean } },
+      ctx: ExtensionContext,
+    ) => Promise<unknown>,
+  ) => void;
+  onTurnEnd("turn_end", async (event, ctx) => {
     try {
       const workspaceChanged = syncWorkspaceChanges(ctx.cwd);
       // Do not send workflow steers from wai tool results; only from real edits.
@@ -422,8 +435,21 @@ export function registerLifecycleHandlers(
             : `WORKFLOW REMINDER: you have made ${editState.editsSinceLastReview} file edit(s) since the last review. ` +
               `Call \`wai({ review: '...' })\` to review the changes${fileList} before continuing.`
         : "";
-      pi.sendUserMessage(`${reminder}${planNudge}${noPlanNudge}`.trimStart(), { deliverAs: "steer" });
+      const message = `${reminder}${planNudge}${noPlanNudge}`.trimStart();
       updateWaiStatus(ctx);
+      // Pi validates turn_end continuation against the context *before* our
+      // draft is committed. A final assistant message cannot be resumed by a
+      // draft alone, so keep the steer fallback when canContinue is false.
+      if (actionable && Array.isArray(event.entries) && event.context?.canContinue) {
+        return {
+          entries: [
+            ...event.entries,
+            { type: "custom_message", customType: "wai-workflow-reminder", content: message, display: true },
+          ],
+          ...(reviewPending ? { continue: true } : {}),
+        };
+      }
+      pi.sendUserMessage(message, { deliverAs: "steer" });
     } catch {
       // best-effort steer
     }
@@ -448,7 +474,10 @@ export function registerLifecycleHandlers(
           deliverAs: "steer",
         });
       }
-      const judgeResult = await triggerAutoJudge(ctx, undefined, deps.executeWaiJudge);
+      const judgeResult =
+        getEditTracker(ctx.cwd).editsSinceLastReview === 0
+          ? await triggerAutoJudge(ctx, undefined, deps.executeWaiJudge)
+          : undefined;
       if (!work.isCurrent()) return;
       if (judgeResult) {
         pi.sendUserMessage(autoResultMessage("judge", judgeResult), { deliverAs: "steer" });

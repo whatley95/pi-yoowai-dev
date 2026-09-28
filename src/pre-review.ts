@@ -1,11 +1,13 @@
-import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
+import { execFile, type ExecFileOptionsWithStringEncoding } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { promisify } from "node:util";
 import { logEvent } from "./logger.js";
 import { resolveProjectPath } from "./path-security.js";
 import type { ReviewLevel } from "./types.js";
 
 const SHELL_METACHARACTERS = /[;|&$()`{}[\]<>]/;
 const MAX_OUTPUT_CHARS = 4000;
+const execFileAsync = promisify(execFile);
 
 const ALLOWED_COMMANDS = new Set([
   "npm",
@@ -323,6 +325,8 @@ export interface PreReviewOptions {
    *  model-generated commands in the tool loop; user-configured pre-review
    *  commands run unrestricted. */
   restrictSubcommands?: boolean;
+  /** Abort a running validation command when its owning action is cancelled. */
+  signal?: AbortSignal;
 }
 
 export async function runPreReviewCommands(
@@ -347,7 +351,7 @@ export async function runPreReviewCommands(
           validateSubcommand(program, args);
           validateGitHelpFlags(program, args);
         }
-        const output = execProgram(program, args, cwd);
+        const output = await execProgram(program, args, cwd, options.signal);
         return { command, output: truncateOutput(output), exitCode: 0 };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -355,10 +359,11 @@ export async function runPreReviewCommands(
           command,
           error: message,
         });
-        const execErr = err as { stdout?: string; stderr?: string; status?: number };
+        const execErr = err as { stdout?: string; stderr?: string; status?: number; code?: number };
         const output = typeof execErr.stdout === "string" ? execErr.stdout : "";
         const stderr = typeof execErr.stderr === "string" ? execErr.stderr : "";
-        const status = typeof execErr.status === "number" ? execErr.status : 1;
+        const status =
+          typeof execErr.status === "number" ? execErr.status : typeof execErr.code === "number" ? execErr.code : 1;
         return { command, output: truncateOutput(`${message}\n${output}\n${stderr}`), exitCode: status };
       }
     }),
@@ -376,23 +381,24 @@ export function formatPreReviewOutput(results: PreReviewOutput[]): string {
   return lines.join("\n");
 }
 
-function execProgram(program: string, args: string[], cwd: string): string {
-  const options: ExecFileSyncOptionsWithStringEncoding = {
+async function execProgram(program: string, args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const options: ExecFileOptionsWithStringEncoding = {
     cwd,
     encoding: "utf-8",
     maxBuffer: 1024 * 1024,
     timeout: 60000,
-    stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
+    signal,
   };
   try {
-    return execFileSync(program, args, options);
+    return (await execFileAsync(program, args, options)).stdout;
   } catch (err) {
     if (process.platform !== "win32" || (err as { code?: string }).code !== "ENOENT") {
       throw err;
     }
     // Windows runs npm-style shims (npm, npx, pnpm, tsc, eslint, ...) as .cmd
-    // files, which execFileSync cannot launch directly. Fall back to cmd.exe
+    // files, which execFile cannot launch directly. Fall back to cmd.exe
     // with a conservatively sanitized command line: the allowlist check still
     // applies, and the remaining cmd.exe-sensitive characters (% ^ ") are
     // rejected outright so nothing is reinterpreted by the shell.
@@ -403,7 +409,7 @@ function execProgram(program: string, args: string[], cwd: string): string {
       });
     }
     const commandLine = parts.map((part) => (/\s/.test(part) ? `"${part}"` : part)).join(" ");
-    return execFileSync(commandLine, { ...options, shell: true });
+    return (await execFileAsync(commandLine, [], { ...options, shell: true })).stdout;
   }
 }
 

@@ -57,7 +57,7 @@ import { resolveBackendType } from "../backends/backend-resolver.js";
 import { validateReviewResult, getReviewValidationErrors, salvageReviewFromMarkdown } from "../prompts.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
-import { resolveReviewSettings } from "../review-level.js";
+import { getReviewLevelSettings, resolveRiskReviewLevel } from "../review-level.js";
 import type { ProgressReporter } from "../progress.js";
 import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../types.js";
 
@@ -113,34 +113,6 @@ export async function executeWaiReview(
 ): Promise<WaiToolResult> {
   signal?.throwIfAborted();
   const config = loadYoowaiConfig(cwd);
-  const reviewSettings = resolveReviewSettings(config, options.level);
-  const level = reviewSettings.level;
-  const effectiveConfig = { ...config, ...reviewSettings };
-  // Resolve the model from the EFFECTIVE level, not the tool override: the
-  // generic `wai review` (and auto-review, /wai review) runs at the resolved
-  // level (config.reviewLevel ?? model-derived default), so it must honor the
-  // per-level reviewMin/reviewMed/reviewHigh task models the same way the
-  // explicit tools do. Configs without per-level entries fall back to the
-  // `review` task, so existing setups are unchanged.
-  const modelConfig = resolveReviewTaskModel(config, level);
-  if (!modelConfig.provider || !modelConfig.id) {
-    return { action: "review", error: REVIEW_NO_MODEL_ERROR };
-  }
-  const modelProfile = {
-    provider: modelConfig.provider,
-    id: modelConfig.id,
-    thinking: modelConfig.thinking,
-    backend: resolveBackendType(modelConfig.provider, modelConfig),
-  };
-  const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
-
-  // Level-aware tool loop: min stays a single cheap call by default, med/high
-  // let the reviewer pull the exact context it needs (read_file/search_code/
-  // read-only commands). Explicit toolUseLoop config always wins. Resolved
-  // here so the cache key and every runReviewBatch call share one value.
-  const effectiveToolUseLoop = resolveEffectiveToolLoop(config, level);
-  const loopConfig = { ...config, toolUseLoop: effectiveToolUseLoop };
-
   const state = getState(cwd);
   const workspace = captureWorkspace(cwd);
   const workspaceFingerprint = workspace.status === "ready" ? workspace.fingerprint : undefined;
@@ -156,7 +128,7 @@ export async function executeWaiReview(
   progress(1, STAGES.review, "Collecting diff…");
   const diffOptions = {
     ...options,
-    maxDiffChars: effectiveConfig.reviewMaxDiffChars,
+    maxDiffChars: config.reviewMaxDiffChars,
     untracked: options.untracked ?? true,
   };
   const vcsInfo = getVcsInfo(cwd);
@@ -170,6 +142,23 @@ export async function executeWaiReview(
   if (range.since !== undefined) diffOptions.since = range.since;
   if (range.revision !== undefined) diffOptions.revision = range.revision;
   const { diff, truncated, changedFiles, vcs } = getDiff(cwd, diffOptions);
+  const level = resolveRiskReviewLevel(config, options.level, changedFiles, diff, truncated);
+  const reviewSettings = getReviewLevelSettings(config, level);
+  const effectiveConfig = { ...config, ...reviewSettings };
+  // The effective depth selects the matching per-level model and tool loop.
+  const modelConfig = resolveReviewTaskModel(config, level);
+  if (!modelConfig.provider || !modelConfig.id) {
+    return { action: "review", error: REVIEW_NO_MODEL_ERROR };
+  }
+  const modelProfile = {
+    provider: modelConfig.provider,
+    id: modelConfig.id,
+    thinking: modelConfig.thinking,
+    backend: resolveBackendType(modelConfig.provider, modelConfig),
+  };
+  const nativeJson = providerSupportsJsonObject(modelConfig.provider, modelConfig.id, modelConfig);
+  const effectiveToolUseLoop = resolveEffectiveToolLoop(config, level);
+  const loopConfig = { ...config, toolUseLoop: effectiveToolUseLoop };
   const relatedContext =
     buildAstContext(cwd, changedFiles, { maxTokens: effectiveConfig.relatedContextMaxTokens ?? 1000 }) ||
     buildRelatedContext(cwd, changedFiles).context;
@@ -411,7 +400,8 @@ export async function executeWaiReview(
   let checks: Array<{ command: string; exitCode: number }> = [];
   if (effectivePreReviewCommands.length > 0) {
     progress(4, STAGES.review, "Running pre-review commands…");
-    const results = await runPreReviewCommands(cwd, effectivePreReviewCommands);
+    const results = await runPreReviewCommands(cwd, effectivePreReviewCommands, { signal });
+    signal?.throwIfAborted();
     checks = results.map(({ command, exitCode }) => ({ command, exitCode }));
     preReviewOutput = formatPreReviewOutput(results);
     const preReviewChars = baseBudget.availableInputTokens * 4;

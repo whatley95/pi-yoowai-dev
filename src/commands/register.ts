@@ -510,7 +510,7 @@ async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
       ? `  Base model: ${modelStatusLine(config.secondary)}`
       : "  Base model: not configured",
     `  Backend: ${config.secondary.backend ?? "sdk"}`,
-    `  Review level: ${config.reviewLevel ?? getDefaultReviewLevel(config.secondary.provider, config.secondary.id)}`,
+    `  Review level: ${resolveReviewLevel(config)}${config.riskBasedReview && !config.reviewLevel ? " (risk routing enabled)" : ""}`,
     `  Auto-judge: ${config.autoJudge ? "enabled" : "disabled"}`,
     config.preReviewCommands && config.preReviewCommands.length > 0
       ? `  Pre-review commands: ${config.preReviewCommands.join(", ")}`
@@ -701,12 +701,18 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     // Parse review args up front so an explicit `--level` override matches the
     // level the executor will use (status/notify lines and result agree).
     const reviewArgs = known === "review" ? parseReviewCommandArgs(restText) : undefined;
+    const reviewConfig = reviewArgs ? loadYoowaiConfig(ctx.cwd) : undefined;
+    const progressLevel =
+      reviewArgs?.options.level ??
+      (reviewConfig && !(reviewConfig.riskBasedReview && !reviewConfig.reviewLevel)
+        ? resolveReviewLevel(reviewConfig)
+        : undefined);
     const progress = createProgressReporter(
       action,
       ctx,
       undefined,
-      // Show the effective review level in the status/notify lines of /wai review.
-      reviewArgs ? (reviewArgs.options.level ?? resolveReviewLevel(loadYoowaiConfig(ctx.cwd))) : undefined,
+      // Show fixed depth; risk routing selects its actual depth after the diff.
+      progressLevel,
     );
     const notifyProgress = (stage: number, total: number, message: string) => {
       progress(stage, total, message);

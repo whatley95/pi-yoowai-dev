@@ -279,8 +279,8 @@ When `autoInjectContext` is enabled, pi-yoowai prepends the active plan summary,
 pi-yoowai also listens to Pi lifecycle events:
 
 - **`tool_result`** — successful file-mutating tool calls increment the internal edit counter and refresh the footer status; failed calls do not. Wai configuration/backend failures set Pi's native error flag while preserving structured details; a review finding is a successful tool result.
-- **`turn_end`** — if unreviewed edits exist, a steer reminds the main agent to call `wai.review` before continuing. The reminder respects a cooldown so it does not spam, and escalates to a stop directive after repeated ignored turns — see [Review enforcement](#review-enforcement).
-- **`agent_before_settle` (Pi 0.87+)** — auto-review runs first when enabled, then auto-judge when the plan is complete. Verdicts enter the conversation as boundary messages. Findings request a continuation only when Pi permits it; a clean pass adds no extra turn. The same workspace/progress state is attempted once per session generation to prevent repeated continuation without changes.
+- **`turn_end`** — if unreviewed edits exist, a reminder asks the main agent to call `wai.review` before continuing. On Pi 0.87+, it uses a boundary draft when Pi already has runnable context; otherwise it uses a steer so the reminder still reaches a settled agent. The reminder respects a cooldown and escalates after repeated ignored turns — see [Review enforcement](#review-enforcement).
+- **`agent_before_settle` (Pi 0.87+)** — auto-review runs first when enabled; auto-judge runs only when the plan is complete and no unreviewed edits remain. Verdicts enter the conversation as boundary messages. Findings request a continuation only when Pi permits it; a clean pass adds no extra turn. The same workspace/progress state is attempted once per session generation to prevent repeated continuation without changes.
 - **`agent_settled` (older Pi)** — preserves the review-then-judge workflow and delivers results as steers.
 - **`model_select`** — the prompt cache is cleared so prompts are rebuilt for the new model.
 - **`session_before_compact`** — if a plan is active, its summary, progress, and current step are added to the compaction custom instructions so they survive context compression.
@@ -619,6 +619,8 @@ Set `pi-yoowai.language` (or run `/wai-language <name>`) to make both models con
 ### Review levels
 
 Reviews run at one of three levels — `min`, `med`, or `high` — chosen by (in order): an explicit tool override (`wai_review_min` / `wai_review_med` / `wai_review_high`), the `pi-yoowai.reviewLevel` config, or a model-derived default (cheap "mini"/"flash" models default to `min`, reasoning-heavy models to `high`, everything else to `med`). Each level has its own per-level task-model override (`taskModels.reviewMin` / `reviewMed` / `reviewHigh`) that wins over the generic `review` task.
+
+Optional `riskBasedReview: true` routes reviews without an explicit level by the collected diff: security, credential, database, and other sensitive changes (or truncated diffs) use `high`; documentation-only changes use `min` unless the base level is already `high`. All other changes keep the model-derived level. Explicit tool and `reviewLevel` settings always win. The default is `false` until the routing is evaluated for your model and projects. Compare the fixed-min and routed strategies with `npm run benchmark -- --live --output baseline.json` and `npm run benchmark -- --live --output routed.json --risk`; both reports require human adjudication before scoring.
 
 Levels are **strategy-only**: they choose how much context and verification to spend, not how much of the diff to send.
 

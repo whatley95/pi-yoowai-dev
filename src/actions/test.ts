@@ -186,7 +186,8 @@ export async function executeWaiTest(
   progress(3, STAGES.test, "Running tests…");
   let testOutput: string;
   if (testCommand) {
-    const results = await runPreReviewCommands(cwd, [testCommand]);
+    const results = await runPreReviewCommands(cwd, [testCommand], { signal });
+    signal?.throwIfAborted();
     testOutput = formatPreReviewOutput(results);
   } else {
     testOutput = "No test command was detected or configured. Falling back to static analysis of the diff.";

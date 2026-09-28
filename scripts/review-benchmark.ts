@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BENCHMARK_CASES, scoreBenchmark } from "../src/review-benchmark.js";
+import { classifyRiskReviewLevel } from "../src/review-level.js";
 import { gitSpawnEnv } from "../src/git-env.js";
 
 async function main(): Promise<void> {
@@ -16,8 +17,16 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(scoreBenchmark(report.observations), null, 2));
     return;
   }
-  if (args.length !== 3 || args[0] !== "--live" || args[1] !== "--output")
-    throw new Error("Usage: npm run benchmark -- --fixtures | --score <report.json> | --live --output <report.json>");
+  if (
+    (args.length !== 3 && args.length !== 4) ||
+    args[0] !== "--live" ||
+    args[1] !== "--output" ||
+    (args.length === 4 && args[3] !== "--risk")
+  )
+    throw new Error(
+      "Usage: npm run benchmark -- --fixtures | --score <report.json> | --live --output <report.json> [--risk]",
+    );
+  const riskRouting = args[3] === "--risk";
   const { loadYoowaiConfig } = await import("../src/config.js");
   const { executeWaiReview } = await import("../src/actions/review.js");
   const { getSessionCost } = await import("../src/cost-tracker.js");
@@ -29,6 +38,7 @@ async function main(): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "wai-benchmark-"));
   try {
     for (const fixture of BENCHMARK_CASES) {
+      const reviewLevel = riskRouting ? classifyRiskReviewLevel("min", ["subject.js"], `+${fixture.after}`) : "min";
       const cwd = join(root, fixture.id);
       mkdirSync(cwd);
       const git = (args: string[]) => execFileSync("git", args, { cwd, env: gitSpawnEnv(), stdio: "pipe" });
@@ -55,7 +65,7 @@ async function main(): Promise<void> {
           "pi-yoowai": {
             ...source,
             autoJudge: false,
-            reviewLevel: "min",
+            reviewLevel,
             preReviewCommands: [],
             autoPreReviewCommands: false,
             toolUseLoop: false,
@@ -75,7 +85,7 @@ async function main(): Promise<void> {
           cwd,
           "Review this change for concrete correctness and security defects.",
           { cwd } as Parameters<typeof executeWaiReview>[2],
-          {},
+          { level: reviewLevel },
           undefined,
           () => {},
         );
@@ -86,6 +96,7 @@ async function main(): Promise<void> {
       totalSpent += costUsd;
       observations.push({
         caseId: fixture.id,
+        reviewLevel,
         adjudicated: false,
         detectedDefectIds: [],
         falsePositiveCount: 0,
@@ -100,7 +111,7 @@ async function main(): Promise<void> {
       JSON.stringify(
         {
           corpusVersion: 1,
-          reviewLevel: "min",
+          routing: riskRouting ? "risk" : "fixed-min",
           model: {
             provider: source.secondary.provider,
             id: source.secondary.id,

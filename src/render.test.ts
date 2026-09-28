@@ -81,6 +81,15 @@ describe("renderCall review level from config", () => {
     const title = textOf(renderCall({ review: "check the retry loop" }, theme, { cwd }));
     assert.equal(title, "wai review (high): check the retry loop");
   });
+
+  it("labels diff-based depth as auto until the reviewed diff is known", () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { riskBasedReview: true, secondary: { provider: "openai", id: "gpt-4o-mini" } } }),
+    );
+    const title = textOf(renderCall({ review: "check the retry loop" }, theme, { cwd }));
+    assert.equal(title, "wai review (auto): check the retry loop");
+  });
 });
 
 describe("renderResult review level", () => {

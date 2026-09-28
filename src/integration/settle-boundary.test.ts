@@ -105,10 +105,120 @@ it("dispatches wai drafts through the latest Pi ExtensionRunner boundary API", a
     f.cleanup();
   }
 });
+
+it("runs the edit, reminder, review, correction, and judge flow through Pi's in-memory boundary dispatcher", async (t) => {
+  if (!("emitBoundary" in ExtensionRunner.prototype)) {
+    t.skip("Actionable boundaries require Pi 0.87+");
+    return;
+  }
+  let reviews = 0;
+  let judges = 0;
+  const f = fixture({
+    executeWaiReview: async () => result(++reviews === 1 ? "needs-work" : "pass"),
+    executeWaiJudge: async () => {
+      judges++;
+      return {
+        action: "judge",
+        judge: { verdict: "pass", issues: [], suggestions: [], consensus: true, summary: "complete" },
+      };
+    },
+  });
+  try {
+    setPlan(f.cwd, { summary: "finish", todo: ["one"], acceptanceCriteria: [] });
+    getState(f.cwd).completedSteps = 1;
+    await f.emit("tool_result", { toolName: "write", isError: false, input: { path: "a.ts" } });
+    const handlers = new Map(
+      [...f.handlers].map(([name, handler]) => [name, [(event: unknown) => handler(event, f.ctx)]]),
+    );
+    const extension = { path: "wai-flow", resolvedPath: "wai-flow", handlers } as unknown as ConstructorParameters<
+      typeof ExtensionRunner
+    >[0][number];
+    const runner = new ExtensionRunner(
+      [extension],
+      createExtensionRuntime(),
+      f.cwd,
+      SessionManager.inMemory(f.cwd),
+      {} as ConstructorParameters<typeof ExtensionRunner>[4],
+    );
+    const dispatch = runner as unknown as {
+      emitBoundary: (
+        event: unknown,
+        buildContext: (entries: unknown[]) => unknown,
+      ) => Promise<{
+        entries: Array<{ content?: string }>;
+        continue: boolean;
+        valid: boolean;
+      }>;
+    };
+    const context = (entries: unknown[]) => ({
+      contextEntries: entries,
+      contextMessages: [],
+      llmMessages: [],
+      pendingMessages: [],
+      canContinue: true,
+    });
+    const reminder = await dispatch.emitBoundary(
+      { type: "turn_end", toolResults: [{ toolName: "write", isError: false }] },
+      context,
+    );
+    assert.equal(reminder.valid, true);
+    assert.equal(reminder.continue, true);
+    assert.match(reminder.entries[0].content ?? "", /WORKFLOW REMINDER/);
+    const first = await dispatch.emitBoundary({ type: "agent_before_settle", outcome: "completed" }, context);
+    assert.equal(first.continue, true);
+    assert.equal(reviews, 1);
+    assert.equal(judges, 0, "unresolved review findings must block the final judge");
+    await f.emit("tool_result", { toolName: "edit", isError: false, input: { path: "a.ts" } });
+    const second = await dispatch.emitBoundary({ type: "agent_before_settle", outcome: "completed" }, context);
+    assert.equal(second.valid, true);
+    assert.equal(second.continue, false);
+    assert.equal(second.entries.length, 2);
+    assert.equal(reviews, 2);
+    assert.equal(judges, 1);
+    assert.equal(getState(f.cwd).editsSinceLastReview, 0);
+  } finally {
+    f.cleanup();
+  }
+});
 const boundary = (canContinue = true) => ({
   entries: [{ type: "custom", customType: "other", data: 1 }],
   context: { canContinue },
   outcome: "completed",
+});
+
+it("delivers workflow reminders as boundary drafts without starting a new user turn", async () => {
+  const f = fixture({});
+  try {
+    getState(f.cwd).editsSinceLastReview = 1;
+    const original = { type: "custom", customType: "other", data: 1 };
+    const response = (await f.emit("turn_end", {
+      toolResults: [{ toolName: "write", isError: false }],
+      entries: [original],
+      context: { canContinue: true },
+    })) as { entries: Array<{ content?: string }>; continue?: boolean };
+    assert.equal(response.continue, true);
+    assert.deepEqual(response.entries[0], original);
+    assert.match(response.entries[1].content ?? "", /WORKFLOW REMINDER/);
+    assert.equal(f.steers.length, 0);
+  } finally {
+    f.cleanup();
+  }
+});
+
+it("keeps the steer when Pi has no runnable turn_end context", async () => {
+  const f = fixture({});
+  try {
+    getState(f.cwd).editsSinceLastReview = 1;
+    const response = await f.emit("turn_end", {
+      toolResults: [{ toolName: "write", isError: false }],
+      entries: [],
+      context: { canContinue: false },
+    });
+    assert.equal(response, undefined);
+    assert.equal(f.steers.length, 1);
+  } finally {
+    f.cleanup();
+  }
 });
 
 it("requests one continuation for findings, preserves other drafts, and never repeats the same workspace", async () => {
@@ -129,7 +239,10 @@ it("requests one continuation for findings, preserves other drafts, and never re
     await f.emit("agent_before_settle", boundary());
     assert.equal(calls, 1);
     assert.equal(f.steers.length, 0);
-    await f.emit("input");
+    await f.emit("input", { source: "extension" });
+    await f.emit("agent_before_settle", boundary());
+    assert.equal(calls, 1, "extension-generated messages must not reset the retry guard");
+    await f.emit("input", { source: "interactive" });
     await f.emit("agent_before_settle", boundary());
     assert.equal(calls, 2, "a new user prompt can retry the same workspace");
   } finally {

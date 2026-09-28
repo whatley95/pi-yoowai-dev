@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BENCHMARK_CASES, scoreBenchmark } from "./review-benchmark.js";
+import { classifyRiskReviewLevel } from "./review-level.js";
+
+test("risk benchmark routes the HTML injection case deeply while keeping clean controls cheap", () => {
+  const levels = Object.fromEntries(
+    BENCHMARK_CASES.map((fixture) => [fixture.id, classifyRiskReviewLevel("min", ["subject.js"], `+${fixture.after}`)]),
+  );
+  assert.equal(levels["escaping-bug"], "high");
+  assert.equal(levels["escaping-clean"], "min");
+  assert.equal(levels["bounds-clean"], "min");
+});
 
 test("benchmark counts misses, false alarms, latency and cost against clean controls", () => {
   const observations = BENCHMARK_CASES.map((fixture, index) => ({

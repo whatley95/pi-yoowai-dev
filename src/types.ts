@@ -78,6 +78,8 @@ export interface YoowaiConfig {
   reviewStrategy?: "auto" | "diff-only" | "full-files";
   /** Review depth preset. Defaults to a model-derived value; individual review budgets override the preset. */
   reviewLevel?: ReviewLevel;
+  /** Opt-in diff-based review depth for calls without an explicit level. */
+  riskBasedReview?: boolean;
   verifyByDefault?: boolean;
   /** Run a second model pass that critiques review/judge results for unsupported claims. Default false. */
   selfVerify?: boolean;
