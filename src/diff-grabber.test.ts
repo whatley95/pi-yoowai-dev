@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   applyExclude,
   extractChangedFiles,
@@ -12,6 +13,10 @@ import {
   processDiff,
   DEFAULT_MAX_DIFF_CHARS,
   getGitDiff,
+  getSvnDiff,
+  getVcsInfo,
+  isPiStatePath,
+  listGitUntrackedFiles,
   resolveGitCommit,
   resolveEmptyTree,
 } from "./diff-grabber.js";
@@ -26,6 +31,16 @@ function gitAvailable(): boolean {
   }
 }
 const hasGit = gitAvailable();
+function svnAvailable(): boolean {
+  try {
+    execFileSync("svn", ["--version", "--quiet"], { stdio: "pipe" });
+    execFileSync("svnadmin", ["--version", "--quiet"], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+const hasSvn = svnAvailable();
 
 function gitOpts() {
   return { stdio: "pipe" as const, env: gitSpawnEnv() };
@@ -43,6 +58,68 @@ function commitAll(dir: string): void {
 }
 
 describe("diff-grabber helpers", () => {
+  it("recognizes only the project-root Pi state directory", () => {
+    assert.equal(isPiStatePath(".pi/yoowai/log.txt"), true);
+    assert.equal(isPiStatePath(".\\.pi\\yoowai\\log.txt"), true);
+    assert.equal(isPiStatePath(".pi"), true);
+    assert.equal(isPiStatePath(".piano/file.txt"), false);
+    assert.equal(isPiStatePath("src/.pi/file.txt"), false);
+  });
+
+  it("excludes tracked and untracked Pi state from Git diffs and dirty status", { skip: !hasGit }, () => {
+    const cwd = mkdtempSync(join(tmpdir(), "wai-pi-state-git-"));
+    try {
+      initGitRepo(cwd);
+      mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
+      writeFileSync(join(cwd, "app.txt"), "before\n");
+      writeFileSync(join(cwd, ".pi", "yoowai", "state.log"), "before\n");
+      commitAll(cwd);
+
+      writeFileSync(join(cwd, ".pi", "yoowai", "state.log"), "STATE_MARKER\n" + "x".repeat(10_000));
+      writeFileSync(join(cwd, ".pi", "yoowai", "extra.log"), "EXTRA_MARKER\n" + "x".repeat(10_000));
+      assert.equal(getVcsInfo(cwd).dirty, false);
+      assert.deepEqual(listGitUntrackedFiles(cwd), []);
+
+      writeFileSync(join(cwd, "app.txt"), "APP_MARKER\n");
+      const working = getGitDiff(cwd, { untracked: true, maxDiffChars: 500 });
+      const ranged = getGitDiff(cwd, { revision: "HEAD", untracked: true, maxDiffChars: 500 });
+      for (const result of [working, ranged]) {
+        assert.equal(result.truncated, false);
+        assert.deepEqual(result.changedFiles, ["app.txt"]);
+        assert.match(result.diff, /APP_MARKER/);
+        assert.doesNotMatch(result.diff, /STATE_MARKER|EXTRA_MARKER|\.pi\//);
+      }
+    } finally {
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  });
+
+  it("excludes Pi state before SVN diff assembly and truncation", { skip: !hasSvn }, () => {
+    const root = mkdtempSync(join(tmpdir(), "wai-pi-state-svn-"));
+    const repository = join(root, "repository");
+    const cwd = join(root, "checkout");
+    try {
+      execFileSync("svnadmin", ["create", repository], { stdio: "pipe" });
+      execFileSync("svn", ["checkout", pathToFileURL(repository).href, cwd], { stdio: "pipe" });
+      mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
+      writeFileSync(join(cwd, "app.txt"), "before\n");
+      writeFileSync(join(cwd, ".pi", "yoowai", "state.log"), "before\n");
+      execFileSync("svn", ["add", "app.txt", ".pi"], { cwd, stdio: "pipe" });
+      execFileSync("svn", ["commit", "-m", "base"], { cwd, stdio: "pipe" });
+
+      writeFileSync(join(cwd, "app.txt"), "APP_MARKER\n");
+      writeFileSync(join(cwd, ".pi", "yoowai", "state.log"), "STATE_MARKER\n" + "x".repeat(10_000));
+      writeFileSync(join(cwd, ".pi", "yoowai", "extra.log"), "EXTRA_MARKER\n" + "x".repeat(10_000));
+      const result = getSvnDiff(cwd, { untracked: true, maxDiffChars: 500 });
+      assert.equal(result.truncated, false);
+      assert.deepEqual(result.changedFiles, ["app.txt"]);
+      assert.match(result.diff, /APP_MARKER/);
+      assert.doesNotMatch(result.diff, /STATE_MARKER|EXTRA_MARKER|\.pi\//);
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  });
+
   it("excludes matching SVN blocks", () => {
     const diff = [
       "Index: src/a.ts",

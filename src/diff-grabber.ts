@@ -7,6 +7,17 @@ import { gitSpawnEnv } from "./git-env.js";
 
 export const DEFAULT_MAX_DIFF_CHARS = 200_000;
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
+const PI_STATE_EXCLUDE_PATHSPEC = ":(exclude,top).pi";
+
+/** Pi's project-local settings and wai runtime state are agent metadata, not
+ * project changes to review. Match only the project-root .pi directory. */
+export function isPiStatePath(path: string): boolean {
+  const normalized = path
+    .replace(/\\/g, "/")
+    .replace(/^(\.\/)+/, "")
+    .toLowerCase();
+  return normalized === ".pi" || normalized.startsWith(".pi/");
+}
 
 export type VcsType = "git" | "svn";
 
@@ -103,7 +114,7 @@ function getGitInfo(cwd: string): VcsInfo {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     }).trim();
-    const status = execFileSync("git", ["status", "--porcelain"], {
+    const status = execFileSync("git", ["status", "--porcelain", "--", ".", PI_STATE_EXCLUDE_PATHSPEC], {
       cwd,
       env: gitSpawnEnv(),
       encoding: "utf-8",
@@ -271,9 +282,13 @@ function buildGitRevisionArgs(revision?: string, since?: string, pathArgs?: stri
 function buildGitPathArgs(files?: string[], exclude?: string[]): string[] | undefined {
   if (!files || files.length === 0) {
     if (exclude && exclude.length > 0) {
-      return [".", ...exclude.filter((e) => isSafeRelativePath(e)).map((e) => `:(exclude)${e}`)];
+      return [
+        ".",
+        ...exclude.filter((e) => isSafeRelativePath(e)).map((e) => `:(exclude)${e}`),
+        PI_STATE_EXCLUDE_PATHSPEC,
+      ];
     }
-    return undefined;
+    return [".", PI_STATE_EXCLUDE_PATHSPEC];
   }
 
   const safeFiles = files.filter((f) => isSafeRelativePath(f));
@@ -281,7 +296,7 @@ function buildGitPathArgs(files?: string[], exclude?: string[]): string[] | unde
   if (safeFiles.length === 0) {
     throw new Error("No safe file paths provided for git diff");
   }
-  return [...safeFiles, ...excludeArgs];
+  return [...safeFiles, ...excludeArgs, PI_STATE_EXCLUDE_PATHSPEC];
 }
 
 function buildSvnRevisionArgs(revision?: string, since?: string): string[] {
@@ -321,7 +336,7 @@ export function getSvnDiff(
       if (!line.trim()) continue;
       const statusChar = line.charAt(0);
       const path = line.slice(8).trim();
-      if (!path) continue;
+      if (!path || isPiStatePath(path)) continue;
       if (statusChar === "M") modified.push(path);
       else if (statusChar === "A") added.push(path);
       else if (statusChar === "D") deleted.push(path);
@@ -341,6 +356,7 @@ export function getSvnDiff(
       try {
         for (const entry of readdirSync(join(cwd, dir), { withFileTypes: true })) {
           const child = dir + "/" + entry.name;
+          if (isPiStatePath(child)) continue;
           if (entry.isDirectory()) expandDir(child);
           else if (entry.name !== ".svn") unversionedDescendants.push(child);
         }
@@ -359,6 +375,7 @@ export function getSvnDiff(
     const filterPaths = (paths: string[]): string[] =>
       paths.filter(
         (p) =>
+          !isPiStatePath(p) &&
           !isExcluded(p) &&
           (!options.files || options.files.length === 0 || options.files.some((f) => matchesScope(p, f))),
       );
@@ -448,15 +465,19 @@ function runVcsDiff(cwd: string, command: string[]): string {
 }
 
 export function listGitUntrackedFiles(cwd: string, files?: string[], exclude?: string[]): string[] {
-  const output = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
-    cwd,
-    env: gitSpawnEnv(),
-    encoding: "utf-8",
-    maxBuffer: 1024 * 1024,
-    timeout: 10000,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  const output = execFileSync(
+    "git",
+    ["ls-files", "--others", "--exclude-standard", "--", ".", PI_STATE_EXCLUDE_PATHSPEC],
+    {
+      cwd,
+      env: gitSpawnEnv(),
+      encoding: "utf-8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
 
   const excludePatterns =
     exclude?.filter((e) => isSafeRelativePath(e)).map((e) => new RegExp(e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))) ??
@@ -464,7 +485,7 @@ export function listGitUntrackedFiles(cwd: string, files?: string[], exclude?: s
 
   return output
     .split(/\r?\n/)
-    .filter((f) => f.length > 0 && isSafeRelativePath(f))
+    .filter((f) => f.length > 0 && isSafeRelativePath(f) && !isPiStatePath(f))
     .filter((f) => {
       if (!files || files.length === 0) return true;
       return files.some((pattern) => isSafeRelativePath(pattern) && minimatch(f, pattern));

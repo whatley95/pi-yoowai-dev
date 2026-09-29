@@ -1,7 +1,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getVcsInfo, resolveGitCommit, resolveEmptyTree } from "../diff-grabber.js";
@@ -169,6 +169,19 @@ describe("resolveRangeBase", () => {
 });
 
 describe("rebuiltDiff", () => {
+  it("does not refetch or mark Pi state as omitted", { skip: !hasGit }, () => {
+    const repo = makeRepo();
+    tmpDirs.push(repo.cwd);
+    repo.commit({ "a.txt": "before\n" });
+    repo.commit({ "a.txt": "APP_MARKER\n" });
+    mkdirSync(join(repo.cwd, ".pi", "yoowai"), { recursive: true });
+    writeFileSync(join(repo.cwd, ".pi", "yoowai", "state.log"), "STATE_MARKER\n");
+    const result = rebuiltDiff(repo.cwd, { since: "HEAD~1", untracked: true }, ["a.txt", ".pi/yoowai/state.log"]);
+    assert.match(result.diff, /APP_MARKER/);
+    assert.doesNotMatch(result.diff, /STATE_MARKER|\.pi\//);
+    assert.deepEqual(result.omitted, []);
+  });
+
   it("concatenates per-file diffs in changedFiles order and detects per-file truncation", { skip: !hasGit }, () => {
     const repo = makeRepo();
     tmpDirs.push(repo.cwd);

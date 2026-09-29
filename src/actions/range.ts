@@ -1,5 +1,6 @@
 import {
   getDiff,
+  isPiStatePath,
   resolveGitCommit,
   resolveGitTree,
   resolveEmptyTree,
@@ -132,6 +133,7 @@ export function rebuiltDiff(
   const truncatedFiles: Array<{ file: string; totalChars: number }> = [];
   const omitted: string[] = [];
   for (const file of changedFiles) {
+    if (isPiStatePath(file)) continue;
     let perFile: DiffResult;
     try {
       perFile = getDiff(cwd, { ...diffOptions, files: [file] });
