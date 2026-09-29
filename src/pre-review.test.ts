@@ -108,7 +108,11 @@ describe("pre-review", () => {
       assert.notEqual(result.exitCode, 0);
       assert.doesNotMatch(result.output, /finished/);
     } finally {
-      rmSync(tmpDir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+      try {
+        rmSync(tmpDir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+      } catch {
+        // Windows may retain the aborted child's cwd briefly; cleanup is best-effort.
+      }
     }
   });
 

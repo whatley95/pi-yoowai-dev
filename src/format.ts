@@ -101,10 +101,18 @@ export function formatResultText(result: WaiToolResult): string {
 
   if (result.review) {
     const icon = result.review.verdict === "pass" ? "✓" : result.review.verdict === "blocked" ? "✗" : "⚠";
+    const label = result.review.inconclusive ? "inconclusive" : result.review.verdict;
     lines.push(
-      `## wai review${result.level ? ` (${result.level})` : ""} ${icon} ${result.review.verdict}${formatModelSuffix(result.model)}`,
+      `## wai review${result.level ? ` (${result.level})` : ""} ${icon} ${label}${formatModelSuffix(result.model)}`,
     );
     lines.push("");
+
+    if (result.review.scopeLimited) {
+      lines.push(
+        "**Scoped review:** This verdict covers only the requested files or revision. It does not clear the whole-tree review gate or mark a plan step complete. Run an unscoped `wai.review` to certify the current work before `wai.done`.",
+      );
+      lines.push("");
+    }
 
     if (
       result.review.contextLimited ||
@@ -163,7 +171,11 @@ export function formatResultText(result: WaiToolResult): string {
     }
 
     if (result.review.consensus) {
-      lines.push("**Consensus:** Both agents agree — step is complete.");
+      lines.push(
+        result.review.scopeLimited
+          ? "**Consensus:** The requested scope passed review; whole-tree certification is still pending."
+          : "**Consensus:** Both agents agree — step is complete.",
+      );
       if (result.review.planProgress) {
         lines.push(`**Progress:** ${result.review.planProgress}`);
       }
@@ -180,7 +192,11 @@ export function formatResultText(result: WaiToolResult): string {
     } else if (result.review.verdict === "needs-work" || result.review.verdict === "blocked") {
       if (result.review.inconclusive) {
         lines.push(
-          "**Inconclusive:** The review produced a non-pass verdict but no actionable issues — a truncated response or a verdict inconsistent with its own findings. Do not treat this as a pass or as a real failure; re-run `wai.review` (lower the thinking level or scope the diff with `files:[...]` if it repeats).",
+          result.review.inputIncomplete
+            ? "**Review input incomplete:** Wai did not run a model review. Check the working directory, file scope, and VCS range before retrying."
+            : result.review.planStale
+              ? "**Inconclusive plan review:** The model reported a plan mismatch but no actionable code issue. Update the plan to match the work before retrying whole-tree certification."
+              : "**Inconclusive:** The review produced a non-pass verdict but no actionable issues — a truncated response or a verdict inconsistent with its own findings. Do not treat this as a pass or as a real failure; re-run `wai.review` (lower the thinking level or scope the diff with `files:[...]` if it repeats).",
         );
       } else {
         lines.push("**Action:** Fix the issues above and call `wai.review` again.");

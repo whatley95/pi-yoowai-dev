@@ -69,6 +69,14 @@ describe("executeWaiReview generic-path model resolution (cost-budget probe)", (
   it("generic wai review resolves the per-level model from the effective level", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "review-model-cwd-"));
     tmpDirs.push(cwd);
+    const git = (args: string[]) => execFileSync("git", args, { cwd, env: gitSpawnEnv(), stdio: "pipe" });
+    git(["init"]);
+    git(["config", "user.email", "wai-test@example.com"]);
+    git(["config", "user.name", "wai test"]);
+    writeFileSync(join(cwd, "subject.txt"), "before\n");
+    git(["add", "subject.txt"]);
+    git(["-c", "commit.gpgsign=false", "commit", "-m", "base"]);
+    writeFileSync(join(cwd, "subject.txt"), "after\n");
     const piDir = join(cwd, ".pi");
     mkdirSync(piDir, { recursive: true });
     writeFileSync(
@@ -439,6 +447,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
   async function startStubServer(options?: {
     holdForConcurrency?: number;
     verdict?: "pass" | "needs-work" | "blocked" | "inconclusive";
+    planStale?: boolean;
     failOnMarker?: string;
     stepComplete?: boolean;
   }): Promise<{ url: string; bodies: string[]; authorizations: Array<string | undefined>; peakActive: () => number }> {
@@ -489,7 +498,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
           choices: [
             {
               message: {
-                content: JSON.stringify(reviewPayload),
+                content: JSON.stringify({ ...reviewPayload, planStale: options?.planStale ?? false }),
               },
             },
           ],
@@ -543,6 +552,104 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
   }
+
+  it(
+    "returns an inconclusive diagnostic without calling a model when the requested diff is absent",
+    { skip: !hasGit },
+    async () => {
+      const cwd = makeRepoWithChange("changed\n");
+      const stub = await startStubServer();
+      writeSettings(cwd, {
+        reviewLevel: "min",
+        secondary: { provider: "openai", id: "gpt-4o-mini", backend: "http", baseUrl: stub.url, apiKey: "test" },
+      });
+      const ctx = { cwd } as ExtensionContext;
+      const missing = await executeWaiReview(cwd, "missing file", ctx, { files: ["missing.ts"] }, undefined, () => {});
+      assert.equal(missing.review?.verdict, "needs-work");
+      assert.equal(missing.review?.inconclusive, true);
+      assert.match(missing.review?.suggestions.join(" ") ?? "", /No code changes.*requested review scope/);
+      const partial = await executeWaiReview(
+        cwd,
+        "partial file scope",
+        ctx,
+        { files: ["a.txt", "missing.ts"] },
+        undefined,
+        () => {},
+      );
+      assert.equal(partial.review?.inconclusive, true);
+      assert.match(
+        partial.review?.suggestions.join(" ") ?? "",
+        /No diff was captured for requested scope: missing\.ts/,
+      );
+      const outside = await executeWaiReview(
+        cwd,
+        "outside file",
+        ctx,
+        { files: [join(cwd, "..", "other.ts")] },
+        undefined,
+        () => {},
+      );
+      assert.equal(outside.review?.inconclusive, true);
+      assert.match(outside.review?.suggestions.join(" ") ?? "", /outside the current project/);
+      const mixed = await executeWaiReview(
+        cwd,
+        "mixed scope",
+        ctx,
+        { files: ["a.txt", join(cwd, "..", "other.ts")] },
+        undefined,
+        () => {},
+      );
+      assert.equal(mixed.review?.inputIncomplete, true);
+      assert.match(mixed.review?.suggestions.join(" ") ?? "", /outside the current project/);
+      assert.equal(stub.bodies.length, 0);
+    },
+  );
+
+  it("does not present an unrelated active plan as the target of a scoped review", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("changed\n");
+    const stub = await startStubServer();
+    setPlan(cwd, {
+      summary: "unrelated work",
+      todo: ["Preserve .htaccess behavior"],
+      acceptanceCriteria: ["Keep .htaccess unchanged"],
+    });
+    writeSettings(cwd, {
+      reviewLevel: "min",
+      secondary: { provider: "openai", id: "gpt-4o-mini", backend: "http", baseUrl: stub.url, apiKey: "test" },
+    });
+    const ctx = {
+      cwd,
+      sessionManager: {
+        getEntries: () => [
+          { message: { role: "assistant", content: "PRIOR_STALE_MARKER: old plan review" } },
+          { message: { role: "user", content: "review hash routing" } },
+        ],
+      },
+    } as unknown as ExtensionContext;
+    const result = await executeWaiReview(cwd, "review hash routing", ctx, { files: ["a.txt"] }, undefined, () => {});
+    assert.equal(result.review?.verdict, "pass");
+    assert.equal(stub.bodies.length, 1);
+    assert.doesNotMatch(stub.bodies[0], /Preserve \.htaccess behavior|Keep \.htaccess unchanged/);
+    assert.doesNotMatch(stub.bodies[0], /PRIOR_STALE_MARKER/);
+  });
+
+  it(
+    "explains a stale-plan non-pass without code issues instead of urging blind retries",
+    { skip: !hasGit },
+    async () => {
+      const cwd = makeRepoWithChange("changed\n");
+      const stub = await startStubServer({ verdict: "inconclusive", planStale: true });
+      setPlan(cwd, { summary: "old work", todo: ["Preserve .htaccess behavior"], acceptanceCriteria: [] });
+      writeSettings(cwd, {
+        reviewLevel: "min",
+        secondary: { provider: "openai", id: "gpt-4o-mini", backend: "http", baseUrl: stub.url, apiKey: "test" },
+      });
+      const result = await executeWaiReview(cwd, "hash routing", { cwd } as ExtensionContext, {}, undefined, () => {});
+      assert.equal(result.review?.inconclusive, true);
+      assert.equal(result.review?.issues.length, 0);
+      assert.match(result.review?.suggestions.join(" ") ?? "", /update the plan to match the work/);
+    },
+  );
 
   it(
     "keeps the depth-specific model and endpoint for both review and self-verification",

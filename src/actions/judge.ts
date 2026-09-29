@@ -108,11 +108,19 @@ export async function executeWaiJudge(
     diff: rawDiff,
     truncated,
     changedFiles,
+    unavailableReason,
   } = getDiff(cwd, {
     maxDiffChars: config.reviewMaxDiffChars,
     untracked: true,
     ...range,
   });
+  if (unavailableReason || changedFiles.length === 0) {
+    return {
+      action: "judge",
+      error: unavailableReason ?? "No code changes were found in the judgment range; there is no diff to judge.",
+      model: modelProfile,
+    };
+  }
   // A capped combined diff is sliced (tail files dropped): rebuild the
   // complete diff per file so the budget gate below sees the TRUE size — the
   // change is either judged completely or fails closed with guidance, never

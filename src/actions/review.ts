@@ -4,7 +4,7 @@ import { captureWorkspace, workspaceMatches } from "../workspace-fingerprint.js"
 import { recordCompletionEvidence } from "../completion-evidence.js";
 import { recordFindingRound, findingGuidance } from "../finding-tracker.js";
 import { loadYoowaiConfig, resolveReviewTaskModel } from "../config.js";
-import { resolveProjectPath } from "../path-security.js";
+import { isSafeRelativePath, resolveProjectPath } from "../path-security.js";
 import { getDiff, splitDiffByFile, splitDiffByHunk, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js";
@@ -116,14 +116,16 @@ export async function executeWaiReview(
   const state = getState(cwd);
   const workspace = captureWorkspace(cwd);
   const workspaceFingerprint = workspace.status === "ready" ? workspace.fingerprint : undefined;
+  const wholeTreeReview = isWholeTreeReview(options);
   const currentStep =
-    state.plan && state.completedSteps < state.plan.todo.length
+    wholeTreeReview && state.plan && state.completedSteps < state.plan.todo.length
       ? planStepDescription(state.plan.todo[state.completedSteps])
       : undefined;
+  const criteria = wholeTreeReview ? state.plan?.acceptanceCriteria?.join("\n") : undefined;
   // Files edited since the current step started (the list resets when a step
   // completes): a focus hint for the reviewer, never a diff filter.
   const stepFocusFiles =
-    state.plan && state.editedFiles && state.editedFiles.length > 0 ? state.editedFiles : undefined;
+    wholeTreeReview && state.plan && state.editedFiles && state.editedFiles.length > 0 ? state.editedFiles : undefined;
 
   progress(1, STAGES.review, "Collecting diff…");
   const diffOptions = {
@@ -141,7 +143,48 @@ export async function executeWaiReview(
   const range = resolveRangeBase(cwd, "incremental", vcsInfo, lastReviewed, pendingAnchor, options);
   if (range.since !== undefined) diffOptions.since = range.since;
   if (range.revision !== undefined) diffOptions.revision = range.revision;
-  const { diff, truncated, changedFiles, vcs } = getDiff(cwd, diffOptions);
+  const { diff, truncated, changedFiles, vcs, unavailableReason } = getDiff(cwd, diffOptions);
+  if (unavailableReason || changedFiles.length === 0) {
+    const reason = unavailableReason ?? "No code changes were found in the requested review scope.";
+    return {
+      action: "review",
+      review: {
+        verdict: "needs-work",
+        issues: [],
+        suggestions: [
+          `${reason} No review verdict was issued; verify the working directory and requested files before retrying.`,
+        ],
+        consensus: false,
+        inconclusive: true,
+        inputIncomplete: true,
+        stepComplete: false,
+        scopeLimited: !wholeTreeReview,
+      },
+    };
+  }
+  const missingScopes = (options.files ?? []).filter((requested) => {
+    if (!isSafeRelativePath(requested) || ["*", "?", "[", "]"].some((char) => requested.includes(char))) return false;
+    const scope = requested.replaceAll("\\", "/").replace(/\/$/, "");
+    if (scope === ".") return false;
+    return !changedFiles.some((file) => file === scope || file.startsWith(`${scope}/`));
+  });
+  if (missingScopes.length > 0) {
+    return {
+      action: "review",
+      review: {
+        verdict: "needs-work",
+        issues: [],
+        suggestions: [
+          `No diff was captured for requested scope: ${missingScopes.join(", ")}. Check the working directory and VCS range; run Pi in the other project's directory if these files are outside this checkout.`,
+        ],
+        consensus: false,
+        inconclusive: true,
+        inputIncomplete: true,
+        stepComplete: false,
+        scopeLimited: !wholeTreeReview,
+      },
+    };
+  }
   const level = resolveRiskReviewLevel(config, options.level, changedFiles, diff, truncated);
   const reviewSettings = getReviewLevelSettings(config, level);
   const effectiveConfig = { ...config, ...reviewSettings };
@@ -167,7 +210,10 @@ export async function executeWaiReview(
     ? formatDesignRulesForPrompt(cwd, effectiveConfig.designRefMaxTokens ?? 800)
     : "";
   const instructionsText = capActionInstructions(cwd, "review", effectiveConfig.instructionsMaxTokens ?? 800);
-  const sessionContext = getSessionContext(ctx);
+  // Scoped reviews judge the requested change from its description and code.
+  // The surrounding session can contain an unrelated active plan or prior
+  // inconclusive verdicts that would make the reviewer repeat stale advice.
+  const sessionContext = wholeTreeReview ? getSessionContext(ctx) : "";
 
   progress(2, STAGES.review, "Loading project conventions…");
   let conventionsText = "";
@@ -204,7 +250,7 @@ export async function executeWaiReview(
   // by priorReviewMaxTokens (0 disables); the finalized context is hashed
   // into the cache key so any change invalidates a stale cached review.
   let priorRoundContext = "";
-  const priorReviewMaxTokens = effectiveConfig.priorReviewMaxTokens ?? 800;
+  const priorReviewMaxTokens = wholeTreeReview ? (effectiveConfig.priorReviewMaxTokens ?? 800) : 0;
   if (priorReviewMaxTokens > 0) {
     const reviewedFiles = getReviewedFiles(cwd);
     const currentChanged = new Set(changedFiles);
@@ -364,6 +410,7 @@ export async function executeWaiReview(
       // re-diffing already-reviewed commits.
       updateRangeState(cwd, vcsInfo, diffOptions, cached.review);
       recordReviewedFiles(cwd, changedFiles, cached.review.verdict);
+      cached.review.scopeLimited = !wholeTreeReview;
       return {
         action: "review",
         workspaceFingerprint,
@@ -586,7 +633,7 @@ export async function executeWaiReview(
           files: fileResult.entries,
           diff: hunk,
           vcs,
-          criteria: state.plan?.acceptanceCriteria?.join("\n"),
+          criteria,
           currentStep,
           sessionContext,
           conventionsText,
@@ -756,7 +803,7 @@ export async function executeWaiReview(
         files: p.fileResult.entries,
         diff: fileDiffs[p.file] ?? "",
         vcs,
-        criteria: state.plan?.acceptanceCriteria?.join("\n"),
+        criteria,
         currentStep,
         sessionContext,
         conventionsText,
@@ -902,7 +949,7 @@ export async function executeWaiReview(
         files: fileResult.entries,
         diff: finalDiff,
         vcs,
-        criteria: state.plan?.acceptanceCriteria?.join("\n"),
+        criteria,
         currentStep,
         sessionContext,
         conventionsText,
@@ -978,6 +1025,8 @@ export async function executeWaiReview(
 
   signal?.throwIfAborted();
   progress(8, STAGES.review, "Review response received");
+  review.scopeLimited = !wholeTreeReview;
+  if (!wholeTreeReview) review.planStale = false;
   if (changedFiles.length > 0) {
     const changedFilesSet = new Set(changedFiles);
     const originalIssueCount = review.issues.length;
@@ -1039,9 +1088,11 @@ export async function executeWaiReview(
   ) {
     review.inconclusive = true;
     review.suggestions.push(
-      review.suggestions.length > 0
-        ? "The review returned a non-pass verdict but reported no issues — the verdict contradicts its own findings, so it is inconclusive (likely a verdict slip by the model, not a real failure). Re-run wai.review; if the change is genuinely fine the re-run should pass."
-        : "The review returned a verdict with no issues, so it is inconclusive — the model response was likely truncated or off-scope. Re-run wai.review; if it repeats, lower the thinking level or scope the diff with files:[...].",
+      review.planStale
+        ? "The model flagged the active plan as stale but found no actionable code issue. This review cannot certify the plan step; update the plan to match the work before another whole-tree review."
+        : review.suggestions.length > 0
+          ? "The review returned a non-pass verdict but reported no issues — the verdict contradicts its own findings, so it is inconclusive (likely a verdict slip by the model, not a real failure). Re-run wai.review; if the change is genuinely fine the re-run should pass."
+          : "The review returned a verdict with no issues, so it is inconclusive — the model response was likely truncated or off-scope. Re-run wai.review; if it repeats, lower the thinking level or scope the diff with files:[...].",
     );
     logEvent(cwd, "warn", "Review verdict had no issues; marked inconclusive", {
       verdict: review.verdict,

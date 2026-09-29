@@ -107,12 +107,20 @@ export async function executeWaiTest(
     diff: rawDiff,
     changedFiles,
     truncated,
+    unavailableReason,
   } = getDiff(cwd, {
     ...options,
     maxDiffChars: config.reviewMaxDiffChars,
     untracked: options.untracked ?? true,
     ...range,
   });
+  if (unavailableReason || changedFiles.length === 0) {
+    return {
+      action: "test",
+      error: unavailableReason ?? "No code changes were found in the requested test-review range.",
+      model: modelProfile,
+    };
+  }
   // A capped combined diff is sliced (tail files dropped): rebuild the
   // complete diff per file so the budget gate below sees the TRUE size — the
   // change is either reviewed completely or fails closed with guidance,

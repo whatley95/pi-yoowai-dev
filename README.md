@@ -796,11 +796,11 @@ Fresh, complete whole-tree reviews also track recurring findings by normalized t
 
 ### Approval and completion evidence
 
-For Git projects, wai fingerprints tracked and non-ignored untracked file contents, the index, and HEAD at workflow boundaries. Shell commands and external editor changes therefore invalidate old approvals without treating every shell command as an edit. `.pi/` runtime metadata is excluded. A review or judgment whose workspace changes during execution returns an error before advancing review baselines or plan progress. A passing whole-tree review clears pending edits only when its captured fingerprint still matches the current tree. New edits also re-arm final judgment.
+For Git projects, wai fingerprints tracked and non-ignored untracked file contents, the index, and HEAD at workflow boundaries. SVN working copies fingerprint versioned and unversioned file contents plus working-copy status and changed properties. Shell commands and external editor changes therefore invalidate old approvals without treating every shell command as an edit. Project-root `.pi/` runtime metadata is excluded. A review or judgment whose workspace changes during execution returns an error before advancing review baselines or plan progress. A passing whole-tree review clears pending edits only when its captured fingerprint still matches the current tree. New edits also re-arm final judgment.
 
 `/wai-plan` shows configured check commands and exit codes, the model assessment separately, and whether the evidence is stale. Acceptance criteria remain explicitly unverified: passing a generic command or receiving model agreement does not prove an arbitrary criterion. Configured checks run afresh on each review/judge request; these requests bypass the model-result cache, and any failing check prevents a passing verdict. Commands still run only when configured or enabled through `autoPreReviewCommands`.
 
-Content fingerprints currently apply to Git projects; SVN and projects without Git retain tool-based edit tracking. Fingerprinting reads the project contents and adds filesystem/Git overhead, especially for large repositories. It detects changes between snapshots, and does not lock files against concurrent mutation.
+Content fingerprints apply to Git and SVN projects. Projects without a recognized working copy retain tool-based edit tracking. Fingerprinting reads project contents and adds filesystem/VCS overhead, especially for large repositories. It detects changes between snapshots, and does not lock files against concurrent mutation.
 
 ## How it works
 
@@ -822,7 +822,7 @@ Content fingerprints currently apply to Git projects; SVN and projects without G
 - **Cost tracking + budget** — estimated spend per call, session total, optional hard budget, and wall-clock elapsed time in result headers
 - **Robust JSON parsing** — unwraps wrapper objects like `{ "response": "..." }` and falls back to markdown salvage when the model does not return the expected `## Result` JSON block
 - **One round-trip by default** — pure judgment; an optional `toolUseLoop` lets the model request `read_file`, `search_code` (regex search across project files with path scoping and context lines — locate callers/definitions, then `read_file` the hits), and allowlisted `run_command` calls. Model-generated commands are restricted to read-only subcommands (no `git push`/`reset`, `svn revert`, `npm publish`/`install`, etc.); user-configured `preReviewCommands` stay unrestricted
-- **Inconclusive reviews** — a non-pass verdict with zero issues (truncated response or a verdict contradicting its own findings) is marked **inconclusive**: not a pass, not a failed review round, and the result says to re-run rather than invent fixes
+- **Inconclusive reviews** — an absent, failed, or incomplete requested diff returns an inconclusive diagnostic before any model call. A model non-pass verdict with zero issues is also inconclusive; if it reports a stale plan, update the plan before retrying. Scoped passes cover only their requested files or revision and cannot clear the whole-tree completion gate.
 - **Supports OpenAI-compatible and Anthropic APIs** — 26 providers pre-configured for direct HTTP, plus any custom endpoint via `baseUrl`
 
 ## Design references

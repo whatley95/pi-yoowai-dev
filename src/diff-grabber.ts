@@ -8,6 +8,8 @@ import { gitSpawnEnv } from "./git-env.js";
 export const DEFAULT_MAX_DIFF_CHARS = 200_000;
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
 const PI_STATE_EXCLUDE_PATHSPEC = ":(exclude,top).pi";
+const UNSAFE_SCOPE_REASON =
+  "The requested file scope is outside the current project or is unsafe. Reviews can only certify files under the session working directory; run Pi in the other project's directory to review those files.";
 
 /** Pi's project-local settings and wai runtime state are agent metadata, not
  * project changes to review. Match only the project-root .pi directory. */
@@ -24,6 +26,8 @@ export type VcsType = "git" | "svn";
 export interface DiffResult {
   diff: string;
   truncated: boolean;
+  /** A capture failure must never be presented to a reviewer as a patch. */
+  unavailableReason?: string;
   /** Original character count before maxDiffChars truncation, when available. */
   totalChars?: number;
   changedFiles: string[];
@@ -183,10 +187,11 @@ export function getGitDiff(
   } catch (err) {
     logEvent(cwd, "warn", "Unsafe git diff paths", { error: err instanceof Error ? err.message : String(err) });
     return {
-      diff: "(could not retrieve diff — unsafe file or exclude paths)",
+      diff: "",
       truncated: false,
       changedFiles: [],
       vcs: "git",
+      unavailableReason: UNSAFE_SCOPE_REASON,
     };
   }
   const maxDiffChars = options.maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
@@ -202,10 +207,11 @@ export function getGitDiff(
         args: buildGitRevisionArgs(revision, since, pathArgs),
       });
       return {
-        diff: "(could not retrieve diff for the requested revision range)",
+        diff: "",
         truncated: false,
         changedFiles: [],
         vcs: "git",
+        unavailableReason: "Could not retrieve the requested Git revision range. Check the revision and retry.",
       };
     }
     // Range-based diffs skip `git diff`'s working-tree logic, so appending
@@ -238,6 +244,13 @@ export function getGitDiff(
     if (diff.trim()) combinedDiff += diff;
   } catch (err) {
     logEvent(cwd, "debug", "Git working-tree diff failed", { error: err instanceof Error ? err.message : String(err) });
+    return {
+      diff: "",
+      truncated: false,
+      changedFiles: [],
+      vcs: "git",
+      unavailableReason: "Could not retrieve the Git working-tree diff. Check the repository and retry.",
+    };
   }
 
   if (options.untracked) {
@@ -257,7 +270,7 @@ export function getGitDiff(
   if (combinedDiff.trim()) return processDiff(combinedDiff, "git", maxDiffChars);
 
   return {
-    diff: "(no changes detected — review session context instead)",
+    diff: "",
     truncated: false,
     changedFiles: [],
     vcs: "git",
@@ -291,7 +304,8 @@ function buildGitPathArgs(files?: string[], exclude?: string[]): string[] | unde
     return [".", PI_STATE_EXCLUDE_PATHSPEC];
   }
 
-  const safeFiles = files.filter((f) => isSafeRelativePath(f));
+  if (files.some((file) => !isSafeRelativePath(file))) throw new Error("All review paths must be project-relative");
+  const safeFiles = files;
   const excludeArgs = (exclude ?? []).filter((e) => isSafeRelativePath(e)).map((e) => `:(exclude)${e}`);
   if (safeFiles.length === 0) {
     throw new Error("No safe file paths provided for git diff");
@@ -320,6 +334,9 @@ export function getSvnDiff(
     maxDiffChars?: number;
   } = {},
 ): DiffResult {
+  if (options.files?.some((file) => !isSafeRelativePath(file))) {
+    return { diff: "", truncated: false, changedFiles: [], vcs: "svn", unavailableReason: UNSAFE_SCOPE_REASON };
+  }
   const revision = validateRevision(options.revision);
   const since = validateRevision(options.since);
   const maxDiffChars = options.maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
@@ -433,10 +450,17 @@ export function getSvnDiff(
     }
   } catch (err) {
     logEvent(cwd, "debug", "SVN diff attempt failed", { error: err instanceof Error ? err.message : String(err) });
+    return {
+      diff: "",
+      truncated: false,
+      changedFiles: [],
+      vcs: "svn",
+      unavailableReason: "Could not retrieve the SVN working-copy diff. Check the working copy and retry.",
+    };
   }
 
   return {
-    diff: "(no SVN changes detected — review session context instead)",
+    diff: "",
     truncated: false,
     changedFiles: [],
     vcs: "svn",

@@ -182,6 +182,10 @@ export interface ReviewResult {
   consensus: boolean;
   /** Non-pass verdict with zero issues — truncated or off-scope response; not actionable, not a pass, not a failed round. */
   inconclusive?: boolean;
+  /** The requested diff was unavailable, empty, or incomplete; no model review was run. */
+  inputIncomplete?: boolean;
+  /** A scoped or historical review cannot certify the current whole working tree. */
+  scopeLimited?: boolean;
   planProgress?: string;
   nextStep?: string;
   escalated?: boolean;

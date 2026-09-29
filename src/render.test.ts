@@ -129,6 +129,22 @@ describe("renderResult review level", () => {
     assert.ok(line.includes("wai review (min) ✓ pass · kimi-coding:k3-256k"), line);
   });
 
+  it("labels an inconclusive result without presenting it as needs-work", () => {
+    const line = textOf(
+      renderResult(
+        toolResult({
+          action: "review",
+          review: { verdict: "needs-work", issues: [], suggestions: [], consensus: false, inconclusive: true },
+        }),
+        { isPartial: false, expanded: false },
+        theme,
+        {},
+      ),
+    );
+    assert.match(line, /wai review ⚠ inconclusive/);
+    assert.doesNotMatch(line, /needs-work/);
+  });
+
   it("omits the level marker when the result has none", () => {
     const line = textOf(
       renderResult(

@@ -264,8 +264,35 @@ test("formatResultText renders inconclusive review guidance instead of a fix act
     },
   });
   assert.ok(text.includes("Inconclusive"));
+  assert.match(text, /wai review ⚠ inconclusive/);
   assert.ok(text.includes("re-run `wai.review`"));
   assert.ok(!text.includes("Fix the issues above"));
+});
+
+test("formatResultText explains that a scoped pass cannot clear the done gate", () => {
+  const text = formatResultText({
+    action: "review",
+    review: { verdict: "pass", issues: [], suggestions: [], consensus: true, scopeLimited: true },
+  });
+  assert.match(text, /Scoped review.*does not clear the whole-tree review gate/);
+  assert.match(text, /whole-tree certification is still pending/);
+  assert.doesNotMatch(text, /step is complete/);
+});
+
+test("formatResultText gives VCS guidance when review input is incomplete", () => {
+  const text = formatResultText({
+    action: "review",
+    review: {
+      verdict: "needs-work",
+      issues: [],
+      suggestions: [],
+      consensus: false,
+      inconclusive: true,
+      inputIncomplete: true,
+    },
+  });
+  assert.match(text, /Review input incomplete.*did not run a model review/);
+  assert.doesNotMatch(text, /lower the thinking level/);
 });
 test("formatResultText renders stitched continuation", () => {
   const text = formatResultText(recommendResult({ cost: sampleCost, continuation: { rounds: 2, status: "stitched" } }));

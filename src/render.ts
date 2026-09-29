@@ -269,9 +269,8 @@ export function renderResult(
   if (r.review) {
     const icon = r.review.verdict === "pass" ? "✓" : r.review.verdict === "blocked" ? "✗" : "⚠";
     const color = r.review.verdict === "pass" ? "green" : r.review.verdict === "blocked" ? "error" : "yellow";
-    lines.push(
-      theme.fg(color, `wai review${r.level ? ` (${r.level})` : ""} ${icon} ${r.review.verdict}${modelSuffix(r.model)}`),
-    );
+    const label = r.review.inconclusive ? "inconclusive" : r.review.verdict;
+    lines.push(theme.fg(color, `wai review${r.level ? ` (${r.level})` : ""} ${icon} ${label}${modelSuffix(r.model)}`));
 
     if (r.review.contextLimited || r.review.truncated || (r.review.droppedFiles && r.review.droppedFiles.length > 0)) {
       const warnings: string[] = [];

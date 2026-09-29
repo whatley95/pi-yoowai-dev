@@ -265,6 +265,25 @@ for (const fixture of [
     assert.ok(address && typeof address !== "string");
     try {
       const cwd = tempCwd();
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
+      writeFileSync(join(cwd, "file.txt"), "before\n");
+      execFileSync("git", ["add", "file.txt"], { cwd, stdio: "ignore" });
+      execFileSync(
+        "git",
+        [
+          "-c",
+          "commit.gpgsign=false",
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.com",
+          "commit",
+          "-m",
+          "base",
+        ],
+        { cwd, stdio: "ignore" },
+      );
+      writeFileSync(join(cwd, "file.txt"), "after\n");
       mkdirSync(join(cwd, ".pi"), { recursive: true });
       writeFileSync(
         join(cwd, ".pi", "settings.json"),

@@ -115,6 +115,9 @@ describe("diff-grabber helpers", () => {
       assert.deepEqual(result.changedFiles, ["app.txt"]);
       assert.match(result.diff, /APP_MARKER/);
       assert.doesNotMatch(result.diff, /STATE_MARKER|EXTRA_MARKER|\.pi\//);
+      const unsafe = getSvnDiff(cwd, { files: ["app.txt", join(root, "outside.txt")] });
+      assert.deepEqual(unsafe.changedFiles, []);
+      assert.match(unsafe.unavailableReason ?? "", /outside the current project/);
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }

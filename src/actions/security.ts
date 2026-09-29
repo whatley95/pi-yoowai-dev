@@ -111,6 +111,13 @@ export async function executeWaiSecurity(
       untracked: options.untracked ?? true,
       ...range,
     });
+    if (diffResult.unavailableReason || diffResult.changedFiles.length === 0) {
+      return {
+        action: "security",
+        error: diffResult.unavailableReason ?? "No code changes were found in the requested security-review range.",
+        model: modelProfile,
+      };
+    }
     // A capped combined diff is sliced (tail files dropped): rebuild the
     // complete diff per file so the budget gate below sees the TRUE size.
     if (diffResult.truncated) {

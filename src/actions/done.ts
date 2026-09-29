@@ -129,11 +129,18 @@ export async function executeWaiDone(
   ) {
     try {
       const verificationSnapshot = captureWorkspace(cwd);
-      const { diff, truncated: diffTruncated } = getDiff(cwd, {
+      const {
+        diff,
+        truncated: diffTruncated,
+        changedFiles,
+        unavailableReason,
+      } = getDiff(cwd, {
         maxDiffChars: config.reviewMaxDiffChars,
         untracked: true,
         revision: "HEAD",
       });
+      if (unavailableReason || changedFiles.length === 0)
+        throw new Error(unavailableReason ?? "No code changes available for done verification");
       if (diffTruncated) throw new Error("Incomplete diff for done verification");
       const modelConfig = resolveTaskModel(config, "done");
       if (!modelConfig.provider || !modelConfig.id) throw new Error("No done-verification model configured");
