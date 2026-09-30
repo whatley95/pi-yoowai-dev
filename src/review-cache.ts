@@ -25,6 +25,9 @@ type CacheFile = {
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours — the key covers every stable prompt input, so long-lived hits stay correct
 const MAX_ENTRIES = 200;
+// Bump when fixed prompt/assessment contracts change so older verdicts cannot
+// replay under new workflow rules, even when the reviewed code is unchanged.
+const CACHE_CONTRACT_VERSION = 2;
 
 function getCachePath(cwd: string): string {
   const dir = join(cwd, ".pi", "yoowai");
@@ -77,7 +80,7 @@ export function buildCacheKey(action: string, payload: Record<string, unknown>):
   // and serialize nested objects to {}, making the key ignore the model and
   // returning a stale cached verdict after /wai-model switches models.
   const canonical = stableStringify(payload);
-  return createHash("sha256").update(`${action}:${canonical}`).digest("hex").slice(0, 32);
+  return createHash("sha256").update(`${CACHE_CONTRACT_VERSION}:${action}:${canonical}`).digest("hex").slice(0, 32);
 }
 
 export function getCachedReview(cwd: string, key: string): CachedReview | undefined {

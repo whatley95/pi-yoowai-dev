@@ -396,7 +396,7 @@ The `wai` tool is called by the main agent during development:
 | `wai({ test: "added payment service" })`                              | After code changes             | Checks for failing tests, missing tests, and test-quality issues                    |
 | `wai({ security: "auth changes" })`                                   | Security-sensitive changes     | Audits diff for secrets, injection, auth, and other vulnerabilities                 |
 | `wai({ done: true })`                                                 | After completing a step        | Mark the current plan step complete; use a number or `"all"` to mark multiple steps |
-| `wai({ planUpdate: "new task description" })`                         | When plan becomes stale        | Regenerate the active plan; already-completed progress is preserved                 |
+| `wai({ planUpdate: "changed decision and remaining work" })`          | When the plan needs revision   | Update the existing plan; retain progress for unchanged completed leading steps      |
 | `wai({ review: "...", verify: true })`                                | Any high-stakes result         | Asks the main agent to confirm or refute the finding with evidence                  |
 
 > **Diff scope:** by default `review`, `judge`, and `done` diff against `HEAD` and include untracked files, so they see staged, unstaged, and new files without you running `git add` first. Pass `revision`/`since` to scope to a commit range, or `untracked: false` to limit to tracked changes.
@@ -414,7 +414,7 @@ Main-agent guidance uses the same workflow across tools, automatic reminders, an
 
 Plan steps can include `priority` (`high`, `medium`, `low`) and `dependsOn` (1-based list of earlier steps). Plain-string steps still work for backward compatibility.
 
-**Plan tracker.** wai tracks file edits and sends a workflow reminder after `reviewReminderEdits` (default 3) unreviewed edits without a `wai.review` or `wai.done` call, so the plan tracker stays in sync. The reminder names the current plan step when one is active ("Step 2/5 (…)"). A passing review automatically advances the plan: a consensus pass (verdict `pass` with zero issues) advances by the number of steps the model reports as completed (`completedSteps`), and a pass that explicitly sets `stepComplete: true` advances exactly the current step even when minor issues remain. Either advance records a `step-done` audit entry. Judge re-syncs the tracker in both directions: it advances from `completedStepIds` and regresses from `incompleteStepIds` (steps the tracker marks complete that the code does not actually satisfy). You can also correct the tracker manually: `wai({ done: N })` or `/wai-done N` sets progress to step N — a number below the current progress regresses it, and `0` resets it.
+**Plan tracker.** wai tracks file edits and sends a workflow reminder after `reviewReminderEdits` (default 3) unreviewed edits without a `wai.review` or `wai.done` call, so the plan tracker stays in sync. The reminder names the current plan step when one is active ("Step 2/5 (…)"). A passing whole-tree review advances only with explicit completion evidence: a positive `completedSteps` count with consensus, or `stepComplete: true`. An explicit `stepComplete: false` or `completedSteps: 0`, a stale plan, or an inconclusive result prevents advancement; a code-quality pass alone does not finish a step. Either advance records a `step-done` audit entry. Judge re-syncs the tracker in both directions: it advances from `completedStepIds` and regresses from `incompleteStepIds` (steps the tracker marks complete that the code does not actually satisfy). You can also correct the tracker manually: `wai({ done: N })` or `/wai-done N` sets progress to step N — a number below the current progress regresses it, and `0` resets it.
 
 ### `wai_index` tool
 
@@ -552,7 +552,7 @@ Image analysis (including scanned PDFs) requires the **sdk backend** and a model
 | `/wai-done 3`                                 | Mark steps 1–3 complete (lower number regresses the tracker, `0` resets)                            |
 | `/wai-done all`                               | Mark all steps complete                                                                             |
 | `/wai-done --force`                           | Override the `requireReviewBeforeDone` gate; the step is recorded as manually marked (not reviewed) |
-| `/wai-plan-update <new task description>`     | Regenerate the active plan; already-completed progress is preserved                                 |
+| `/wai-plan-update <changed decision and remaining work>` | Update the existing plan; retain progress for unchanged completed leading steps                     |
 
 **`/wai-model` selection flow.** Recent model choices are shown first so you can re-select a model in one click. For providers with a huge catalog (e.g. OpenRouter), `/wai-model` opens a real-time searchable picker with fuzzy matching (the same matcher as Pi's own search — `dsr1` finds `deepseek-r1`): type to narrow the list as you type, use ↑↓ to navigate, and press Enter to select — no Enter-to-submit query needed. If you cancel the search or it matches nothing, it falls back to a family-grouped menu. In environments without interactive terminal input (e.g. RPC/print mode), it falls back to a text prompt + list. The final selection is saved to a recent-models list scoped to the project.
 
@@ -787,7 +787,11 @@ wai.judge("auth refactor complete")
   → Tracker auto-synced to 5/5
 ```
 
-If the implementation diverges from the original plan, wai flags the plan as stale in review/judge output and you can regenerate it with `wai({ planUpdate: "..." })` or `/wai-plan-update`. A review that flags `planStale` also surfaces a one-time suggestion to run `/wai-plan-update` (or `wai({ planUpdate: "..." })`) in its result text, throttled to once per review round (the throttle is per step, so it resets whenever the current step changes — advancing or regressing the tracker) — the plan itself is never modified automatically. The tracker resets cleanly when a new plan is created.
+Plans describe outcomes with completion checks, sized to the task rather than a fixed step count. Unconfirmed implementation choices stay flexible; preservation requirements belong in acceptance criteria across the relevant implementation steps. For example, "Enable hash routing and verify direct navigation" is a step, while "Keep existing .htaccess behavior unchanged" is a criterion. Inspect relevant source before requesting a plan and include confirmed constraints, existing work, and established decisions in the request.
+
+Review/judge prompts require positive evidence for staleness: the conflicting plan text, observed code, and reason an assumption or tracker position has been superseded. A partial/per-file/incremental diff, unfinished step, unchanged preservation check, or equivalent implementation is not itself stale. Explicit developer requirements remain authoritative; internally consistent code that violates them still needs fixing. A reviewer can pass correct partial work while keeping its plan step open.
+
+When a stale warning appears, inspect `/wai-plan` and the cited evidence first. Correct an incorrect current step with `/wai-done N`; for a confirmed plan change use `wai({ planUpdate: "<changed decision and remaining work>" })` or `/wai-plan-update`. Plan updates receive the existing plan and progress, and retain progress only through unchanged completed leading steps (matching descriptions and dependencies). New, changed, removed, or reordered steps cannot reuse an old completion count; affected work needs verification again. Restored completion is marked manual rather than inventing a review of the regenerated plan. A review surfaces its update suggestion at most once per step/review round; the plan is never changed automatically. Creating a fresh plan resets progress.
 
 ### Review escalation
 
@@ -845,7 +849,7 @@ Content fingerprints apply to Git and SVN projects. Projects without a recognize
 - **Cost tracking + budget** — estimated spend per call, session total, optional hard budget, and wall-clock elapsed time in result headers
 - **Robust JSON parsing** — unwraps wrapper objects like `{ "response": "..." }` and falls back to markdown salvage when the model does not return the expected `## Result` JSON block
 - **One round-trip by default** — pure judgment; an optional `toolUseLoop` lets the model request `read_file`, `search_code` (regex search across project files with path scoping and context lines — locate callers/definitions, then `read_file` the hits), and allowlisted `run_command` calls. Model-generated commands are restricted to read-only subcommands (no `git push`/`reset`, `svn revert`, `npm publish`/`install`, etc.); user-configured `preReviewCommands` stay unrestricted
-- **Inconclusive reviews** — an absent, failed, or incomplete requested diff returns an inconclusive diagnostic before any model call. A model non-pass verdict with zero issues is also inconclusive; if it reports a stale plan, update the plan before retrying. Scoped passes cover only their requested files or revision and cannot clear the whole-tree completion gate.
+- **Inconclusive reviews** — an absent, failed, or incomplete requested diff returns an inconclusive diagnostic before any model call. A model non-pass verdict with zero issues is also inconclusive; check a stale-plan claim against the current step, code, and developer decisions before correcting progress or updating the plan. Scoped passes cover only their requested files or revision and cannot clear the whole-tree completion gate.
 - **Supports OpenAI-compatible and Anthropic APIs** — 26 providers pre-configured for direct HTTP, plus any custom endpoint via `baseUrl`
 
 ## Design references
@@ -892,6 +896,8 @@ The supported file names are the wai actions plus the explain/vision tools:
 ```
 
 Only the exact per-action file is loaded — there is no discovery or directory scanning, so an empty/missing directory costs nothing. Files larger than 50 KB are ignored with a warning, and content is truncated to `instructionsMaxTokens` (default: `800`; `0` disables injection) on whole-line boundaries. Changes to an instruction file are picked up on the next call (mtime+size fingerprint) and invalidate the review/judge/test/security result caches, since the instruction text is part of every cache key.
+
+Planning examples are supplied in `templates/instructions/plan.md.example` and `templates/instructions/planUpdate.md.example`. Edit and copy them to the matching paths above to add project-specific planning guidance; these examples are inert until copied.
 
 Example `review.md`:
 

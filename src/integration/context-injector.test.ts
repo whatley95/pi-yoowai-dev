@@ -239,10 +239,16 @@ describe("context-injector", () => {
     const lastUser = event.messages.find((m) => m.role === "user");
     assert.ok(lastUser && typeof lastUser.content === "string");
     const block = lastUser.content.slice(lastUser.content.indexOf("<wai_context>"));
-    assert.equal(
-      block,
-      "<wai_context>\nLanguage: respond in French.\n\nPlan: Refactor auth\nProgress: 0/1 steps completed\nCurrent step: Move login logic\n</wai_context>",
+    assert.ok(
+      block.startsWith(
+        "<wai_context>\nLanguage: respond in French.\n\nPlan: Refactor auth\nProgress: 0/1 steps completed\nCurrent step: Move login logic",
+      ),
     );
+    assert.match(
+      block,
+      /PLAN ALIGNMENT:.*partial diff, unfinished step, or unchanged preservation check does not make a plan stale/s,
+    );
+    assert.ok(block.endsWith("\n</wai_context>"));
   });
 
   it("injects only the language directive when no other context exists", () => {

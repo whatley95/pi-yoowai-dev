@@ -9,7 +9,7 @@ import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
 import { getPastIssuesForFiles } from "../review-memory.js";
 import { estimateTokens, truncateToTokenBudget } from "../token-budget.js";
-import { buildPlanReviewReminder, GIT_COMMIT_GUIDANCE } from "../workflow-guidance.js";
+import { buildPlanReviewReminder, GIT_COMMIT_GUIDANCE, PLAN_ALIGNMENT_GUIDANCE } from "../workflow-guidance.js";
 
 const executingCwds = new Map<string, { count: number }>();
 
@@ -109,7 +109,7 @@ function buildContextBlock(cwd: string): string {
         "verify intended new files show A. If you add files after review, run the whole-tree review again.",
     );
   }
-  if (planSummary) parts.push(planSummary);
+  if (planSummary) parts.push(planSummary, PLAN_ALIGNMENT_GUIDANCE);
   if (conventionsText) parts.push(`<project_conventions>\n${conventionsText}\n</project_conventions>`);
   // Learned knowledge: newest-first FRESH facts + decisions (compact,
   // token-bounded) so the main agent starts each turn with project

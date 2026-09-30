@@ -5,6 +5,7 @@ import { buildProjectSnapshot, formatProjectSnapshot } from "../project-snapshot
 import { callSecondaryModel } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { buildPlanPrompt, validatePlanResult, getPlanValidationErrors, salvagePlanFromMarkdown } from "../prompts.js";
+import type { PlanUpdateContext } from "../prompts.js";
 import { setPlan } from "../session-state.js";
 import { capActionInstructions } from "../instructions.js";
 import {
@@ -30,6 +31,7 @@ export async function executeWaiPlan(
    *  Defaults to "plan"; planUpdate passes "planUpdate" so a planUpdate.md file
    *  can steer regenerated plans differently from the initial plan. */
   instructionsAction: string = "plan",
+  updateContext?: PlanUpdateContext,
 ): Promise<WaiToolResult> {
   const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, modelTask);
@@ -51,7 +53,7 @@ export async function executeWaiPlan(
 
   progress(2, STAGES.plan, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const instructionsText = capActionInstructions(cwd, instructionsAction, config.instructionsMaxTokens ?? 800);
-  const { system, user } = buildPlanPrompt(task, conventionsText, snapshotText, instructionsText);
+  const { system, user } = buildPlanPrompt(task, conventionsText, snapshotText, instructionsText, updateContext);
   let raw: string;
   let usage: UsageCost;
   let rounds: number | undefined;

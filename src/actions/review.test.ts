@@ -174,9 +174,23 @@ describe("executeWaiReview model resolution (effective level drives per-level mo
 });
 
 describe("planAdvanceFromReview (guarded auto-completion)", () => {
-  it("consensus advances by the relative completedSteps count", () => {
+  it("consensus advances only with explicit completion evidence", () => {
     assert.deepEqual(planAdvanceFromReview(review({ completedSteps: 2 }), true, false), { count: 2 });
-    assert.deepEqual(planAdvanceFromReview(review(), true, false), { count: 1 });
+    assert.deepEqual(planAdvanceFromReview(review({ stepComplete: true }), true, false), { count: 1 });
+    assert.equal(planAdvanceFromReview(review(), true, false), null);
+  });
+
+  it("an explicit unfinished step overrides a clean consensus and conflicting positive count", () => {
+    assert.equal(planAdvanceFromReview(review({ stepComplete: false }), true, false), null);
+    assert.equal(planAdvanceFromReview(review({ completedSteps: 0 }), true, false), null);
+    assert.equal(planAdvanceFromReview(review({ stepComplete: false, completedSteps: 2 }), true, false), null);
+    assert.equal(planAdvanceFromReview(review({ stepComplete: true, completedSteps: 0 }), true, false), null);
+    assert.equal(planAdvanceFromReview(review({ completedSteps: 1.5 }), true, false), null);
+  });
+
+  it("a stale or inconclusive pass cannot advance even with completion evidence", () => {
+    assert.equal(planAdvanceFromReview(review({ stepComplete: true, planStale: true }), true, false), null);
+    assert.equal(planAdvanceFromReview(review({ completedSteps: 2, inconclusive: true }), true, false), null);
   });
 
   it("stepComplete advances exactly one step on a pass, even with minor issues", () => {
@@ -222,6 +236,7 @@ describe("mergeReviewResults plan-tracker signals", () => {
     ]);
     assert.equal(merged2.stepComplete, false);
     assert.equal(merged2.planStale, false);
+    assert.equal(planAdvanceFromReview(merged2, true, false), null, "a partial batch pass must keep the step open");
   });
 
   it("empty results never claim a step complete", () => {
@@ -474,7 +489,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
             issues: [],
             suggestions: [],
             consensus: true,
-            stepComplete: options?.stepComplete === true ? true : undefined,
+            stepComplete: options?.stepComplete,
           }
         : verdict === "blocked"
           ? {
@@ -698,9 +713,43 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
       const result = await executeWaiReview(cwd, "hash routing", { cwd } as ExtensionContext, {}, undefined, () => {});
       assert.equal(result.review?.inconclusive, true);
       assert.equal(result.review?.issues.length, 0);
-      assert.match(result.review?.suggestions.join(" ") ?? "", /update the plan to match the work/);
+      assert.match(result.review?.suggestions.join(" ") ?? "", /update the plan only for a confirmed mismatch/);
     },
   );
+
+  for (const stepComplete of [false, undefined, true]) {
+    it(
+      `a passing whole-tree review with stepComplete=${stepComplete} handles progress explicitly`,
+      { skip: !hasGit },
+      async () => {
+        const cwd = makeRepoWithChange("partial routing change\n");
+        const stub = await startStubServer({ stepComplete });
+        setPlan(cwd, {
+          summary: "routing",
+          todo: ["Implement routing and guard", "Verify navigation"],
+          acceptanceCriteria: [],
+        });
+        writeSettings(cwd, {
+          reviewLevel: "min",
+          autoJudge: false,
+          secondary: { provider: "openai", id: "gpt-4o-mini", backend: "http", baseUrl: stub.url, apiKey: "test" },
+        });
+        const result = await executeWaiReview(
+          cwd,
+          "routing change",
+          { cwd } as ExtensionContext,
+          {},
+          undefined,
+          () => {},
+        );
+        assert.equal(result.review?.verdict, "pass");
+        assert.notEqual(result.review?.inconclusive, true);
+        assert.equal(getState(cwd).completedSteps, stepComplete === true ? 1 : 0);
+        dropSessionState(cwd);
+        assert.equal(getState(cwd).completedSteps, stepComplete === true ? 1 : 0, "progress is persisted honestly");
+      },
+    );
+  }
 
   it(
     "keeps the depth-specific model and endpoint for both review and self-verification",

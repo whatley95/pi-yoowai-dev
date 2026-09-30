@@ -2,8 +2,24 @@ import { executeWaiPlan } from "./plan.js";
 import { getState, markStepsComplete, flushSessionState } from "../session-state.js";
 import { logEvent } from "../logger.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { DoneResult, PlanResult } from "../types.js";
+import { planStepDescription, type DoneResult, type PlanResult } from "../types.js";
 import type { ProgressReporter } from "../progress.js";
+
+/** Only unchanged leading work can retain progress after regeneration.
+ *  Priority is presentation metadata; dependency changes affect completion. */
+export function preservedCompletedPrefix(previous: PlanResult, next: PlanResult, completedSteps: number): number {
+  const limit = Math.min(completedSteps, previous.todo.length, next.todo.length);
+  let count = 0;
+  for (; count < limit; count++) {
+    const oldStep = previous.todo[count];
+    const newStep = next.todo[count];
+    if (planStepDescription(oldStep).trim() !== planStepDescription(newStep).trim()) break;
+    const oldDeps = typeof oldStep === "string" ? [] : (oldStep.dependsOn ?? []);
+    const newDeps = typeof newStep === "string" ? [] : (newStep.dependsOn ?? []);
+    if (JSON.stringify([...oldDeps].sort()) !== JSON.stringify([...newDeps].sort())) break;
+  }
+  return count;
+}
 
 export async function executeWaiPlanUpdate(
   cwd: string,
@@ -15,8 +31,18 @@ export async function executeWaiPlanUpdate(
   const before = getState(cwd);
   const previousCompleted = before.completedSteps;
   const previousBase = before.planBaseCommit;
+  const previousPlan = before.plan;
 
-  const planResult = await executeWaiPlan(cwd, description, signal, progress, sessionManager, "plan", "planUpdate");
+  const planResult = await executeWaiPlan(
+    cwd,
+    description,
+    signal,
+    progress,
+    sessionManager,
+    "plan",
+    "planUpdate",
+    previousPlan ? { plan: previousPlan, completedSteps: previousCompleted } : undefined,
+  );
   signal?.throwIfAborted();
   if (planResult.error || !planResult.plan) {
     return {
@@ -30,18 +56,15 @@ export async function executeWaiPlanUpdate(
   const newPlan: PlanResult = planResult.plan;
   // Regenerating the plan retains the task's original judgment span.
   getState(cwd).planBaseCommit = previousBase ?? getState(cwd).planBaseCommit;
-  // Preserve completed progress up to the new plan length. Completed-via-done
-  // steps are marked "not reviewed" (not "reviewed and passed") so judge
-  // history isn't falsified, and the advanced state is persisted via
-  // markStepsComplete (setPlan alone does not persist restored progress).
-  // If the regenerated plan is shorter than the previous progress, clamp to
-  // the new length and warn — otherwise the completed count silently resets
-  // to 0 with no explanation.
-  const restored = Math.min(previousCompleted, newPlan.todo.length);
-  const clamped = previousCompleted > newPlan.todo.length;
-  if (clamped) {
+  // Retain progress only through the first changed or reordered step. A raw
+  // count could otherwise skip newly inserted work. Restored steps remain
+  // manually marked rather than inventing a review of the regenerated plan.
+  const restored = previousPlan ? preservedCompletedPrefix(previousPlan, newPlan, previousCompleted) : 0;
+  const progressChanged = restored < previousCompleted;
+  if (progressChanged) {
     logEvent(cwd, "warn", "Plan update dropped completed progress", {
       previousCompleted,
+      restoredCompleted: restored,
       newTotalSteps: newPlan.todo.length,
     });
   }
@@ -56,8 +79,8 @@ export async function executeWaiPlanUpdate(
       ? (after.plan.todo[after.completedSteps] as string)
       : (after.plan.todo[after.completedSteps] as { description: string }).description
     : undefined;
-  const clampNote = clamped
-    ? ` Warning: previous progress (${previousCompleted} steps) exceeded the new plan length (${newPlan.todo.length}) and was clamped; re-review the affected work.`
+  const progressNote = progressChanged
+    ? ` Retained ${restored} of ${previousCompleted} previously completed steps; changed, removed, or reordered steps need verification again.`
     : "";
 
   return {
@@ -65,6 +88,6 @@ export async function executeWaiPlanUpdate(
     totalSteps: after.totalSteps,
     nextStep,
     allDone: after.completedSteps >= after.totalSteps,
-    message: `Plan updated: ${after.completedSteps}/${after.totalSteps} steps already completed.${clampNote}`,
+    message: `Plan updated: ${after.completedSteps}/${after.totalSteps} steps already completed.${progressNote}`,
   };
 }

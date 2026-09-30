@@ -21,6 +21,9 @@ Keep this a short checklist — evaluation criteria, not documentation.
 
 ## Contract precedence
 
+- A partial or per-file review can pass while the plan step remains unfinished. Use `stepComplete: false` and `completedSteps: 0`; do not mark the plan stale because another file, future step, or preservation invariant is absent from this diff.
+- Flag staleness only with positive evidence of a superseded plan assumption or incorrect tracker position. Cite the plan text, observed code, and established decision. Equivalent implementations are acceptable; code that violates an explicit user requirement is still a code defect.
+
 The output contract instructions in the system prompt take precedence over
 this checklist. If a rule here conflicts with the requested output format,
 follow the contract.

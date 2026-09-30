@@ -1078,6 +1078,55 @@ describe("validateConventionsResult", () => {
 });
 
 describe("native JSON prompt instruction", () => {
+  it("plans outcomes and checks without filler counts or invented implementation requirements", () => {
+    const prompt = buildPlanPrompt("enable hash routing while preserving .htaccess", "", "src/app.config.ts");
+    assert.doesNotMatch(prompt.system, /Aim for 5-8|Aim for 5 acceptance/);
+    assert.match(prompt.system, /observable outcomes with a concrete completion check/);
+    assert.match(prompt.system, /Separate confirmed requirements from implementation assumptions/);
+    assert.match(prompt.system, /preservation requirements as acceptance criteria/);
+    assert.match(prompt.system, /Equivalent implementations/);
+  });
+
+  it("an update carries the original plan and progress and tells the planner to preserve completed work", () => {
+    const context = {
+      plan: { summary: "routing", todo: ["inspect", "implement"], acceptanceCriteria: ["Keep .htaccess unchanged"] },
+      completedSteps: 1,
+    };
+    const prompt = buildPlanPrompt("update the guard approach", "", "", "", context);
+    const supplied = JSON.parse(prompt.user.match(/<existing_plan>\n([\s\S]*?)\n<\/existing_plan>/)![1]);
+    assert.deepEqual(supplied, context);
+    assert.match(prompt.system, /already-completed leading steps verbatim and in order/);
+    assert.match(prompt.system, /retain the original task goals and acceptance criteria/);
+    assert.doesNotMatch(buildPlanPrompt("update the guard approach").user, /<existing_plan>/);
+    const changed = buildPlanPrompt("update the guard approach", "", "", "", { ...context, completedSteps: 0 });
+    assert.notEqual(changed.user, prompt.user, "prompt cache must key plan progress");
+  });
+
+  it("review distinguishes a partial pass from stale or completed work", () => {
+    const prompt = buildAdaptiveReviewPrompt("routing", "diff", [], { currentStep: "Implement routing and guard" });
+    assert.match(prompt.system, /A correct partial change can pass code review/);
+    assert.match(prompt.system, /"stepComplete": false and "completedSteps": 0/);
+    assert.match(prompt.system, /Do not infer completion of unseen later steps/);
+    assert.match(prompt.system, /Cite the conflicting plan text, observed file\/code, and reason/);
+    assert.match(
+      prompt.system,
+      /partial\/per-file\/incremental diff, or missing context are not evidence of staleness/,
+    );
+    assert.match(prompt.system, /Do not silently replace an explicit developer requirement/);
+    assert.doesNotMatch(prompt.system, /trust the code and treat the plan as stale/i);
+  });
+
+  it("judge preserves explicit requirements and distinguishes unfinished work from a superseded plan", () => {
+    const prompt = buildJudgePrompt("routing", { planTodo: ["Implement routing"], acceptanceCriteria: [] });
+    assert.match(
+      prompt.system,
+      /Distinguish a superseded implementation assumption from an unmet developer requirement/,
+    );
+    assert.match(prompt.system, /Equivalent implementations that satisfy the requested outcome/);
+    assert.match(prompt.system, /Cite the conflicting plan text/);
+    assert.doesNotMatch(prompt.system, /code is internally consistent, the plan is stale/);
+  });
+
   it("plan prompt keeps fenced JSON instruction by default", () => {
     const prompt = buildPlanPrompt("task", "conventions");
     assert.ok(prompt.system.includes("## Result"));

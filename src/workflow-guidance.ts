@@ -1,4 +1,15 @@
 /** Shared main-agent instructions used by tools, reminders, and reports. */
+export const PLAN_GUIDANCE =
+  "Before requesting a plan, inspect relevant source and include the requested outcome, confirmed constraints, " +
+  "existing work, and established decisions. Use only the steps the task needs, each with an observable outcome " +
+  "and completion check. Keep unverified implementation choices flexible and preservation requirements as acceptance criteria.";
+
+export const PLAN_ALIGNMENT_GUIDANCE =
+  "PLAN ALIGNMENT: Check the current step before starting a new batch. A partial diff, unfinished step, or unchanged " +
+  "preservation check does not make a plan stale. Verify a stale warning against the cited plan text, code, and developer " +
+  "decision. Correct a tracker error with done:<step number>; use planUpdate with the changed decision and remaining work " +
+  "when the plan itself needs revision. Keep explicit user requirements; do not rewrite them just to obtain a pass.";
+
 export const REVIEW_SCOPE_GUIDANCE =
   "Use files:[...] or exclude:[...] for focused feedback on edited files and directly affected tests/types/config. " +
   "A scoped or historical pass cannot clear the done gate or advance the plan. Before certifying a step or " +

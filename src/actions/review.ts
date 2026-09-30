@@ -71,27 +71,36 @@ export const REVIEW_NO_MODEL_ERROR =
 
 /** Decide whether a passing review advances the plan tracker, and by how
  *  many steps. Guards the guarded auto-completion contract:
- *  - consensus (verdict "pass" with zero issues) advances by the model's
- *    relative "completedSteps" count (default 1), as before;
+ *  - consensus advances by an explicit positive "completedSteps" count;
  *  - an explicit stepComplete: true signal advances exactly one step (the
  *    current one) even when minor issues remain, because the model
  *    explicitly confirmed the step's work is finished and covered;
- *  - anything else (needs-work/blocked, or a bare pass without stepComplete
- *    and without consensus) does not advance.
+ *  - explicit incomplete/stale/inconclusive signals and a code-quality pass
+ *    without completion evidence do not advance.
  *  Returns null when no plan is active; when the plan is already complete the
  *  returned count is 0 (bookkeeping may still run, auto-advance must not). */
 export function planAdvanceFromReview(
-  review: Pick<ReviewResult, "verdict" | "consensus" | "stepComplete" | "completedSteps">,
+  review: Pick<
+    ReviewResult,
+    "verdict" | "consensus" | "stepComplete" | "completedSteps" | "planStale" | "inconclusive"
+  >,
   planActive: boolean,
   planComplete: boolean,
 ): { count: number } | null {
-  if (!planActive) return null;
-  if (review.consensus) {
-    const count = typeof review.completedSteps === "number" && review.completedSteps > 1 ? review.completedSteps : 1;
-    return { count: planComplete ? 0 : count };
+  if (!planActive || review.verdict !== "pass" || review.planStale || review.inconclusive) return null;
+  if (planComplete) return review.consensus || review.stepComplete === true ? { count: 0 } : null;
+  if (review.stepComplete === false || review.completedSteps === 0) return null;
+  const completedSteps = review.completedSteps;
+  if (
+    review.consensus &&
+    typeof completedSteps === "number" &&
+    Number.isInteger(completedSteps) &&
+    completedSteps > 0
+  ) {
+    return { count: completedSteps };
   }
-  if (review.verdict === "pass" && review.stepComplete === true) {
-    return { count: planComplete ? 0 : 1 };
+  if (review.stepComplete === true) {
+    return { count: 1 };
   }
   return null;
 }
@@ -1090,7 +1099,7 @@ export async function executeWaiReview(
     review.inconclusive = true;
     review.suggestions.push(
       review.planStale
-        ? "The model flagged the active plan as stale but found no actionable code issue. This review cannot certify the plan step; update the plan to match the work before another whole-tree review."
+        ? "The model flagged the active plan as stale but found no actionable code issue. This review cannot certify the plan step. Compare the cited mismatch with the current step, code, and developer decisions; correct tracker progress or update the plan only for a confirmed mismatch before another whole-tree review."
         : `The model returned a non-pass verdict without actionable code issues. ${INCONCLUSIVE_REVIEW_GUIDANCE}`,
     );
     logEvent(cwd, "warn", "Review verdict had no issues; marked inconclusive", {
@@ -1183,7 +1192,7 @@ export async function executeWaiReview(
     review = {
       ...review,
       suggestions: [
-        "The review flagged the active plan as stale (it no longer matches the code). Once the code is in a consistent state, update the plan with `/wai-plan-update` or `wai({ planUpdate: '...' })`.",
+        "Check the review's stale-plan evidence against the developer's requirements and current tracker step. For a confirmed plan change, use `/wai-plan-update` or `wai({ planUpdate: '<changed decision and remaining work>' })`; a partial diff or unfinished step alone does not require re-planning.",
         ...review.suggestions,
       ],
     };
@@ -1213,8 +1222,8 @@ export async function executeWaiReview(
   );
   if (!reviewIncomplete) recordReviewedFiles(cwd, changedFiles, review.verdict);
 
-  // Guarded auto-completion: consensus (pass with zero issues) advances as
-  // before; an explicit stepComplete signal advances exactly the current step.
+  // Code quality and completion are separate: require explicit step-completion
+  // evidence before advancing, even when every reviewer agrees the code passes.
   const advance = isWholeTreeReview(options)
     ? planAdvanceFromReview(
         review,

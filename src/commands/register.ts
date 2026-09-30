@@ -1832,7 +1832,8 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
   };
 
   pi.registerCommand("wai-plan-update", {
-    description: "Regenerate the active wai plan from a new task description. Preserves already-completed progress.",
+    description:
+      "Update the active wai plan using a changed decision and remaining work. Retains unchanged completed leading steps.",
     handler: planUpdateHandler,
   });
 

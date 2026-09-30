@@ -1,4 +1,4 @@
-import type { JudgeResult, PlanTodoItem } from "../types.js";
+import type { JudgeResult, PlanResult, PlanTodoItem } from "../types.js";
 import { planStepDescription } from "../types.js";
 
 const PAIR_PROGRAMMER_PERSONA = `You are a senior pair programmer sitting next to the developer. You are collaborative, direct, and focused on shipping correct, maintainable code. You explain your reasoning briefly but stay actionable.`;
@@ -48,19 +48,33 @@ function formatInstructionsBlock(instructionsText: string): string {
   return `\n\n<user_instructions>\n${instructionsText}\n</user_instructions>\n\nThese are developer-provided instructions for this action. Follow them unless they conflict with the rules and output contract below — the contract wins.`;
 }
 
+export interface PlanUpdateContext {
+  plan: PlanResult;
+  completedSteps: number;
+}
+
 function buildPlanPromptImpl(
   task: string,
   conventions?: string,
   snapshot?: string,
   instructionsText = "",
+  updateContext?: PlanUpdateContext,
 ): { system: string; user: string } {
   const conventionsBlock = conventions ? `\n\n<project_conventions>\n${conventions}\n</project_conventions>` : "";
   const snapshotBlock = snapshot ? `\n\n<project_snapshot>\n${snapshot}\n</project_snapshot>` : "";
+  const existingPlanBlock = updateContext
+    ? `\n\n<existing_plan>\n${JSON.stringify(updateContext, null, 2)}\n</existing_plan>`
+    : "";
+  const updateRules = updateContext
+    ? `\n- Update the existing plan using the requested change; retain the original task goals and acceptance criteria unless the developer explicitly supersedes them.
+- Preserve the already-completed leading steps verbatim and in order, including their dependencies, unless the requested change invalidates them. Revise the remaining steps to reflect the evidence and requested change.
+- Never place new or unfinished work inside the completed prefix to reuse its progress. Changed or reordered completed steps will need verification again.`
+    : "";
 
   return {
     system: `${COMMON_SYSTEM_PREFIX}${formatInstructionsBlock(instructionsText)}
 
-You are creating a structured plan for the developer. Break the task into an actionable, ordered todo list with clear acceptance criteria for each step.
+You are ${updateContext ? "updating an existing" : "creating a"} structured plan for the developer. Break the task into an actionable, ordered todo list with clear completion checks for each step.
 
 ${finalJsonBlock(`{
   "summary": "one-sentence summary of the overall plan",
@@ -78,15 +92,18 @@ Rules:
 - priority must be one of: high, medium, low. Omit when unclear.
 - dependsOn is a 1-based list of earlier step numbers this step cannot start until after
 - acceptance criteria must be testable (specific checks, not vague goals)
-- Each todo item should be one small unit of work — the main agent should complete it in 1-2 turns
-- Aim for 5-8 todo items (more is acceptable for large refactors, but keep steps small and actionable)
-- Aim for 5 acceptance criteria
+- Size the plan to the task: use only as many steps and acceptance criteria as needed, without filler or a fixed count.
+- Write steps as observable outcomes with a concrete completion check in the description. Keep each step small enough to implement and verify as one coherent batch.
+- Separate confirmed requirements from implementation assumptions. Do not hard-code an endpoint, method, file, or design choice that the developer or provided code has not established; make inspection/confirmation part of the relevant step when needed.
+- Express preservation requirements as acceptance criteria across the relevant implementation steps, rather than a standalone step that appears to require unrelated code changes.
+- Equivalent implementations that satisfy the requested outcome are acceptable; do not turn an unverified implementation suggestion into a mandatory requirement.
+- Account for work already present in the snapshot; plan the remaining change instead of assuming every feature must be built from scratch.
 - Stay scoped to the requested task; do not add unrelated refactoring, cleanup, or extra features
 - Respect the project conventions shown above when choosing file names, structure, and patterns
-- Use the project snapshot to ground the plan in the actual codebase. Prefer existing file paths/patterns from the snapshot. If a step requires a new file, explain why.
+- Use the project snapshot to ground the plan in the actual codebase. Prefer existing file paths/patterns from the snapshot. If a step requires a new file, explain why.${updateRules}
 ${EVIDENCE_RULES}`,
 
-    user: `Create a plan for this task:\n\n${task}${conventionsBlock}${snapshotBlock}`,
+    user: `${updateContext ? "Update the existing plan for this requested change" : "Create a plan for this task"}:\n\n${task}${existingPlanBlock}${conventionsBlock}${snapshotBlock}`,
   };
 }
 
@@ -96,7 +113,7 @@ const REVIEW_RUBRIC = `Review rubric — check ALL of the following categories:
 2. IMPORTS & REFERENCES: Broken imports, undefined variables, wrong exports, missing module references
 3. CONVENTIONS: Violates project naming patterns, file structure, or coding style
 4. LOGIC: Type mismatches, race conditions, off-by-one errors, incorrect assumptions
-5. COMPLETENESS: Does the code actually implement what was described? Are all acceptance criteria met? If the description or plan contradicts the actual code, trust the code and treat the plan as stale.
+5. COMPLETENESS: Does the code implement the described change and the acceptance criteria relevant to this review? Explicit developer requirements remain authoritative. An unfinished step or missing review context does not make the plan stale; assess only what the supplied evidence establishes.
 
 For each issue found, provide a concrete, actionable fix suggestion. Do NOT suggest fixes that you cannot derive from the code shown.`;
 
@@ -107,7 +124,9 @@ const EVIDENCE_RULES = `EVIDENCE REQUIREMENTS:
 - Respect project conventions; do NOT flag a pattern as wrong if it matches the conventions shown.`;
 
 const PLAN_STALE_RULE =
-  "If the current plan step contradicts the actual code (e.g., describes a different endpoint, method, parameter, or design than what is implemented), treat the plan as stale. Trust the code and note that the plan should be updated. Do not flag the code as wrong solely because it differs from the plan.";
+  "Treat a plan as stale only when positive evidence shows that an implementation assumption or tracker position has been superseded by an established developer decision or the actual project structure. Cite the conflicting plan text, observed file/code, and reason in suggestions before proposing an update. " +
+  "Unfinished work, an unchanged preservation check, another step's changes, a partial/per-file/incremental diff, or missing context are not evidence of staleness. Equivalent implementations that satisfy the requested outcome do not require a plan rewrite. " +
+  "Do not silently replace an explicit developer requirement with internally consistent code that violates it; report the evidenced code defect instead. When uncertain, do not declare staleness; explain the uncertainty without blocking otherwise sound code.";
 
 /** Scope-guard rules shared by the diff-based prompts (review/test/security).
  *  The structure and the plan-stale rule live in exactly one place so fixes
@@ -211,7 +230,9 @@ export function buildReviewUserContext(args: {
   } = args;
 
   const criteriaBlock = criteria ? `\n\n<acceptance_criteria>\n${criteria}\n</acceptance_criteria>` : "";
-  const currentStepBlock = currentStep ? `\n\nCurrent plan step being reviewed:\n${currentStep}` : "";
+  const currentStepBlock = currentStep
+    ? `\n\nCurrent plan step being reviewed:\n${currentStep}\nThis is tracker context; the supplied diff may cover only part of the step. Missing work is not evidence that the plan is stale.`
+    : "";
   const sessionBlock = sessionContext ? `\n\n<session_context>\n${sessionContext}\n</session_context>` : "";
   const conventionsBlock = conventionsText
     ? `\n\n<project_conventions>\n${conventionsText}\n</project_conventions>`
@@ -307,8 +328,9 @@ function buildAdaptiveReviewPromptImpl(
   // without one they dangle and can push the model toward a conservative
   // non-pass verdict it cannot justify with issues.
   const planRules = currentStep
-    ? `- Set "planStale": true if the current plan step contradicts the actual code and the code is internally consistent. Do not flag the code as wrong solely because it differs from the plan.
-- Set "completedSteps" to the number of plan steps (including the current step) that the diff fully completes. If only the current step is done, use 1.
+    ? `- Set "planStale": true only for an evidenced, superseded plan assumption or tracker position under the plan-staleness rule below; otherwise set it to false.
+- Only the current plan step is supplied. Set "completedSteps" to 1 when that step is fully complete and covered; otherwise use 0. Do not infer completion of unseen later steps.
+- A correct partial change can pass code review while the plan step remains unfinished. Keep "stepComplete": false and "completedSteps": 0 in that case; do not manufacture a non-pass verdict or mark the plan stale merely to keep the step open.
 - Set "stepComplete" to true ONLY when the current plan step's work is genuinely finished AND this review fully covered it (all of its edited files were in scope and no remaining work belongs to the step); otherwise set it to false. Do not use it to advance steps whose work is only partially done.`
     : `- There is no active plan for this review. Set "planStale" to false, "stepComplete" to false, and "completedSteps" to 0; judge the change on its own merits against the developer's description.`;
 
@@ -333,7 +355,7 @@ ${finalJsonBlock(
   "consensus": false,
   "planStale": false,
   "stepComplete": false,
-  "completedSteps": 1
+  "completedSteps": 0
 }`,
   nativeJson,
 )}
@@ -755,7 +777,7 @@ You are performing a final holistic review of completed work before the develope
 ${REVIEW_RUBRIC}
 
 Additionally, check:
-6. PLAN COMPLETENESS: Does the completed work satisfy all items in the original plan that are addressed by the current code? If the original plan contradicts the final code and the code is internally consistent, the plan is stale — judge the code on its own merits and note that the plan should be updated.
+6. PLAN COMPLETENESS: Does the completed work satisfy the original task outcomes and relevant acceptance criteria? Distinguish a superseded implementation assumption from an unmet developer requirement and from unfinished work.
 7. REVIEW HISTORY: Look at the review_history below. Completed plan steps should ideally have been reviewed, but unstarted or in-progress steps do not block the verdict. Only block if a completed step is unreviewed AND the code itself is suspect.
 8. COHERENCE: Do all pieces work together? Is there anything contradictory?
 
@@ -780,13 +802,12 @@ Rules:
 - "verdict" must be one of: "pass", "needs-work", "blocked"
 - issue "severity" must be one of: "high", "medium", "low"
 - "consensus" is true only when verdict is "pass" AND issues is empty
-- Set "planStale": true if the original plan contradicts the final code and the code is internally consistent. Judge the code on its own merits and note that the plan should be updated.
+- ${PLAN_STALE_RULE}
 - "completedStepIds" (optional): a list of 1-based plan step IDs that the current diff fully satisfies. Only include steps you are confident about. They must be contiguous from step 1 (e.g., [1,2,3] is valid; [1,3] is not). Do not include steps beyond the current diff or future work.
 - "incompleteStepIds" (optional): 1-based plan step IDs that the tracker marks complete but the shown code does NOT actually satisfy. Only list steps you are confident are not done, with cited evidence. Because steps are sequential, the tracker is rolled back to just before the earliest incomplete step. Omit when the tracker looks correct.
-- "planUpdateSuggested" (optional): set to true if the original plan contradicts the final code and the code is internally consistent. Explain briefly in "planUpdateReason".
+- "planUpdateSuggested" (optional): set to true only for an evidenced stale plan under the rule above. Explain the conflicting plan text, observed code, and reason in "planUpdateReason".
 - Provide a real summary that captures the overall quality, not filler
 - Judge only against the original plan and acceptance criteria; do not introduce new requirements that were not part of the plan
-- If the original plan contradicts the actual code and the code is internally consistent, treat the plan as stale. Judge the code on its own merits and note that the plan should be updated.
 - Judge the completed code on its own merits. If the current changes satisfy multiple plan steps at once, that is fine.
 - Unstarted or in-progress plan steps do not block a pass verdict. Only block if a completed step is unreviewed AND the code itself has issues.
 - You may note tracker gaps (unreviewed or unmarked steps) as a non-blocking observation, not as a blocking issue.

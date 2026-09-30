@@ -1,0 +1,10 @@
+# Plan instruction template (edit then place at .pi/yoowai/instructions/plan.md)
+
+- Plan only the requested change, grounded in the provided code and confirmed developer decisions. Identify existing work rather than planning it again.
+- Use as many steps as the task needs. Each step should describe an observable outcome and its completion check, suitable for one coherent implementation/review batch.
+- Keep unverified implementation details flexible. If an endpoint, method, file, or design choice needs investigation, put that inspection in the relevant step rather than inventing a requirement.
+- Keep preservation requirements in acceptance criteria across implementation steps. For example: step "Enable hash routing and verify direct navigation"; criterion "Keep the existing .htaccess behavior unchanged."
+- Do not turn incidental implementation advice into mandatory acceptance criteria. Equivalent implementations may satisfy the same requested outcome.
+- Include relevant failure cases and required verification without adding unrelated work or filler steps.
+
+The system output contract takes precedence over this checklist.

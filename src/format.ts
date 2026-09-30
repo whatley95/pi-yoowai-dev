@@ -133,7 +133,7 @@ export function formatResultText(result: WaiToolResult): string {
 
     if (result.review.planStale) {
       lines.push(
-        "⚠️ **Plan stale:** The current plan step contradicts the actual code. The code is trusted; consider updating the plan with `/wai plan ...` or `/wai-clear` and re-planning.",
+        "⚠️ **Plan stale:** The reviewer reported a plan mismatch. Verify the cited plan text and code against the developer's requirements; a partial diff or unfinished step alone is not stale. Use `/wai-plan-update` for a confirmed plan change, or correct tracker progress when the wrong step is current.",
       );
       lines.push("");
     }
@@ -380,13 +380,13 @@ export function formatResultText(result: WaiToolResult): string {
 
     if (result.judge.planStale || result.judge.planUpdateSuggested) {
       lines.push(
-        "⚠️ **Plan stale:** The original plan contradicts the final code. The code is trusted; consider updating the plan with `/wai plan ...` or `/wai-clear` and re-planning.",
+        "⚠️ **Plan stale:** The judge reported a plan mismatch. Verify the evidence against the developer's requirements before using `/wai-plan-update`; do not discard requirements merely because the code differs.",
       );
       if (result.judge.planUpdateReason) {
         lines.push(`Reason: ${result.judge.planUpdateReason}`);
       }
       lines.push(
-        "**Action:** Run `/wai-plan-update <new task description>` to regenerate the plan from the current code.",
+        "**Action:** Verify the mismatch first. For a confirmed plan change, run `/wai-plan-update <changed decision and remaining work>` while preserving explicit developer requirements.",
       );
       lines.push("");
     }

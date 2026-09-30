@@ -104,6 +104,8 @@ test("formatResultText renders judge plan-update suggestion", () => {
   assert.ok(text.includes("Plan stale"));
   assert.ok(text.includes("old API"));
   assert.ok(text.includes("wai-plan-update"));
+  assert.ok(!text.includes("The code is trusted"));
+  assert.ok(!text.includes("wai-clear"));
 });
 
 test("formatResultText shows the review level in the header when set", () => {

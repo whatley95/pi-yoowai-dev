@@ -30,6 +30,8 @@ import { cleanupProgressReporter, createProgressReporter, clearWaiStatus } from 
 import { setSessionId, clearSessionId, pruneSessionDirs } from "./session-scope.js";
 import { validateWaiToolParams } from "./wai-tool-params.js";
 import {
+  PLAN_GUIDANCE,
+  PLAN_ALIGNMENT_GUIDANCE,
   REVIEW_SCOPE_GUIDANCE,
   REVIEW_PROGRESS_GUIDANCE,
   INCONCLUSIVE_REVIEW_GUIDANCE,
@@ -575,6 +577,8 @@ export default async function (pi: ExtensionAPI) {
     promptSnippet:
       "wai: always get a second opinion from the secondary model before acting on code or making architectural decisions",
     promptGuidelines: [
+      PLAN_GUIDANCE,
+      PLAN_ALIGNMENT_GUIDANCE,
       "Use wai({ plan: '<task description>' }) before starting non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria.",
       "Use wai({ review: '<change description>' }) after every cohesive code change. Resolve actionable findings and re-run review until it passes with complete coverage. If a finding is wrong, refute it with concrete evidence (file/line, test output, docs) instead of changing correct code; use verify:true for high-stakes disagreements and ask the user when needed.",
       "A 'code change' = a cohesive edit batch / one plan step's worth of edits — review once per batch before moving on (not after every keystroke). Fixes after feedback are a new batch and need review. A focused pass closes only that scope; whole-tree certification must include all pending changes.",
@@ -597,7 +601,7 @@ export default async function (pi: ExtensionAPI) {
       COMMIT_GUIDANCE,
       GIT_COMMIT_GUIDANCE,
       COMPLETION_EVIDENCE_GUIDANCE,
-      "Use wai with planUpdate:'<new task description>' when the original plan no longer matches the implementation. The plan is regenerated and already-completed progress is preserved.",
+      "Use wai with planUpdate:'<changed decision and remaining work>' when the plan needs revision. It receives the existing plan; progress is retained only for unchanged completed leading steps. Changed or reordered steps need verification again.",
       "Enable autoJudge in settings.json to automatically run judge when the last plan step is completed (passes review or is marked done via /wai-done).",
 
       "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
@@ -673,7 +677,7 @@ export default async function (pi: ExtensionAPI) {
       planUpdate: Type.Optional(
         Type.Union([Type.Boolean(), Type.String()], {
           description:
-            "Regenerate the active wai plan from a new task description when the original plan no longer matches the implementation. Already-completed progress is preserved.",
+            "Update the existing plan with a confirmed changed decision and remaining work. Preserve explicit user requirements; retain progress only for unchanged completed leading steps.",
         }),
       ),
       force: Type.Optional(

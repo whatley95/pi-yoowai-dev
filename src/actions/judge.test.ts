@@ -13,6 +13,7 @@ import {
   getPendingReviewCommit,
   setLastReviewedCommit,
   setPlan,
+  markStepsComplete,
   getState,
   dropSessionState,
 } from "../session-state.js";
@@ -165,12 +166,17 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
 
   it("plan regeneration retains and persists the original task base", { skip: !hasGit }, async () => {
     const cwd = makeRepoWithChange("plan-update-change\n");
-    setPlan(cwd, { summary: "original", todo: ["first"], acceptanceCriteria: [] });
+    setPlan(cwd, { summary: "original", todo: ["first", "second"], acceptanceCriteria: ["Keep original behavior"] });
+    markStepsComplete(cwd, 1, true);
     const originalBase = getState(cwd).planBaseCommit;
     execFileSync("git", ["add", "a.txt"], { cwd, ...gitOpts() });
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "work"], { cwd, ...gitOpts() });
-    const { url } = await startStubServer(
-      JSON.stringify({ summary: "updated", todo: ["first", "second"], acceptanceCriteria: [] }),
+    const { url, bodies } = await startStubServer(
+      JSON.stringify({
+        summary: "updated",
+        todo: ["first", "second", "third"],
+        acceptanceCriteria: ["Keep original behavior"],
+      }),
     );
     writeSettings(cwd, {
       secondary: {
@@ -182,9 +188,38 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
       },
     });
     const result = await executeWaiPlanUpdate(cwd, "add another step", undefined, () => {}, undefined);
-    assert.equal(result.totalSteps, 2);
+    assert.equal(result.totalSteps, 3);
+    assert.equal(result.completedStep, 1);
+    assert.equal(result.nextStep, "second");
+    const user = JSON.parse(bodies[0]).messages.find((m: { role: string }) => m.role === "user").content as string;
+    const oldPlan = JSON.parse(user.match(/<existing_plan>\n([\s\S]*?)\n<\/existing_plan>/)![1]);
+    assert.equal(oldPlan.completedSteps, 1);
+    assert.equal(oldPlan.plan.summary, "original");
+    assert.deepEqual(oldPlan.plan.todo, ["first", "second"]);
+    assert.deepEqual(oldPlan.plan.acceptanceCriteria, ["Keep original behavior"]);
     dropSessionState(cwd);
     assert.equal(getState(cwd).planBaseCommit, originalBase);
+    assert.equal(getState(cwd).completedSteps, 1);
+    assert.equal(getState(cwd).reviewedSteps[0], false, "restored work is not falsely certified as reviewed");
+  });
+
+  it("a plan update cannot inherit progress for newly inserted work", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("inserted-work\n");
+    setPlan(cwd, { summary: "original", todo: ["first", "second"], acceptanceCriteria: [] });
+    markStepsComplete(cwd, 1, true);
+    const { url } = await startStubServer(
+      JSON.stringify({ summary: "updated", todo: ["new prerequisite", "first", "second"], acceptanceCriteria: [] }),
+    );
+    writeSettings(cwd, {
+      secondary: { provider: "openai", id: "gpt-4o-mini", backend: "http", baseUrl: url, apiKey: "test" },
+    });
+    const result = await executeWaiPlanUpdate(cwd, "insert a new prerequisite", undefined, () => {}, undefined);
+    assert.equal(result.completedStep, 0);
+    assert.equal(result.nextStep, "new prerequisite");
+    assert.equal(result.allDone, false);
+    assert.match(result.message, /Retained 0 of 1 previously completed steps/);
+    dropSessionState(cwd);
+    assert.equal(getState(cwd).completedSteps, 0);
   });
 
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {

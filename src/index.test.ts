@@ -295,6 +295,9 @@ describe("wai extension registration", () => {
     assert.match(guidance, /git diff --cached/);
     assert.match(guidance, /acceptance criteria verified or still unverified/);
     assert.match(guidance, /report the blocker/);
+    assert.match(guidance, /Before requesting a plan, inspect relevant source/);
+    assert.match(guidance, /progress is retained only for unchanged completed leading steps/);
+    assert.match(guidance, /do not rewrite them just to obtain a pass/);
     assert.doesNotMatch(guidance, /Scope reviews.*not the whole repo|never auto-commit|then done:true/);
     assert.doesNotMatch(guidance, /\b(?:plan|review|advisor|suggest|recommend|judge|test|security):\s*true\b/);
   });
