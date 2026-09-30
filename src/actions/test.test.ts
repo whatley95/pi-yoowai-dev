@@ -1,7 +1,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -38,22 +38,45 @@ after(() => {
 const TEST_PASS = { verdict: "pass", findings: [], missingTests: [], summary: "ok" };
 
 function writeTestSettings(cwd: string, url: string): void {
+  const model = {
+    provider: "openai",
+    id: "gpt-4o-mini",
+    thinking: "off",
+    contextWindow: 8000,
+    maxOutputTokens: 1024,
+    backend: "http",
+    baseUrl: url,
+    apiKey: "test-key",
+  };
   writeSettings(cwd, {
     reviewLevel: "min",
-    secondary: {
-      provider: "openai",
-      id: "gpt-4o-mini",
-      thinking: "off",
-      contextWindow: 8000,
-      maxOutputTokens: 1024,
-      backend: "http",
-      baseUrl: url,
-      apiKey: "test-key",
-    },
+    secondary: model,
+    taskModels: { test: model },
   });
 }
 
 describe("executeWaiTest range selection", () => {
+  it("reruns an unchanged test command and rejects a model pass after execution fails", { skip: !hasGit }, async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "wai-test-live-command-"));
+    tmpDirs.push(cwd);
+    initGitRepo(cwd);
+    const script =
+      "const fs = require('node:fs'); const p = '.pi/runs'; const n = fs.existsSync(p) ? Number(fs.readFileSync(p)) : 0; fs.writeFileSync(p, String(n + 1)); process.exit(fs.existsSync('.pi/fail') ? 1 : 0);\n";
+    prepareRepo(cwd, { "a.ts": "export const a = 1;\n", "check.cjs": script }, { "a.ts": "export const a = 2;\n" });
+    const { url, bodies, server } = await startStubServer({ payload: TEST_PASS });
+    servers.push(server);
+    writeTestSettings(cwd, url);
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const options = { command: "node check.cjs" };
+    assert.equal((await executeWaiTest(cwd, "live command", ctx, options, undefined, () => {})).test?.verdict, "pass");
+    writeFileSync(join(cwd, ".pi", "fail"), "fail next run");
+    const failed = await executeWaiTest(cwd, "live command", ctx, options, undefined, () => {});
+    assert.equal(readFileSync(join(cwd, ".pi", "runs"), "utf-8"), "2");
+    assert.equal(bodies.length, 2);
+    assert.equal(failed.test?.verdict, "needs-work");
+    assert.match(failed.test?.summary ?? "", /Test execution failed/);
+    assert.ok(failed.test?.findings.some((finding) => finding.issue.includes("exited with code 1")));
+  });
   it("analyzes committed work on a clean tree (commit-per-round workflow)", { skip: !hasGit }, async () => {
     const cwd = mkdtempSync(join(tmpdir(), "wai-test-range-"));
     tmpDirs.push(cwd);

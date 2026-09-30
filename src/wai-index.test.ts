@@ -14,6 +14,25 @@ import { recordLearnedFact } from "./wai-learn.js";
 import type { Conventions, YoowaiSessionState, ReviewIssue, UsageCost } from "./types.js";
 
 describe("wai-index", () => {
+  it("keeps file attribution when searching issues or source paths", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wai-memory-query-"));
+    try {
+      recordIssues(dir, [
+        { severity: "high", file: "src/auth.ts", issue: "Refresh race", suggestion: "Lock refresh" },
+        { severity: "medium", file: "src/cache.ts", issue: "Cache race", suggestion: "Lock cache" },
+      ]);
+      const result = executeWaiIndex(dir, { topic: "memory", query: "race" });
+      assert.match(result.memory ?? "", /src\/auth\.ts:[\s\S]*Refresh race/);
+      assert.match(result.memory ?? "", /src\/cache\.ts:[\s\S]*Cache race/);
+      const scoped = executeWaiIndex(dir, { topic: "memory", query: "race", files: ["src/auth.ts"] });
+      assert.match(scoped.memory ?? "", /src\/auth\.ts/);
+      assert.doesNotMatch(scoped.memory ?? "", /src\/cache\.ts/);
+      const source = executeWaiIndex(dir, { topic: "memory", query: "auth.ts" });
+      assert.match(source.memory ?? "", /Refresh race/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   const cwd = mkdtempSync(join(tmpdir(), "wai-index-test-"));
 
   beforeEach(() => {

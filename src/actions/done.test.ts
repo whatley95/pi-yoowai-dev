@@ -1,14 +1,16 @@
 import test from "node:test";
 import assert from "node:assert";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { executeWaiDone } from "./done.js";
 import { setPlan, getState } from "../session-state.js";
 import { recordFileEdit, applyReviewOutcome, dropSessionState } from "../session-state.js";
 import type { PlanResult } from "../types.js";
+import { startStubServer, closeStubServer, bodyText, writeSettings } from "./integration-harness.js";
 
 function tempCwd(): string {
   return mkdtempSync(join(tmpdir(), "wai-done-test-"));
@@ -41,6 +43,58 @@ const plan: PlanResult = {
   todo: ["step one", "step two", "step three"],
   acceptanceCriteria: [],
 };
+
+const hasSvn = (() => {
+  try {
+    execFileSync("svn", ["--version", "--quiet"], { stdio: "pipe" });
+    execFileSync("svnadmin", ["--version", "--quiet"], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+test(
+  "SVN done verification uses the working-copy BASE when repository HEAD has advanced",
+  { skip: !hasSvn },
+  async (t) => {
+    const root = tempCwd();
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const repository = join(root, "repository");
+    const cwd = join(root, "working-copy");
+    const other = join(root, "other-copy");
+    execFileSync("svnadmin", ["create", repository], { stdio: "pipe" });
+    const url = pathToFileURL(repository).href;
+    execFileSync("svn", ["checkout", url, cwd], { stdio: "pipe" });
+    writeFileSync(join(cwd, "file.txt"), "LOCAL_BASE\n");
+    execFileSync("svn", ["add", "file.txt"], { cwd, stdio: "pipe" });
+    execFileSync("svn", ["commit", "-m", "initial"], { cwd, stdio: "pipe" });
+    execFileSync("svn", ["checkout", url, other], { stdio: "pipe" });
+    writeFileSync(join(other, "file.txt"), "REMOTE_HEAD\n");
+    execFileSync("svn", ["commit", "-m", "remote change"], { cwd: other, stdio: "pipe" });
+    writeFileSync(join(cwd, "file.txt"), "LOCAL_CHANGE\n");
+    const stub = await startStubServer({ payload: { satisfied: true, reason: "complete" } });
+    t.after(() => closeStubServer(stub.server));
+    const model = { provider: "openai", id: "gpt-4o-mini", apiKey: "test", backend: "http", baseUrl: stub.url };
+    writeSettings(cwd, {
+      secondary: model,
+      taskModels: { done: model },
+      verifyDoneClaims: true,
+      requireReviewBeforeDone: false,
+      costBudgetUsd: 1,
+      maxContinuations: 0,
+    });
+    setPlan(cwd, plan);
+    recordFileEdit(cwd);
+    const result = await executeWaiDone(cwd);
+    assert.equal(result.verified, true, result.verificationReason ?? "Expected verified SVN completion");
+    assert.equal(result.completedStep, 1);
+    const prompt = bodyText(stub.bodies, 0);
+    assert.ok(prompt.includes("LOCAL_BASE"));
+    assert.ok(prompt.includes("LOCAL_CHANGE"));
+    assert.ok(!prompt.includes("REMOTE_HEAD"), "done must verify local edits against the checked-out revision");
+  },
+);
 
 test("done verification blocks an incomplete diff before calling a model", async () => {
   const cwd = tempCwd();

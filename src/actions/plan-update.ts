@@ -49,6 +49,7 @@ export async function executeWaiPlanUpdate(
       completedStep: previousCompleted,
       totalSteps: before.totalSteps,
       allDone: false,
+      error: planResult.error ?? "Failed to regenerate plan.",
       message: planResult.error ?? "Failed to regenerate plan.",
     };
   }

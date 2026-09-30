@@ -8,7 +8,7 @@ import { logEvent } from "../logger.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
 import { resolveBackendType } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
-import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
+import { runPreReviewCommands, formatPreReviewOutput, type PreReviewOutput } from "../pre-review.js";
 import { calculateReviewBudget } from "../token-budget.js";
 import { buildTestPrompt, validateTestResult, getTestValidationErrors, salvageTestFromMarkdown } from "../prompts.js";
 import { capActionInstructions } from "../instructions.js";
@@ -184,7 +184,9 @@ export async function executeWaiTest(
     toolUseLoop: config.toolUseLoop,
   });
   {
-    const cached = getCachedTest(cwd, cacheKey);
+    // Command execution is live evidence. Reusing an analysis must never skip
+    // a configured/detected command, whose outcome can change without a diff.
+    const cached = testCommand ? undefined : getCachedTest(cwd, cacheKey);
     if (cached) {
       progress(3, STAGES.test, "Using cached test analysis…");
       return { action: "test", test: cached.test, model: cached.model, cost: cached.cost };
@@ -193,10 +195,11 @@ export async function executeWaiTest(
 
   progress(3, STAGES.test, "Running tests…");
   let testOutput: string;
+  let checks: PreReviewOutput[] = [];
   if (testCommand) {
-    const results = await runPreReviewCommands(cwd, [testCommand], { signal });
+    checks = await runPreReviewCommands(cwd, [testCommand], { signal });
     signal?.throwIfAborted();
-    testOutput = formatPreReviewOutput(results);
+    testOutput = formatPreReviewOutput(checks);
   } else {
     testOutput = "No test command was detected or configured. Falling back to static analysis of the diff.";
   }
@@ -308,7 +311,19 @@ export async function executeWaiTest(
     }
   }
 
-  setCachedResult(cwd, "test", cacheKey, { test, model: modelProfile, cost });
+  const failedChecks = checks.filter((check) => check.exitCode !== 0);
+  if (failedChecks.length > 0) {
+    if (test.verdict === "pass") test.verdict = "needs-work";
+    test.summary = `Test execution failed. ${test.summary}`;
+    for (const check of failedChecks) {
+      test.findings.push({
+        severity: "high",
+        issue: `Test command '${check.command}' exited with code ${check.exitCode}.`,
+        suggestion: "Inspect the command output and fix the failure before claiming tests passed.",
+      });
+    }
+  }
+  if (!testCommand && !finalTruncated) setCachedResult(cwd, "test", cacheKey, { test, model: modelProfile, cost });
 
   return {
     action: "test",

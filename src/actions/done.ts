@@ -1,5 +1,5 @@
 import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
-import { getDiff } from "../diff-grabber.js";
+import { getDiff, getVcsInfo } from "../diff-grabber.js";
 import {
   getProgress,
   markStepComplete,
@@ -137,7 +137,7 @@ export async function executeWaiDone(
       } = getDiff(cwd, {
         maxDiffChars: config.reviewMaxDiffChars,
         untracked: true,
-        revision: "HEAD",
+        revision: getVcsInfo(cwd).type === "svn" ? "BASE" : "HEAD",
       });
       if (unavailableReason || changedFiles.length === 0)
         throw new Error(unavailableReason ?? "No code changes available for done verification");

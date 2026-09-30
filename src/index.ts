@@ -357,9 +357,17 @@ export default async function (pi: ExtensionAPI) {
       } else if (p.done !== undefined) {
         result = { action: "done", done: await executeWaiDone(ctx.cwd, p.done as string | number, signal, p.force) };
       } else if (p.planUpdate !== undefined) {
+        const outcome = await executeWaiPlanUpdate(
+          ctx.cwd,
+          p.planUpdate as string,
+          signal,
+          progress,
+          ctx.sessionManager,
+        );
         result = {
           action: "planUpdate",
-          done: await executeWaiPlanUpdate(ctx.cwd, p.planUpdate as string, signal, progress, ctx.sessionManager),
+          done: outcome,
+          error: outcome.error,
         };
       } else {
         result = await executeWaiScan(ctx.cwd, signal, progress, ctx.sessionManager, p.scanDeep, p.scanRefresh);
@@ -1372,7 +1380,11 @@ export default async function (pi: ExtensionAPI) {
             text: `Design reference topics (call wai_design_ref with a topic to read its guidance):\n${lines.join("\n")}`,
           },
         ],
-        details: { topic: "list", topics: topics.map((t) => t.topic) },
+        details: {
+          topic: "list",
+          topics: topics.map((t) => t.topic),
+          documents: topics.map((t) => ({ ...t, description: DESIGN_REF_TOPIC_DESCRIPTIONS[t.topic] })),
+        },
         isError: false,
       };
     }
@@ -1381,7 +1393,7 @@ export default async function (pi: ExtensionAPI) {
       const content = readDesignRefDoc(topic, doc);
       return {
         content: [{ type: "text", text: content }],
-        details: { topic, doc: doc ?? "SKILL.md" },
+        details: { topic, doc: doc ?? "SKILL.md", content },
         isError: false,
       };
     } catch (err) {

@@ -212,12 +212,21 @@ export function getPastIssuesForFiles(cwd: string, files: string[], query?: stri
   return "Past issues found in changed files:\n" + found.join("\n");
 }
 
-export function getMemorySummary(cwd: string): string {
+export function getMemorySummary(cwd: string, query?: string, files?: string[]): string {
   const memory = loadMemory(cwd);
   const found: string[] = [];
+  const requested = files?.length ? new Set(files.map(normalizeFile)) : undefined;
+  const keyword = query?.toLowerCase();
   for (const entry of Object.values(memory.files)) {
+    if (requested && !requested.has(normalizeFile(entry.file))) continue;
     if (entry.issues.length === 0) continue;
-    const latest = entry.issues.slice(-3);
+    const matching = keyword
+      ? entry.issues.filter((issue) =>
+          `${entry.file} ${issue.issue} ${issue.suggestion}`.toLowerCase().includes(keyword),
+        )
+      : entry.issues;
+    const latest = requested ? matching : matching.slice(-3);
+    if (latest.length === 0) continue;
     found.push(`\n${entry.file}:`);
     for (const i of latest) {
       found.push(`  - [${i.severity}] ${i.issue}`);

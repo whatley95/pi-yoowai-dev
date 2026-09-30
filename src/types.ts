@@ -504,6 +504,7 @@ export interface VisionResult {
 }
 
 export interface DoneResult {
+  error?: string;
   completedStep: number;
   totalSteps: number;
   nextStep?: string;

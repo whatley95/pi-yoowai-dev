@@ -1832,9 +1832,12 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     };
     const result = await executeWaiPlanUpdate(ctx.cwd, description, signal, notifyProgress, ctx.sessionManager);
     clearWaiStatus(ctx);
-    publishWaiResult(ctx, { action: "planUpdate", done: result });
-    const text = formatResultText({ action: "planUpdate", done: result });
-    ctx.ui.notify(text.slice(0, 500), result.allDone || result.totalSteps > 0 ? "info" : "warning");
+    publishWaiResult(ctx, { action: "planUpdate", done: result, error: result.error });
+    const text = formatResultText({ action: "planUpdate", done: result, error: result.error });
+    ctx.ui.notify(
+      text.slice(0, 500),
+      result.error ? "error" : result.allDone || result.totalSteps > 0 ? "info" : "warning",
+    );
   };
 
   pi.registerCommand("wai-plan-update", {

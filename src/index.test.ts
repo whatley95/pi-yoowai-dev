@@ -444,6 +444,94 @@ describe("wai extension registration", () => {
     } as unknown as ExtensionContext;
   }
 
+  it("surfaces a failed plan update as a native tool error and preserves the plan", async (t) => {
+    const cwd = makeTempDir("wai-plan-update-error-");
+    t.after(() => rmSync(cwd, { recursive: true, force: true }));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({
+        "pi-yoowai": {
+          secondary: {
+            provider: "openai",
+            id: "gpt-4o-mini",
+            apiKey: "test",
+            backend: "http",
+            baseUrl: "http://127.0.0.1:9",
+          },
+          taskModels: {
+            plan: {
+              provider: "openai",
+              id: "gpt-4o-mini",
+              apiKey: "test",
+              backend: "http",
+              baseUrl: "http://127.0.0.1:9",
+            },
+          },
+          costBudgetUsd: 0,
+        },
+      }),
+    );
+    setPlan(cwd, { summary: "Keep original", todo: ["original step"], acceptanceCriteria: [] });
+    const execute = await getToolExecutor("wai");
+    const result = (await execute(
+      "plan-error",
+      { planUpdate: "Update remaining work" },
+      undefined,
+      undefined,
+      progressCtx(cwd, []),
+    )) as { isError: boolean; details: { error?: string }; structuredContent: { error?: string } };
+    assert.equal(result.isError, true);
+    assert.match(result.details.error ?? "", /budget/i);
+    assert.equal(result.structuredContent.error, result.details.error);
+    assert.equal(getState(cwd).plan?.summary, "Keep original");
+  });
+
+  it("exposes design guidance and document listings through Pi's real codemode", async (t) => {
+    const host = (await import("@earendil-works/pi-coding-agent")) as unknown as {
+      createCodemodeExtension?: (options: { models: boolean }) => (pi: ExtensionAPI) => void;
+    };
+    if (!host.createCodemodeExtension) {
+      t.skip("Codemode requires Pi 0.99+");
+      return;
+    }
+    const cwd = makeTempDir("wai-design-codemode-");
+    t.after(() => rmSync(cwd, { recursive: true, force: true }));
+    const { pi, toolDefs } = createMockPi();
+    Object.assign(pi, { getSettings: () => ({}), getAllTools: () => toolDefs });
+    await initWai(pi);
+    host.createCodemodeExtension({ models: false })(pi);
+    type Tool = Parameters<ExtensionAPI["registerTool"]>[0];
+    type ToolContext = Parameters<Tool["execute"]>[4];
+    const design = toolDefs.find((tool) => tool.name === "wai_design_ref") as unknown as Tool;
+    const codemode = toolDefs.find((tool) => tool.name === "codemode") as unknown as Tool;
+    const ctx = {
+      cwd,
+      tools: [design],
+      sessionManager: { getBranch: () => [] },
+      executeTool: async (name: string, args: unknown) => {
+        assert.equal(name, "wai_design_ref");
+        const result = await design.execute("design/nested", args, undefined, undefined, { cwd } as ToolContext);
+        return { toolCall: { id: "design/nested", name, arguments: args }, result, isError: false };
+      },
+    } as unknown as ToolContext;
+    const result = await codemode.execute(
+      "design-codemode",
+      {
+        code: "const listing = await tools.wai_design_ref({}); const doc = await tools.wai_design_ref({topic:'animate'}); text(doc.content.length > 100 ? 'guidance-readable' : 'guidance-missing'); text(listing.documents.some(d => d.topic === 'animate' && d.docs.includes('SKILL.md')) ? 'listing-readable' : 'listing-missing');",
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const report = result.content
+      .filter((item) => item.type === "text")
+      .map((item) => item.text)
+      .join("\n");
+    assert.match(report, /guidance-readable/);
+    assert.match(report, /listing-readable/);
+  });
+
   it("wai_explain disposes its reporter after success, rejection, and cancellation", async () => {
     const cwd = makeTempDir("wai-explain-progress-");
     const execute = await getToolExecutor("wai_explain");

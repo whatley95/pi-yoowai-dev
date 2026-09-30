@@ -126,8 +126,11 @@ export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResul
   }
 
   if (wants("memory")) {
-    const memoryText = files.length > 0 ? getPastIssuesForFiles(cwd, files) : getMemorySummary(cwd);
-    result.memory = query ? filterText(memoryText, query) : memoryText;
+    result.memory = query
+      ? getMemorySummary(cwd, query, files)
+      : files.length > 0
+        ? getPastIssuesForFiles(cwd, files)
+        : getMemorySummary(cwd);
   }
 
   if (wants("learned")) {
@@ -154,13 +157,6 @@ export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResul
   }
 
   return result;
-}
-
-function filterText(text: string, query: string): string {
-  const lines = text.split("\n");
-  const filtered = lines.filter((line) => line.toLowerCase().includes(query));
-  if (filtered.length === 0) return "";
-  return filtered.join("\n");
 }
 
 export function formatIndexResult(result: IndexResult): string {
