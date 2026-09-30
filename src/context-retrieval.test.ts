@@ -34,6 +34,21 @@ describe("context-retrieval", () => {
     assert.match(result.context, /helper/);
   });
 
+  it("resolves NodeNext .js imports and parent segments to canonical source paths", () => {
+    mkdirSync(join(cwd, "src", "routes"));
+    writeFileSync(join(cwd, "src", "utils.ts"), "export const helper = 1;\n");
+    writeFileSync(join(cwd, "src", "routes", "main.ts"), "import { helper } from '../utils.js';\n");
+    const result = buildRelatedContext(cwd, ["src\\routes\\main.ts"]);
+    assert.deepEqual(result.files, ["src/utils.ts"]);
+    assert.match(result.context, /helper/);
+  });
+
+  it("rejects absolute paths before canonicalizing import context", () => {
+    writeFileSync(join(cwd, "src", "utils.ts"), "export const helper = 1;\n");
+    writeFileSync(join(cwd, "src", "main.ts"), "import { helper } from './utils.js';\n");
+    assert.deepEqual(buildRelatedContext(cwd, [join(cwd, "src", "main.ts")]).files, []);
+  });
+
   it("excludes files that are already in changedFiles", () => {
     writeFileSync(join(cwd, "src", "a.ts"), "export const a = 1;", "utf-8");
     const result = buildRelatedContext(cwd, ["src/a.ts"]);

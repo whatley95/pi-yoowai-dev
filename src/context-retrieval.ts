@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolveProjectPath } from "./path-security.js";
+import { readFileSync, statSync } from "node:fs";
+import { normalizeRel, resolveImportTarget } from "./project-index.js";
+import { isSafeRelativePath, resolveProjectPath } from "./path-security.js";
 import { isReviewableFile } from "./file-loader.js";
 import { estimateTokens } from "./token-budget.js";
 
@@ -47,6 +48,7 @@ export function buildRelatedContext(cwd: string, changedFiles: string[]): Relate
 }
 
 export function findRelatedFiles(cwd: string, changedFiles: string[]): string[] {
+  changedFiles = changedFiles.filter(isSafeRelativePath).map((file) => normalizeRel(file.replaceAll("\\", "/")));
   const related = new Set<string>();
   for (const file of changedFiles) {
     const safePath = resolveProjectPath(cwd, file);
@@ -70,33 +72,17 @@ export function findRelatedFiles(cwd: string, changedFiles: string[]): string[] 
 }
 
 function resolveImportPath(cwd: string, fromFile: string, importPath: string): string | undefined {
-  const dir = fromFile.includes("/") ? fromFile.slice(0, fromFile.lastIndexOf("/")) : "";
-  const base = importPath.startsWith(".") ? normalizePosix(`${dir}/${importPath}`) : normalizePosix(importPath);
-  const candidates = [
-    base,
-    `${base}.ts`,
-    `${base}.tsx`,
-    `${base}.js`,
-    `${base}.jsx`,
-    `${base}/index.ts`,
-    `${base}/index.js`,
-  ];
+  const candidates = resolveImportTarget(fromFile, importPath) ?? [];
   for (const candidate of candidates) {
-    const normalized = normalizePosix(candidate);
-    const absolute = resolveProjectPath(cwd, normalized);
-    if (absolute && existsSync(absolute)) {
-      return normalized;
+    const absolute = resolveProjectPath(cwd, candidate);
+    if (!absolute) continue;
+    try {
+      if (statSync(absolute).isFile()) return candidate;
+    } catch {
+      /* try the next source extension */
     }
   }
   return undefined;
-}
-
-function normalizePosix(path: string): string {
-  return path
-    .replace(/\\/g, "/")
-    .replace(/\/\.\//g, "/")
-    .replace(/^\/+/, "")
-    .replace(/\/+/g, "/");
 }
 
 function generateCompactOutline(content: string): string {

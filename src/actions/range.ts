@@ -9,6 +9,7 @@ import {
 } from "../diff-grabber.js";
 import { setLastReviewedCommit, setPendingReviewCommit } from "../session-state.js";
 import type { ReviewResult } from "../types.js";
+import { isGeneratedFile } from "../file-policy.js";
 
 /** How a tool selects its diff range.
  *  - "incremental" (review, test, security): the failed round's pending
@@ -86,8 +87,9 @@ export function resolveRangeBase(
       }
     } else {
       // Dirty tree (or non-git): diff the working tree against the best base
-      // so committed-but-unreviewed changes stay visible. SVN keeps HEAD.
-      out.revision = gitReview ? (anchor ?? vcsInfo.revision ?? "HEAD") : "HEAD";
+      // so committed-but-unreviewed changes stay visible. SVN's BASE is the
+      // local working-copy base; HEAD can include unrelated remote changes.
+      out.revision = gitReview ? (anchor ?? vcsInfo.revision ?? "HEAD") : "BASE";
     }
   } else {
     if (scope.since) out.since = scope.since;
@@ -133,7 +135,7 @@ export function rebuiltDiff(
   const truncatedFiles: Array<{ file: string; totalChars: number }> = [];
   const omitted: string[] = [];
   for (const file of changedFiles) {
-    if (isPiStatePath(file)) continue;
+    if (isPiStatePath(file) || isGeneratedFile(file)) continue;
     let perFile: DiffResult;
     try {
       perFile = getDiff(cwd, { ...diffOptions, files: [file] });

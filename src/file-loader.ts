@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { estimateTokens } from "./token-budget.js";
 import type { ReviewBudget } from "./token-budget.js";
 import { resolveProjectPath } from "./path-security.js";
+import { isBinaryContent, isGeneratedFile } from "./file-policy.js";
 
 export interface FileContentEntry {
   file: string;
@@ -19,7 +20,7 @@ const GENERATED_PATTERNS = [
 ];
 
 export function isReviewableFile(file: string): boolean {
-  return !GENERATED_PATTERNS.some((p) => p.test(file));
+  return !isGeneratedFile(file) && !GENERATED_PATTERNS.some((p) => p.test(file.replaceAll("\\", "/")));
 }
 
 export interface LoadFileContentsOptions {
@@ -155,7 +156,8 @@ async function readTextFile(path: string): Promise<string | null> {
   try {
     const stats = await stat(path);
     if (stats.size > MAX_FILE_SIZE_BYTES) return null;
-    return await readFile(path, "utf-8");
+    const bytes = await readFile(path);
+    return isBinaryContent(bytes) ? null : bytes.toString("utf-8");
   } catch {
     return null;
   }

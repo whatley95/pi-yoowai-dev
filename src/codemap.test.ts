@@ -50,6 +50,31 @@ export function run(): void {
     );
   }
 
+  it("refreshes reverse edges when an unselected caller is added, edited, or deleted", () => {
+    writeFileSync(join(cwd, "api.ts"), "export function serve() {}\n");
+    assert.doesNotMatch(buildCodemap(cwd, ["api.ts"], 2000), /caller\.ts/);
+    writeFileSync(join(cwd, "caller.ts"), "import { serve } from './api.js';\nserve();\n");
+    assert.match(buildCodemap(cwd, ["api.ts"], 2000), /caller\.ts/);
+    writeFileSync(join(cwd, "caller.ts"), "export const unrelated = true;\n");
+    assert.doesNotMatch(buildCodemap(cwd, ["api.ts"], 2000), /caller\.ts/);
+    writeFileSync(join(cwd, "caller.ts"), "import { serve } from './api.js';\nserve();\n");
+    assert.match(buildCodemap(cwd, ["api.ts"], 2000), /caller\.ts/);
+    rmSync(join(cwd, "caller.ts"));
+    assert.doesNotMatch(buildCodemap(cwd, ["api.ts"], 2000), /caller\.ts/);
+  });
+
+  it("includes canonical outbound NodeNext source neighbors", () => {
+    mkdirSync(join(cwd, "src", "routes"), { recursive: true });
+    writeFileSync(join(cwd, "src", "dependency.ts"), "export function dependency() {}\n");
+    writeFileSync(
+      join(cwd, "src", "routes", "entry.ts"),
+      "import { dependency } from '../dependency.js';\nexport const entry = dependency;\n",
+    );
+    const map = buildCodemap(cwd, ["src\\routes\\entry.ts"], 2000);
+    assert.match(map, /src\/dependency\.ts/);
+    assert.match(map, /function dependency/);
+  });
+
   it("returns an empty string when the budget is zero or negative", () => {
     writeTsProject();
     assert.equal(buildCodemap(cwd, ["src/main.ts"], 0), "");

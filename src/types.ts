@@ -450,7 +450,13 @@ export interface VisionImage {
 
 export interface MemoryEntry {
   file: string;
-  issues: Array<{ severity: ReviewIssue["severity"]; issue: string; suggestion: string; timestamp: string }>;
+  issues: Array<{
+    severity: ReviewIssue["severity"];
+    issue: string;
+    suggestion: string;
+    timestamp: string;
+    occurrences?: string[];
+  }>;
 }
 
 export interface Conventions {

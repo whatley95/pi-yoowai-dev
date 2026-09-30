@@ -1,9 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordIssues, getPastIssuesForFiles, clearMemory } from "./review-memory.js";
+import {
+  recordIssues,
+  getPastIssuesForFiles,
+  getMemoryEntries,
+  getMemorySummary,
+  clearMemory,
+} from "./review-memory.js";
+import { reflectOnMemory } from "./reflect.js";
 import type { ReviewIssue } from "./types.js";
 
 describe("review-memory", () => {
@@ -45,6 +52,31 @@ describe("review-memory", () => {
       const past = getPastIssuesForFiles(dir, ["src/a.ts"]);
       const matches = past.match(/missing type/g);
       assert.equal(matches?.length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("expires issues on reads and retains repeated-round counts for reflection", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wai-memory-expiry-"));
+    try {
+      const issue: ReviewIssue = {
+        severity: "high",
+        file: "src/a.ts",
+        issue: "Missing account ownership check",
+        suggestion: "Validate account ownership",
+      };
+      for (let round = 0; round < 4; round++) recordIssues(dir, [issue, issue]);
+      assert.equal(getMemoryEntries(dir)[0].issues.length, 1);
+      assert.equal(reflectOnMemory(dir)[0].issueCount, 4, "duplicate reports in one round count once");
+      assert.equal(reflectOnMemory(dir)[0].themes[0].recurring, true);
+      const path = join(dir, ".pi", "yoowai", "memory.json");
+      const memory = JSON.parse(readFileSync(path, "utf-8"));
+      memory.files["src/a.ts"].issues[0].timestamp = "2000-01-01T00:00:00.000Z";
+      writeFileSync(path, JSON.stringify(memory));
+      assert.equal(getPastIssuesForFiles(dir, ["src/a.ts"]), "");
+      assert.equal(getMemorySummary(dir), "");
+      assert.deepEqual(getMemoryEntries(dir), []);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

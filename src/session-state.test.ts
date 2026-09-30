@@ -328,6 +328,9 @@ test("recordFileEdit tracks edited file paths, deduped, cleared on review reset"
   recordFileEdit(cwd, "src/b.ts");
   recordFileEdit(cwd, "src/a.ts");
   recordFileEdit(cwd); // no path — counter still increments
+  recordFileEdit(cwd, "target\\classes\\App.class");
+  recordFileEdit(cwd, ".idea/workspace.xml");
+  recordFileEdit(cwd, ".pi/yoowai/memory.json");
 
   const tracker = getEditTracker(cwd);
   assert.equal(tracker.editsSinceLastReview, 4);

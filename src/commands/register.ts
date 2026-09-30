@@ -1617,7 +1617,12 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       return;
     }
 
-    recordLearnedFact(ctx.cwd, parsed.fact!, { category: parsed.category });
+    try {
+      recordLearnedFact(ctx.cwd, parsed.fact!, { category: parsed.category });
+    } catch (err) {
+      ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+      return;
+    }
     ctx.ui.notify(`Recorded project fact${parsed.category ? ` [${parsed.category}]` : ""}.`, "info");
   };
   pi.registerCommand("wai-learn", {

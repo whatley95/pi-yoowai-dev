@@ -1189,7 +1189,12 @@ export default async function (pi: ExtensionAPI) {
     const category = typeof r.category === "string" ? r.category : undefined;
     const source = typeof r.source === "string" ? r.source : undefined;
     const kind = r.kind === "decision" || r.kind === "fact" ? r.kind : undefined;
-    recordLearnedFact(ctx.cwd, r.fact, { category, source, kind });
+    try {
+      recordLearnedFact(ctx.cwd, r.fact, { category, source, kind });
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text", text: error }], details: { action: "learn", error }, isError: true };
+    }
     const related = findLearnedFacts(ctx.cwd, r.fact).slice(0, 10);
     return {
       content: [
@@ -1220,8 +1225,9 @@ export default async function (pi: ExtensionAPI) {
       "Call wai_learn to record project-specific facts, decisions, or quirks the main agent should remember.",
       "Use a category to group related facts (e.g. 'auth', 'build', 'conventions').",
       "Keep facts concise and actionable.",
+      "Include a project-relative source file for factual claims. Stored memory is context; verify it against current code before acting on it.",
       "Recorded facts appear in wai_index topic 'learned'.",
-      "Use verify:true to check stored facts against the current codebase instead of recording.",
+      "Use verify:true for structural reference checks; these do not renew freshness or prove a behavioral claim.",
       "Add deep:true to verify with the secondary model for higher accuracy (costs tokens per fact).",
     ],
     parameters: Type.Object({

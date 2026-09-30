@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { resolveProjectPath } from "./path-security.js";
 import { gitSpawnEnv } from "./git-env.js";
 import { isPiStatePath } from "./diff-grabber.js";
+import { isGeneratedFile } from "./file-policy.js";
 
 export type WorkspaceSnapshot =
   | { status: "ready"; fingerprint: string; dirty: boolean }
@@ -48,7 +49,7 @@ export function captureWorkspace(cwd: string): WorkspaceSnapshot {
   try {
     const hash = createHash("sha256");
     const files = [...new Set(git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0"))]
-      .filter((file) => file && !isPiStatePath(file))
+      .filter((file) => file && !isPiStatePath(file) && !isGeneratedFile(file))
       .sort();
     // A commit changes the review range even when file contents are identical.
     let head = "unborn";
@@ -61,7 +62,10 @@ export function captureWorkspace(cwd: string): WorkspaceSnapshot {
     hash.update(
       git(["ls-files", "--stage", "-z"])
         .split("\0")
-        .filter((entry) => !isPiStatePath(entry.split("\t")[1] ?? ""))
+        .filter((entry) => {
+          const file = entry.split("\t")[1] ?? "";
+          return !isPiStatePath(file) && !isGeneratedFile(file);
+        })
         .join("\0"),
     );
     for (const file of files) {
@@ -87,7 +91,10 @@ export function captureWorkspace(cwd: string): WorkspaceSnapshot {
     }
     const dirty = git(["status", "--porcelain=v1", "--untracked-files=normal"])
       .split("\n")
-      .some((line) => line.trim() && !/^.. "?\.pi(?:[\\/]|"?$)/.test(line));
+      .some((line) => {
+        const file = line.slice(3).trim().replace(/^"|"$/g, "");
+        return line.trim() && !isPiStatePath(file) && !isGeneratedFile(file);
+      });
     return { status: "ready", fingerprint: hash.digest("hex"), dirty };
   } catch (err) {
     return { status: "unavailable", reason: err instanceof Error ? err.message : String(err) };
@@ -132,14 +139,14 @@ function captureSvnWorkspace(cwd: string): WorkspaceSnapshot {
     const statusXml = svn(["status", "--xml", "--verbose"]);
     const entries = [...statusXml.matchAll(/<entry\b[^>]*\bpath="([^"]*)"[^>]*>([\s\S]*?)<\/entry>/g)]
       .map((match) => ({ path: decodeXmlAttribute(match[1]), body: match[2] }))
-      .filter(({ path }) => path === "." || !isPiStatePath(path))
+      .filter(({ path }) => path === "." || (!isPiStatePath(path) && !isGeneratedFile(path)))
       .sort((a, b) => a.path.localeCompare(b.path));
     if (entries.length === 0) throw new Error("SVN status returned no entries");
     const hash = createHash("sha256");
     const visited = new Set<string>();
     let dirty = false;
     const hashPath = (relative: string, expandUnversioned: boolean): void => {
-      if (isPiStatePath(relative) || visited.has(relative)) return;
+      if (isPiStatePath(relative) || isGeneratedFile(relative) || visited.has(relative)) return;
       visited.add(relative);
       const path = resolveProjectPath(cwd, relative);
       if (!path) throw new Error(`Cannot safely fingerprint ${relative}`);

@@ -14,6 +14,9 @@ export const REVIEW_SCOPE_GUIDANCE =
   "Use files:[...] or exclude:[...] for focused feedback on edited files and directly affected tests/types/config. " +
   "A scoped or historical pass cannot clear the done gate or advance the plan. Before certifying a step or " +
   "completing the task, run a complete whole-tree review without files, exclude, revision, or since, with new files included. " +
+  "Built-in scope omits generated build output and local tool metadata (including target/, .class, .idea/, and .pi/). " +
+  "Directory scopes/exclusions accept either slash style on Windows; new SVN files are visible without svn add. " +
+  "SVN whole-tree review uses the local BASE automatically; do not pass revision:'BASE' to work around capture problems. " +
   "Naming files in the description is a focus hint, not a diff filter.";
 
 export const REVIEW_PROGRESS_GUIDANCE =
@@ -21,10 +24,17 @@ export const REVIEW_PROGRESS_GUIDANCE =
   "wai_index({ topic: 'plan' }) before calling done:true. Call done only if the same reviewed step remains current " +
   "and its acceptance criteria are met; do not advance an unfinished next step.";
 
+export const SVN_CAPTURE_GUIDANCE =
+  "SVN CAPTURE: New files and directory scopes work with either slash style on Windows. " +
+  "Whole-tree review uses local BASE and automatically omits target/, compiled artifacts, .idea/, and .pi/. " +
+  "Do not pass an explicit revision or exclusions for final certification. Truncation still means incomplete coverage.";
+
 export const INCONCLUSIVE_REVIEW_GUIDANCE =
   "An inconclusive review does not certify completion. Check diagnostics, the working directory, requested files/VCS range, " +
   "input/output truncation, and whether the active plan matches the code. Resolve the cause, then re-run `wai.review`. " +
   "Scoped reviews can help diagnose a large diff, but final certification still requires complete whole-tree coverage. " +
+  "Truncation is incomplete coverage even if the intended source appears first. Do not delete build output, change ignore properties, " +
+  "or raise caps merely to bypass missing coverage; inspect capture diagnostics and the loaded extension version. " +
   "If the cause remains unresolved, report the blocker; do not retry unchanged input repeatedly or lower thinking depth blindly.";
 
 export const COMMIT_GUIDANCE =

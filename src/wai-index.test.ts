@@ -23,6 +23,20 @@ describe("wai-index", () => {
     }
   });
 
+  it("refreshes stored symbol context after a source edit", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wai-index-fresh-"));
+    try {
+      writeFileSync(join(dir, "api.ts"), "export const before = 1;\n");
+      saveProjectIndex(dir, buildProjectIndex(dir));
+      writeFileSync(join(dir, "api.ts"), "export const currentSymbol = 2;\n");
+      const result = executeWaiIndex(dir, { topic: "index" });
+      assert.match(result.indexSummary ?? "", /currentSymbol/);
+      assert.doesNotMatch(result.indexSummary ?? "", /\bbefore\b/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns conventions, plan, memory, cost, and logs for topic all", () => {
     const conventions: Conventions = {
       naming: "camelCase",

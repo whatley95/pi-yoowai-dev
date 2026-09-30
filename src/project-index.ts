@@ -183,7 +183,7 @@ export function saveProjectIndex(cwd: string, index: ProjectIndex): void {
   }
 }
 
-export function buildProjectIndex(cwd: string): ProjectIndex {
+function listIndexableFiles(cwd: string): string[] {
   const tracked = listTrackedFiles(cwd);
   let files = tracked.filter(isIndexableFile);
   // Untracked files too: the review/diff world already includes them
@@ -201,6 +201,40 @@ export function buildProjectIndex(cwd: string): ProjectIndex {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+  return files;
+}
+
+/** Check the whole graph: a new, deleted, or edited caller changes reverse
+ * edges even when every file selected for rendering remains unchanged. */
+export function isProjectIndexFresh(cwd: string, index: ProjectIndex): boolean {
+  const current = listIndexableFiles(cwd);
+  if (current.length !== index.files.length) return false;
+  const byFile = new Map(index.files.map((file) => [file.file, file]));
+  return current.every((file) => {
+    const cached = byFile.get(file);
+    const path = resolveProjectPath(cwd, file);
+    if (!cached || !path) return false;
+    try {
+      const stats = statSync(path);
+      return cached.mtime === stats.mtimeMs && cached.size === stats.size;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Use for context consumers; raw loadProjectIndex is for incremental builds. */
+export function loadFreshProjectIndex(cwd: string, buildIfMissing = false): ProjectIndex | null {
+  const existing = loadProjectIndex(cwd);
+  if (!existing && !buildIfMissing) return null;
+  if (existing && isProjectIndexFresh(cwd, existing)) return existing;
+  const rebuilt = buildProjectIndex(cwd);
+  saveProjectIndex(cwd, rebuilt);
+  return rebuilt;
+}
+
+export function buildProjectIndex(cwd: string): ProjectIndex {
+  const files = listIndexableFiles(cwd);
   const existing = loadProjectIndex(cwd);
   const existingByFile = new Map(existing?.files.map((f) => [f.file, f]) ?? []);
 
@@ -575,7 +609,7 @@ export interface RelevantFile {
 }
 
 export function findRelevantFiles(cwd: string, query: string, maxFiles = 5): RelevantFile[] {
-  const index = loadProjectIndex(cwd);
+  const index = loadFreshProjectIndex(cwd);
   if (!index || index.files.length === 0) return [];
 
   const words = query

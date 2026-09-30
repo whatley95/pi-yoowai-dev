@@ -35,6 +35,11 @@ test("SVN fingerprints detect edits and exclude Pi state", { skip: !svnAvailable
     mkdirSync(join(cwd, ".pi", "yoowai"), { recursive: true });
     writeFileSync(join(cwd, ".pi", "yoowai", "log.txt"), "runtime state\n");
     assert.deepEqual(captureWorkspace(cwd), clean);
+    mkdirSync(join(cwd, "target", "classes"), { recursive: true });
+    writeFileSync(join(cwd, "target", "classes", "App.class"), Buffer.from([0, 1, 2]));
+    mkdirSync(join(cwd, ".idea"));
+    writeFileSync(join(cwd, ".idea", "workspace.xml"), "local settings\n");
+    assert.deepEqual(captureWorkspace(cwd), clean, "build output cannot invalidate source certification");
 
     recordFileEdit(cwd, "a&b.txt");
     assert.equal(

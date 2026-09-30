@@ -94,6 +94,32 @@ describe("diff-grabber helpers", () => {
     }
   });
 
+  it("excludes tracked and new build output from Git before capture limits", { skip: !hasGit }, () => {
+    const cwd = mkdtempSync(join(tmpdir(), "wai-build-git-"));
+    try {
+      initGitRepo(cwd);
+      mkdirSync(join(cwd, "target"));
+      writeFileSync(join(cwd, "target", "inputFiles.lst"), "before\n");
+      writeFileSync(join(cwd, "app.ts"), "export const app = 1;\n");
+      commitAll(cwd);
+      writeFileSync(join(cwd, "target", "inputFiles.lst"), "BUILD_NOISE\n".repeat(100_000));
+      writeFileSync(join(cwd, "target", "App.class"), Buffer.from([0, 1, 2]));
+      writeFileSync(join(cwd, "target", "dependency.jar"), Buffer.from([0, 1, 2]));
+      writeFileSync(join(cwd, "new.ts"), "export const newSource = true;\n");
+      assert.deepEqual(listGitUntrackedFiles(cwd), ["new.ts"]);
+      for (const options of [{}, { revision: "HEAD" }]) {
+        const result = getGitDiff(cwd, { ...options, untracked: true, maxDiffChars: 500 });
+        assert.equal(result.unavailableReason, undefined);
+        assert.equal(result.truncated, false);
+        assert.deepEqual(result.changedFiles, ["new.ts"]);
+        assert.match(result.diff, /newSource/);
+        assert.doesNotMatch(result.diff, /BUILD_NOISE|\.class|\.jar/);
+      }
+    } finally {
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  });
+
   it("excludes Pi state before SVN diff assembly and truncation", { skip: !hasSvn }, () => {
     const root = mkdtempSync(join(tmpdir(), "wai-pi-state-svn-"));
     const repository = join(root, "repository");
@@ -172,6 +198,47 @@ describe("diff-grabber helpers", () => {
         });
         assert.deepEqual([...windows.changedFiles].sort(), [...requested].sort());
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  });
+
+  it("omits Maven output before whole-tree SVN truncation and preserves new source", { skip: !hasSvn }, () => {
+    const root = mkdtempSync(join(tmpdir(), "wai-maven-svn-"));
+    const repository = join(root, "repository");
+    const cwd = join(root, "checkout");
+    try {
+      execFileSync("svnadmin", ["create", repository], { stdio: "pipe" });
+      execFileSync("svn", ["checkout", pathToFileURL(repository).href, cwd], { stdio: "pipe" });
+      mkdirSync(join(cwd, "target"));
+      writeFileSync(join(cwd, "target", "inputFiles.lst"), "before\n");
+      execFileSync("svn", ["add", "target"], { cwd, stdio: "pipe" });
+      execFileSync("svn", ["commit", "-m", "fixture"], { cwd, stdio: "pipe" });
+      writeFileSync(join(cwd, "target", "inputFiles.lst"), "BUILD_NOISE\n".repeat(50_000));
+      mkdirSync(join(cwd, "target", "classes"));
+      for (let i = 0; i < 225; i++)
+        writeFileSync(join(cwd, "target", "classes", `App${i}.class`), Buffer.from([0xca, 0xfe, 0xba, 0xbe, 0]));
+      mkdirSync(join(cwd, ".idea"));
+      writeFileSync(join(cwd, ".idea", "workspace.xml"), "IDE_NOISE\n");
+      mkdirSync(join(cwd, "src"));
+      writeFileSync(join(cwd, "src", "New.java"), "class New {}\n");
+      const result = getSvnDiff(cwd, { untracked: true, maxDiffChars: 500 });
+      assert.equal(result.unavailableReason, undefined);
+      assert.equal(result.truncated, false);
+      assert.deepEqual(result.changedFiles, ["src/New.java"]);
+      assert.match(result.diff, /class New/);
+      assert.doesNotMatch(result.diff, /BUILD_NOISE|IDE_NOISE|\.class/);
+      writeFileSync(join(cwd, "unknown.dat"), Buffer.from([0, 1, 2, 3]));
+      const binary = getSvnDiff(cwd, { files: ["unknown.dat"], untracked: true });
+      assert.deepEqual(binary.changedFiles, ["unknown.dat"]);
+      assert.match(binary.diff, /binary file content omitted/);
+      assert.equal(binary.diff.includes("\0"), false);
+      writeFileSync(join(cwd, "unknown.dat"), Buffer.from([0, 4, 5, 6]));
+      assert.notEqual(
+        getSvnDiff(cwd, { files: ["unknown.dat"], untracked: true }).diff,
+        binary.diff,
+        "binary summaries must invalidate cached verdicts when bytes change",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }

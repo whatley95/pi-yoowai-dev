@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { callSecondaryModel } from "./secondary-model.js";
 import { loadConventions, formatConventions } from "./conventions.js";
-import { loadProjectIndex } from "./project-index.js";
+import { loadFreshProjectIndex } from "./project-index.js";
 import { recordCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveProjectPath } from "./path-security.js";
@@ -86,7 +86,7 @@ export async function executeWaiExplain(
   progress(1, totalStages, "Loading project context…");
   const conventions = loadConventions(cwd);
   const conventionsText = conventions ? formatConventions(conventions) : "";
-  const index = loadProjectIndex(cwd);
+  const index = loadFreshProjectIndex(cwd);
   const indexSummary = index ? summarizeIndexForExplain(index, params.target) : "";
 
   progress(2, totalStages, "Reading referenced files…");

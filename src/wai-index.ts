@@ -3,7 +3,7 @@ import { isPlanStep, planStepDescription } from "./types.js";
 import { getSessionCost } from "./cost-tracker.js";
 import { logEvent, readRecentLogs } from "./logger.js";
 import {
-  loadProjectIndex,
+  loadFreshProjectIndex,
   buildProjectIndex,
   saveProjectIndex,
   formatIndexSummary,
@@ -146,7 +146,7 @@ export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResul
   }
 
   if (wants("index")) {
-    const index = loadProjectIndex(cwd);
+    const index = loadFreshProjectIndex(cwd);
     if (index) {
       result.index = index;
       result.indexSummary = formatIndexSummary(index, query || undefined);

@@ -1,14 +1,15 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { listTrackedFiles, readPackageJson } from "./conventions.js";
-import { loadProjectIndex } from "./project-index.js";
+import { loadFreshProjectIndex } from "./project-index.js";
+import { GENERATED_DIRECTORIES, isGeneratedFile } from "./file-policy.js";
 import { resolveProjectPath } from "./path-security.js";
 
 const SNAPSHOT_MAX_FILES = 200;
 const SNAPSHOT_MAX_DOC_CHARS = 2000;
 const SNAPSHOT_MAX_INDEX_SYMBOLS = 50;
 
-const EXCLUDED_SNAPSHOT_DIRS = new Set(["node_modules", ".git", ".pi", "dist", "build", "out", "coverage"]);
+const EXCLUDED_SNAPSHOT_DIRS = new Set<string>([...GENERATED_DIRECTORIES, ".pi"]);
 
 function isExcludedDir(name: string): boolean {
   return EXCLUDED_SNAPSHOT_DIRS.has(name) || name.startsWith(".");
@@ -21,6 +22,7 @@ function buildTreeLines(root: string, dir: string, prefix: string, limit: number
     const visible = entries
       .filter((e) => !e.name.startsWith(".") || e.name === ".github")
       .filter((e) => !(e.isDirectory() && isExcludedDir(e.name)))
+      .filter((e) => !isGeneratedFile(e.name))
       .sort((a, b) => a.name.localeCompare(b.name));
 
     for (let i = 0; i < visible.length && lines.length < limit; i++) {
@@ -74,7 +76,7 @@ function formatPackageJsonSummary(cwd: string): string {
 }
 
 function formatIndexSnapshot(cwd: string): string {
-  const index = loadProjectIndex(cwd);
+  const index = loadFreshProjectIndex(cwd);
   if (!index || index.files.length === 0) return "";
 
   const lines: string[] = [];

@@ -9,7 +9,12 @@ import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
 import { getPastIssuesForFiles } from "../review-memory.js";
 import { estimateTokens, truncateToTokenBudget } from "../token-budget.js";
-import { buildPlanReviewReminder, GIT_COMMIT_GUIDANCE, PLAN_ALIGNMENT_GUIDANCE } from "../workflow-guidance.js";
+import {
+  buildPlanReviewReminder,
+  GIT_COMMIT_GUIDANCE,
+  PLAN_ALIGNMENT_GUIDANCE,
+  SVN_CAPTURE_GUIDANCE,
+} from "../workflow-guidance.js";
 
 const executingCwds = new Map<string, { count: number }>();
 
@@ -100,6 +105,7 @@ function buildContextBlock(cwd: string): string {
   if (languageDirective) parts.push(languageDirective);
   const vcs = projectVcs(cwd);
   if (vcs === "git") parts.push(GIT_COMMIT_GUIDANCE);
+  if (vcs === "svn") parts.push(SVN_CAPTURE_GUIDANCE);
   if (vcs === "svn") {
     parts.push(
       "SVN WORKFLOW: wai reviews unversioned files, but svn commit omits files marked ?. " +

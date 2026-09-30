@@ -13,10 +13,7 @@ interface MemoryStore {
   updatedAt: string;
 }
 
-interface FileMemory {
-  file: string;
-  issues: Array<{ severity: ReviewIssue["severity"]; issue: string; suggestion: string; timestamp: string }>;
-}
+type FileMemory = MemoryEntry;
 
 function getMemoryPath(cwd: string): string {
   return getSessionConfigPath(cwd, "memory.json");
@@ -30,7 +27,28 @@ function loadMemory(cwd: string): MemoryStore {
   try {
     const raw = readFileSync(path, "utf-8");
     const data = JSON.parse(raw) as MemoryStore;
-    return { files: data.files || {}, updatedAt: data.updatedAt || new Date().toISOString() };
+    const files: Record<string, FileMemory> = {};
+    const cutoff = Date.now() - ISSUE_TTL_MS;
+    for (const [file, entry] of Object.entries(data.files ?? {})) {
+      if (!entry || !Array.isArray(entry.issues)) continue;
+      const issues = entry.issues
+        .filter(
+          (issue) =>
+            issue &&
+            typeof issue.issue === "string" &&
+            typeof issue.suggestion === "string" &&
+            Number.isFinite(Date.parse(issue.timestamp)) &&
+            Date.parse(issue.timestamp) >= cutoff,
+        )
+        .map((issue) => ({
+          ...issue,
+          occurrences: (issue.occurrences ?? [issue.timestamp])
+            .filter((stamp) => Number.isFinite(Date.parse(stamp)) && Date.parse(stamp) >= cutoff)
+            .slice(-MAX_ISSUES_PER_FILE),
+        }));
+      if (issues.length > 0) files[file] = { file: entry.file ?? file, issues };
+    }
+    return { files, updatedAt: data.updatedAt || new Date().toISOString() };
   } catch (err) {
     logEvent(cwd, "warn", "Failed to load wai review memory", {
       error: err instanceof Error ? err.message : String(err),
@@ -57,6 +75,7 @@ export function recordIssues(cwd: string, issues: ReviewIssue[]): void {
   const memory = loadMemory(cwd);
   const now = new Date().toISOString();
   const cutoff = new Date(Date.now() - ISSUE_TTL_MS).toISOString();
+  const recorded = new Set<string>();
 
   for (const issue of issues) {
     if (!issue.file) continue;
@@ -66,6 +85,9 @@ export function recordIssues(cwd: string, issues: ReviewIssue[]): void {
     }
 
     const normalizedIssue = normalizeIssue(issue.issue);
+    const key = `${file}\0${normalizedIssue}`;
+    if (recorded.has(key)) continue;
+    recorded.add(key);
     const existingIndex = memory.files[file].issues.findIndex((i) => normalizeIssue(i.issue) === normalizedIssue);
     if (existingIndex >= 0) {
       memory.files[file].issues[existingIndex] = {
@@ -73,6 +95,12 @@ export function recordIssues(cwd: string, issues: ReviewIssue[]): void {
         issue: issue.issue,
         suggestion: issue.suggestion,
         timestamp: now,
+        occurrences: [
+          ...(memory.files[file].issues[existingIndex].occurrences ?? [
+            memory.files[file].issues[existingIndex].timestamp,
+          ]),
+          now,
+        ].slice(-MAX_ISSUES_PER_FILE),
       };
     } else {
       memory.files[file].issues.push({
@@ -80,6 +108,7 @@ export function recordIssues(cwd: string, issues: ReviewIssue[]): void {
         issue: issue.issue,
         suggestion: issue.suggestion,
         timestamp: now,
+        occurrences: [now],
       });
     }
 

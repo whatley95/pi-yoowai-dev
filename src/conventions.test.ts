@@ -1,11 +1,32 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inferNaming, inferStack, inferBuildTool, gatherDeepScanSamples } from "./conventions.js";
+import { inferNaming, inferStack, inferBuildTool, gatherDeepScanSamples, listTrackedFiles } from "./conventions.js";
+import { buildProjectIndex } from "./project-index.js";
 
 describe("convention inference", () => {
+  it("SVN administration and build products cannot exhaust the portable source scan", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "wai-svn-scan-"));
+    try {
+      mkdirSync(join(cwd, ".svn", "pristine"), { recursive: true });
+      mkdirSync(join(cwd, "target", "classes"), { recursive: true });
+      for (let i = 0; i < 501; i++) {
+        writeFileSync(join(cwd, ".svn", "pristine", `${i}.svn-base`), "metadata\n");
+        writeFileSync(join(cwd, "target", "classes", `${i}.class`), "compiled\n");
+      }
+      mkdirSync(join(cwd, "src"));
+      writeFileSync(join(cwd, "src", "app.ts"), "export const app = 1;\n");
+      assert.deepEqual(listTrackedFiles(cwd), ["src/app.ts"]);
+      assert.deepEqual(
+        buildProjectIndex(cwd).files.map((file) => file.file),
+        ["src/app.ts"],
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
   it("detects camelCase naming", () => {
     assert.ok(inferNaming(["src/getUser.ts"]).includes("camelCase"));
   });

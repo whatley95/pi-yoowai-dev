@@ -56,14 +56,17 @@ export function analyzeReviewMemory(entries: MemoryEntry[], now: number = Date.n
 
   for (const entry of entries) {
     const issues = entry.issues.filter((i) => i.timestamp >= cutoff);
-    if (issues.length < MIN_ISSUES_PER_FILE) continue;
+    const occurrences = (issue: MemoryEntry["issues"][number]) =>
+      issue.occurrences?.filter((stamp) => stamp >= cutoff).length ?? 1;
+    const issueCount = issues.reduce((total, issue) => total + occurrences(issue), 0);
+    if (issueCount < MIN_ISSUES_PER_FILE) continue;
 
     const groups = new Map<string, { theme: ReflectionTheme; latestTimestamp: string }>();
     for (const issue of issues) {
       const key = normalizeThemeKey(issue.issue);
       const existing = groups.get(key);
       if (existing) {
-        existing.theme.count++;
+        existing.theme.count += occurrences(issue);
         existing.theme.severity = maxSeverity(existing.theme.severity, issue.severity);
         if (issue.timestamp >= existing.latestTimestamp) {
           existing.latestTimestamp = issue.timestamp;
@@ -74,7 +77,7 @@ export function analyzeReviewMemory(entries: MemoryEntry[], now: number = Date.n
         groups.set(key, {
           theme: {
             issue: issue.issue,
-            count: 1,
+            count: occurrences(issue),
             severity: issue.severity,
             suggestion: issue.suggestion,
             recurring: false,
@@ -92,7 +95,7 @@ export function analyzeReviewMemory(entries: MemoryEntry[], now: number = Date.n
     const advice = top.suggestion || top.issue;
     findings.push({
       file: entry.file,
-      issueCount: issues.length,
+      issueCount,
       themes,
       conventionSuggestion: `In ${entry.file}: ${advice}`,
     });
@@ -136,11 +139,17 @@ export function formatReflectionReport(findings: FileReflection[]): string {
 /** Persist each finding's suggestion as a learned fact (category "conventions").
  *  Returns the number of facts recorded. */
 export function learnReflectionSuggestions(cwd: string, findings: FileReflection[]): number {
+  let recorded = 0;
   for (const finding of findings) {
-    recordLearnedFact(cwd, finding.conventionSuggestion, { category: "conventions", source: finding.file });
+    try {
+      recordLearnedFact(cwd, finding.conventionSuggestion, { category: "conventions", source: finding.file });
+      recorded++;
+    } catch {
+      /* recording already logged the persistence failure */
+    }
   }
   if (findings.length > 0) {
-    logEvent(cwd, "info", "Recorded learned facts from wai reflect", { count: findings.length });
+    logEvent(cwd, "info", "Recorded learned facts from wai reflect", { count: recorded });
   }
-  return findings.length;
+  return recorded;
 }

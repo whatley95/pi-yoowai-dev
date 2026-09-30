@@ -403,6 +403,10 @@ The `wai` tool is called by the main agent during development:
 
 For SVN, wai also reviews unversioned (`?`) files and files inside new directories without `svn add`. With `autoInjectContext` enabled, SVN working copies receive a main-agent reminder to inspect `svn status`, schedule intended new files with `svn add --parents -- <explicit file paths>` before the final whole-tree review, and verify they show `A` before an authorized commit. The reminder excludes bulk additions of `.`, `.pi/`, generated outputs, and unrelated files. Scheduling additions after review changes the workspace fingerprint and requires another whole-tree review.
 
+Working-copy SVN reviews use local `BASE` automatically. Directory scopes and exclusions accept `/` or `\` on Windows, including new files. For final whole-tree certification, omit `files`, `exclude`, `revision`, and `since`; explicitly passing `revision: "BASE"` still selects a scoped review. Describing a few files does not filter the capture.
+
+Git and SVN capture, indexing, and workspace fingerprints share a built-in policy that omits build directories (`target/`, `dist/`, `build/`, `out/`, `coverage/`, `node_modules/`, `.gradle/`, `.next/`, `__pycache__/`), VCS/IDE metadata (`.git/`, `.svn/`, `.idea/`), and compiler products (`.class`, `.pyc`, `.pyo`, `.o`, `.obj`, `.pdb`, `.tsbuildinfo`). Project-root `.pi/` remains excluded. These files do not consume review batches or invalidate source approvals. Library archives such as `lib/dependency.jar` remain in scope; archives inside build directories are excluded with that directory. Other unversioned binary files receive a content-omitted marker rather than a corrupted UTF-8 patch; text-content loading rejects binary bytes. Truncation of source changes remains incomplete coverage even when the intended files appear first.
+
 Main-agent guidance uses the same workflow across tools, automatic reminders, and review reports:
 
 - Scoped reviews provide focused feedback; whole-tree certification requires a complete review without `files`, `exclude`, `revision`, or `since`, with new files included. Naming files in the description does not filter the diff.
@@ -435,6 +439,8 @@ The `wai_index` tool is a fast, read-only lookup for stored wai context. It does
 | `wai_index({ update: true })`                             | Rebuild the symbol index before returning results                                                                                                                                                                                            |
 
 Use `wai_index` before editing to quickly learn the project's rules, current task, known issues, symbols, and recorded facts.
+
+Persisted symbol context is refreshed against the entire source set before use by the code map, index/explain tools, planning snapshots, and symbol searches. Adding, changing, or deleting a caller refreshes reverse import edges even when the selected module is unchanged; unchanged files reuse their AST entries. Import neighbors use the same canonical resolution as the index, including NodeNext `.js` imports that refer to `.ts` sources. The AST symbol/dependency graph supports TypeScript and JavaScript; other languages require direct source inspection and do not have equivalent mapper coverage.
 
 ### `wai_explain` tool
 
@@ -471,9 +477,9 @@ Record a persistent project fact that wai will remember across sessions.
 
 Recorded facts appear in `wai_index({ topic: "learned" })`.
 
-`verify` checks referenced files, source files, and symbols from the project index. It returns each fact as `valid`, `questionable`, or `outdated` — no model call, so it is fast and safe to run manually.
+`verify` checks referenced files, source files, and symbols from the current project index. It returns each fact as `valid`, `questionable`, or `outdated` without a model call. A structural `valid` result means references exist; it does not prove a behavioral claim or renew freshness. Facts without verifiable references are `questionable`.
 
-`verify` + `deep` calls the secondary model for each fact, including the source file and project conventions in the prompt. It is more accurate but costs tokens per fact.
+`verify` + `deep` calls the secondary model for each fact, including its project-relative source and referenced files plus project conventions. Renewal requires a valid result and complete readable source evidence within the 100 KB limit. Missing evidence downgrades an otherwise valid verdict to `questionable`. Supply `source` when recording factual claims; memory is context to check against current code. Recording failures are reported as errors.
 
 #### Freshness policy
 
@@ -484,7 +490,7 @@ Memory stays **relevant, not just persistent**. Every entry carries a freshness 
 
 Stale entries are **never injected** into the main agent's context or the review `<decisions>` block (filtered before the newest-20/400-token and 600-token slices) — but they are **retained** under the 200-entry cap and surfaced by `wai_learn({ stale: true })` and `wai_index({ topic: "learned" })` with a `STALE` marker and a `verify, update, or revoke` hint. Legacy entries without a stamp (or with a malformed one) age from their creation time; an unusable timestamp makes the entry stale without rejecting the record.
 
-**Renewal is guarded.** Running `verify` only renews entries the check returned `valid` (all-clear); `questionable`/`outdated`/empty/malformed/unconfirmed results never renew, so a merely-run verifier cannot keep stale memory alive. `deep` verification follows the same rule and is awaited before renewal is applied. `reaffirm` renews explicitly by exact fact text (duplicate texts are rejected as ambiguous unless targeted by entry id). Every entry has a stable per-entry id; writes report whether persistence succeeded (`write-failed` is surfaced as an error).
+**Renewal is guarded.** Shallow `verify` never renews a fact. Deep verification renews only a valid, evidence-backed result after the model call resolves; questionable, outdated, empty, malformed, or unsupported results never renew. `reaffirm` renews explicitly by exact fact text (duplicate texts are rejected as ambiguous unless targeted by entry id). Every entry has a stable per-entry id; writes report whether persistence succeeded (`write-failed` is surfaced as an error).
 
 > Contestability (automatically challenging stale decisions when a review contradicts them) is deliberately **deferred**; the current UX is the explicit stale listing with a `verify, update, or revoke` hint.
 
@@ -844,7 +850,7 @@ Content fingerprints apply to Git and SVN projects. Projects without a recognize
 - **Per-action instruction files** — user-authored markdown injected into the secondary-model prompt per action (`.pi/yoowai/instructions/<action>.md`); see [Per-action instruction files](#per-action-instruction-files)
 - **Pair-programming advisor** — a cheap, conversational `wai.advisor` action for quick judgment calls, plus always-on advisor notes in the main agent's context (review-memory heads-up, no model calls); see [Advisor](#advisor)
 - **Learned facts** — `wai_learn` persists project-specific facts across sessions; surfaced by `wai_index`
-- **Review memory** — previous issues per file are included so the model knows what was already fixed. When a review description is provided, issues are ranked by semantic similarity to the current change. Memory is reset for each new Pi session
+- **Review memory** — recent findings are regression hints, not proof they are fixed or still present. All readers omit findings older than seven days. Repeated findings retain bounded per-round occurrence history for `/wai-reflect` while prompt entries stay deduplicated. With a description, issues are ranked by semantic similarity. Memory is reset for each new Pi session.
 - **Pre-review commands** — configured lint/test/typecheck output is included in the review prompt
 - **Cost tracking + budget** — estimated spend per call, session total, optional hard budget, and wall-clock elapsed time in result headers
 - **Robust JSON parsing** — unwraps wrapper objects like `{ "response": "..." }` and falls back to markdown salvage when the model does not return the expected `## Result` JSON block

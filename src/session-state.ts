@@ -1,6 +1,7 @@
 import { loadState, saveState, normalizeReviewedFiles, MAX_REVIEWED_FILES } from "./plan-store.js";
 import { planStepDescription } from "./types.js";
-import { getVcsInfo, resolveEmptyTree } from "./diff-grabber.js";
+import { getVcsInfo, isPiStatePath, resolveEmptyTree } from "./diff-grabber.js";
+import { isGeneratedFile } from "./file-policy.js";
 import { captureWorkspace } from "./workspace-fingerprint.js";
 import type { YoowaiSessionState, PlanResult, ReviewVerdict, WaiToolResult } from "./types.js";
 
@@ -229,6 +230,7 @@ export function markJudgeCompleted(cwd: string): void {
 const MAX_TRACKED_EDITED_FILES = 50;
 
 export function recordFileEdit(cwd: string, filePath?: string): void {
+  if (filePath && (isPiStatePath(filePath) || isGeneratedFile(filePath))) return;
   const state = getState(cwd);
   state.editsSinceLastReview++;
   state.editsSinceLastDone++;

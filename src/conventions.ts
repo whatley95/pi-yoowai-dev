@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { getConfigDirName, getProjectConfigPath } from "./pi-paths.js";
 import { gitSpawnEnv } from "./git-env.js";
 import { logEvent } from "./logger.js";
+import { GENERATED_DIRECTORIES, isGeneratedFile } from "./file-policy.js";
 import type { Conventions, ScanResult } from "./types.js";
 
 function getConventionsPath(cwd: string): string {
@@ -98,7 +99,7 @@ export function scanProjectConventions(cwd: string): ScanResult {
 }
 
 const FALLBACK_SCAN_LIMIT = 500;
-const BASE_EXCLUDED_SCAN_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", "coverage"]);
+const BASE_EXCLUDED_SCAN_DIRS = new Set<string>(GENERATED_DIRECTORIES);
 
 function getExcludedScanDirs(): Set<string> {
   return new Set([...BASE_EXCLUDED_SCAN_DIRS, getConfigDirName()]);
@@ -118,6 +119,7 @@ export function listTrackedFiles(cwd: string): string[] {
       });
       const lines = output.split(/\r?\n/).filter((f) => {
         if (f.length === 0) return false;
+        if (isGeneratedFile(f)) return false;
         if (f.includes("node_modules/")) return false;
         const configDir = getConfigDirName();
         if (f.includes(`${configDir}/`)) return false;
@@ -157,7 +159,7 @@ function scanDirectory(root: string, dir: string, limit: number): string[] {
     }
     if (entry.isFile()) {
       const rel = relative(root, join(dir, entry.name)).split("\\").join("/");
-      if (EXCLUDED_FILE_PATTERNS.some((p) => p.test(rel))) continue;
+      if (isGeneratedFile(rel) || EXCLUDED_FILE_PATTERNS.some((p) => p.test(rel))) continue;
       files.push(rel);
     }
   }

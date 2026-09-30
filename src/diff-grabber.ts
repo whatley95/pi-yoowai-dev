@@ -1,13 +1,19 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { logEvent } from "./logger.js";
 import { isSafeRelativePath, normalizeReviewPath, validateRevision } from "./path-security.js";
 import { gitSpawnEnv } from "./git-env.js";
+import { GENERATED_DIRECTORIES, GENERATED_EXTENSIONS, isBinaryContent, isGeneratedFile } from "./file-policy.js";
 
 export const DEFAULT_MAX_DIFF_CHARS = 200_000;
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
 const PI_STATE_EXCLUDE_PATHSPEC = ":(exclude,top).pi";
+const GENERATED_EXCLUDE_PATHSPECS = [
+  ...GENERATED_DIRECTORIES.map((dir) => `:(exclude,glob,icase)**/${dir}/**`),
+  ...GENERATED_EXTENSIONS.map((extension) => `:(exclude,glob,icase)**/*.${extension}`),
+];
 const UNSAFE_SCOPE_REASON =
   "The requested file scope is outside the current project or is unsafe. Reviews can only certify files under the session working directory; run Pi in the other project's directory to review those files.";
 
@@ -118,14 +124,18 @@ function getGitInfo(cwd: string): VcsInfo {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     }).trim();
-    const status = execFileSync("git", ["status", "--porcelain", "--", ".", PI_STATE_EXCLUDE_PATHSPEC], {
-      cwd,
-      env: gitSpawnEnv(),
-      encoding: "utf-8",
-      timeout: 3000,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    }).trim();
+    const status = execFileSync(
+      "git",
+      ["status", "--porcelain", "--", ".", PI_STATE_EXCLUDE_PATHSPEC, ...GENERATED_EXCLUDE_PATHSPECS],
+      {
+        cwd,
+        env: gitSpawnEnv(),
+        encoding: "utf-8",
+        timeout: 3000,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    ).trim();
     return { type: "git", branch, revision, dirty: status.length > 0 };
   } catch (err) {
     return { type: "git", error: err instanceof Error ? err.message : String(err) };
@@ -299,9 +309,10 @@ function buildGitPathArgs(files?: string[], exclude?: string[]): string[] | unde
         ".",
         ...exclude.filter((e) => isSafeRelativePath(e)).map((e) => `:(exclude)${e}`),
         PI_STATE_EXCLUDE_PATHSPEC,
+        ...GENERATED_EXCLUDE_PATHSPECS,
       ];
     }
-    return [".", PI_STATE_EXCLUDE_PATHSPEC];
+    return [".", PI_STATE_EXCLUDE_PATHSPEC, ...GENERATED_EXCLUDE_PATHSPECS];
   }
 
   if (files.some((file) => !isSafeRelativePath(file))) throw new Error("All review paths must be project-relative");
@@ -310,7 +321,7 @@ function buildGitPathArgs(files?: string[], exclude?: string[]): string[] | unde
   if (safeFiles.length === 0) {
     throw new Error("No safe file paths provided for git diff");
   }
-  return [...safeFiles, ...excludeArgs, PI_STATE_EXCLUDE_PATHSPEC];
+  return [...safeFiles, ...excludeArgs, PI_STATE_EXCLUDE_PATHSPEC, ...GENERATED_EXCLUDE_PATHSPECS];
 }
 
 function buildSvnRevisionArgs(revision?: string, since?: string): string[] {
@@ -356,7 +367,7 @@ export function getSvnDiff(
       const rawPath = line.slice(8).trim();
       if (!rawPath) continue;
       const path = normalizeReviewPath(rawPath);
-      if (isPiStatePath(path)) continue;
+      if (isPiStatePath(path) || isGeneratedFile(path)) continue;
       if (statusChar === "M") modified.push(path);
       else if (statusChar === "A") added.push(path);
       else if (statusChar === "D") deleted.push(path);
@@ -376,7 +387,7 @@ export function getSvnDiff(
       try {
         for (const entry of readdirSync(join(cwd, dir), { withFileTypes: true })) {
           const child = dir + "/" + entry.name;
-          if (isPiStatePath(child)) continue;
+          if (isPiStatePath(child) || isGeneratedFile(child)) continue;
           if (entry.isDirectory()) expandDir(child);
           else if (entry.name !== ".svn") unversionedDescendants.push(child);
         }
@@ -394,7 +405,11 @@ export function getSvnDiff(
     const isExcluded = (p: string): boolean => safeExcludes.some((e) => p === e || p.startsWith(e + "/"));
     const filterPaths = (paths: string[]): string[] =>
       paths.filter(
-        (p) => !isPiStatePath(p) && !isExcluded(p) && (scopes.length === 0 || scopes.some((f) => matchesScope(p, f))),
+        (p) =>
+          !isPiStatePath(p) &&
+          !isGeneratedFile(p) &&
+          !isExcluded(p) &&
+          (scopes.length === 0 || scopes.some((f) => matchesScope(p, f))),
       );
 
     const modifiedFiltered = filterPaths(modified);
@@ -422,7 +437,14 @@ export function getSvnDiff(
     if (options.untracked) {
       for (const unvPath of unversionedFiltered) {
         try {
-          const content = readFileSync(join(cwd, unvPath), "utf-8");
+          const bytes = readFileSync(join(cwd, unvPath));
+          if (isBinaryContent(bytes)) {
+            patches.push(
+              `Index: ${unvPath}\nCannot display: binary file content omitted (${bytes.length} bytes, SHA-256 ${createHash("sha256").update(bytes).digest("hex")}); inspect this file separately.\n`,
+            );
+            continue;
+          }
+          const content = bytes.toString("utf-8");
           const hasTrail = content.endsWith("\n");
           const lines = content.split("\n");
           const lineCount = content.length === 0 ? 0 : hasTrail ? lines.length - 1 : lines.length;
@@ -436,7 +458,7 @@ export function getSvnDiff(
           if (!hasTrail && content.length > 0) patch += "\n\\ No newline at end of file\n";
           patches.push(patch);
         } catch {
-          /* binary */
+          /* unreadable file */
         }
       }
     }
@@ -503,7 +525,15 @@ function runVcsDiff(cwd: string, command: string[]): string {
 export function listGitUntrackedFiles(cwd: string, files?: string[], exclude?: string[]): string[] {
   const output = execFileSync(
     "git",
-    ["ls-files", "--others", "--exclude-standard", "--", ".", PI_STATE_EXCLUDE_PATHSPEC],
+    [
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+      "--",
+      ".",
+      PI_STATE_EXCLUDE_PATHSPEC,
+      ...GENERATED_EXCLUDE_PATHSPECS,
+    ],
     {
       cwd,
       env: gitSpawnEnv(),
@@ -521,7 +551,7 @@ export function listGitUntrackedFiles(cwd: string, files?: string[], exclude?: s
 
   return output
     .split(/\r?\n/)
-    .filter((f) => f.length > 0 && isSafeRelativePath(f) && !isPiStatePath(f))
+    .filter((f) => f.length > 0 && isSafeRelativePath(f) && !isPiStatePath(f) && !isGeneratedFile(f))
     .filter((f) => {
       if (!files || files.length === 0) return true;
       return files.some((pattern) => isSafeRelativePath(pattern) && minimatch(f, pattern));
@@ -564,6 +594,12 @@ function runGitUntrackedDiff(cwd: string, files: string[]): string {
 }
 
 export function processDiff(diff: string, vcs: VcsType, maxDiffChars: number): DiffResult {
+  // Filter before measuring/truncating, including descendants emitted by SVN
+  // directory additions. Do not let an artifact consume the source budget.
+  diff = diff
+    .split(vcs === "svn" ? /^(?=Index: )/m : /^(?=diff --(?:git|cc) )/m)
+    .filter((block) => !extractChangedFiles(block, vcs).some(isGeneratedFile))
+    .join("");
   const changedFiles = extractChangedFiles(diff, vcs);
   if (diff.length <= maxDiffChars) {
     return { diff, truncated: false, totalChars: diff.length, changedFiles, vcs };

@@ -64,6 +64,7 @@ repo-specific and actionable; put always-true rules in AGENTS.md instead.
 ## SVN working copies
 
 - Wai reviews unversioned files without `svn add`, but `svn commit` omits files marked `?`.
+- Directory scopes/exclusions accept either slash style on Windows. Whole-tree review uses local `BASE` automatically and excludes build output (`target/`, compiled artifacts) and tool metadata. For final certification, omit explicit `revision`, `files`, and `exclude`; passing `revision: "BASE"` does not certify the whole tree. Never assume truncation is harmless because source appears first.
 - Before the final whole-tree review, inspect `svn status` and run `svn add --parents -- <explicit file paths>` for intended new source, tests, and assets. Do not bulk-add `.`, `.pi/`, generated outputs, or unrelated files.
 - Before an authorized commit, verify intended new files show `A`. Adding files after a passing review changes the workspace fingerprint; run the whole-tree review again.
 

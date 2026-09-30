@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { isBinaryContent } from "./file-policy.js";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
@@ -7,7 +8,7 @@ import { loadConventions, formatConventions } from "./conventions.js";
 import { logEvent } from "./logger.js";
 import { resolveProjectPath } from "./path-security.js";
 import { getProjectConfigPath } from "./pi-paths.js";
-import { loadProjectIndex } from "./project-index.js";
+import { loadFreshProjectIndex } from "./project-index.js";
 import { callSecondaryModel } from "./secondary-model.js";
 import type { UsageCost } from "./types.js";
 
@@ -179,7 +180,8 @@ export function recordLearnedFact(cwd: string, fact: string, options: RecordFact
   if (store.facts.length > MAX_FACTS) {
     store.facts = store.facts.slice(-MAX_FACTS);
   }
-  saveLearned(cwd, store);
+  if (!saveLearned(cwd, store))
+    throw new Error("The learned fact could not be written to disk. See wai logs for details.");
   return entry;
 }
 
@@ -267,6 +269,7 @@ export function reaffirmFact(cwd: string, factText: string, entryId?: string): R
 export function applyVerifiedRenewals(cwd: string, results: LearnedFactVerification[]): number {
   let renewed = 0;
   for (const r of results) {
+    if (r.verified !== true) continue;
     if (markFactVerified(cwd, r.fact.fact, { status: r.status, reasons: r.reasons }, r.fact.id, r.fact.timestamp))
       renewed++;
   }
@@ -315,6 +318,8 @@ export interface LearnedFactVerification {
   fact: LearnedFact;
   status: VerificationStatus;
   reasons: string[];
+  /** True only for semantic verification backed by complete current source. */
+  verified?: boolean;
 }
 
 function extractPaths(text: string): string[] {
@@ -341,7 +346,7 @@ function loadDependencyNames(cwd: string): Set<string> {
 }
 
 function loadSymbolNames(cwd: string): Set<string> {
-  const index = loadProjectIndex(cwd);
+  const index = loadFreshProjectIndex(cwd);
   if (!index) return new Set();
   const names = new Set<string>();
   for (const file of index.files) {
@@ -365,9 +370,11 @@ export function verifyLearnedFacts(cwd: string, query?: string): LearnedFactVeri
   for (const fact of facts) {
     const reasons: string[] = [];
     let status: VerificationStatus = "valid";
+    let checkedReferences = 0;
 
     const paths = extractPaths(fact.fact);
     for (const p of paths) {
+      checkedReferences++;
       const resolved = resolveProjectPath(cwd, p);
       if (!resolved || !existsSync(resolved)) {
         status = "outdated";
@@ -376,6 +383,7 @@ export function verifyLearnedFacts(cwd: string, query?: string): LearnedFactVeri
     }
 
     if (fact.source) {
+      checkedReferences++;
       const resolved = resolveProjectPath(cwd, fact.source);
       if (!resolved || !existsSync(resolved)) {
         status = "outdated";
@@ -387,9 +395,11 @@ export function verifyLearnedFacts(cwd: string, query?: string): LearnedFactVeri
     for (const word of words) {
       const lower = word.toLowerCase();
       if (dependencyNames.has(lower)) {
+        checkedReferences++;
         continue;
       }
       if (symbolNames.size > 0 && /^[a-zA-Z][a-zA-Z0-9_]*$/.test(word) && symbolNames.has(lower)) {
+        checkedReferences++;
         continue;
       }
       if (
@@ -403,7 +413,19 @@ export function verifyLearnedFacts(cwd: string, query?: string): LearnedFactVeri
       }
     }
 
-    results.push({ fact, status, reasons });
+    if (status === "valid") {
+      if (checkedReferences === 0) {
+        status = "questionable";
+        reasons.push(
+          "No verifiable file, dependency, or symbol references were found. Provide a source and use deep verification, or explicitly reaffirm the fact.",
+        );
+      } else {
+        reasons.push(
+          "Referenced files/symbols exist; this structural check does not verify the statement or renew its freshness. Use deep verification with source evidence.",
+        );
+      }
+    }
+    results.push({ fact, status, reasons, verified: false });
   }
 
   return results;
@@ -700,24 +722,63 @@ export async function verifyLearnedFactsDeep(
     const fact = facts[i];
 
     let fileContent: string | undefined;
-    if (fact.source) {
-      const safePath = resolveProjectPath(cwd, fact.source);
+    let completeEvidence = false;
+    const evidencePaths = [...new Set([...(fact.source ? [fact.source] : []), ...extractPaths(fact.fact)])];
+    const sources: string[] = [];
+    const evidence = new Map<string, string>();
+    let sourceBytes = 0;
+    for (const source of evidencePaths) {
+      const safePath = resolveProjectPath(cwd, source);
       if (safePath && existsSync(safePath)) {
         try {
-          const content = readFileSync(safePath, "utf-8");
-          fileContent = content.length > 100 * 1024 ? `${content.slice(0, 100 * 1024)}\n...` : content;
+          if (sourceBytes + statSync(safePath).size > 100 * 1024) continue;
+          const bytes = readFileSync(safePath);
+          if (isBinaryContent(bytes)) continue;
+          const content = bytes.toString("utf-8");
+          if (content.trim() && sourceBytes + bytes.length <= 100 * 1024) {
+            sources.push(`--- ${source} ---\n${content}`);
+            evidence.set(safePath, content);
+            sourceBytes += bytes.length;
+          }
         } catch {
           // ignore unreadable source
         }
       }
     }
+    if (sources.length > 0) {
+      fileContent = sources.join("\n\n");
+      completeEvidence = sources.length === evidencePaths.length;
+    }
 
     const { system, user } = buildDeepVerifyPrompt(fact, conventionsText, fileContent);
     const { content: raw, usage } = await caller(system, user);
 
+    // A long model call must not renew against evidence that changed in flight.
+    completeEvidence &&= [...evidence].every(([path, content]) => {
+      try {
+        return readFileSync(path, "utf-8") === content;
+      } catch {
+        return false;
+      }
+    });
+
     totalCost = mergeCost(totalCost, usage);
-    const { status, reason } = parseDeepVerifyResponse(raw);
-    results.push({ fact, status, reasons: [reason] });
+    const parsed = parseDeepVerifyResponse(raw);
+    const verified = parsed.status === "valid" && completeEvidence;
+    const status = parsed.status === "valid" && !verified ? "questionable" : parsed.status;
+    results.push({
+      fact,
+      status,
+      reasons: [
+        parsed.reason,
+        ...(!completeEvidence
+          ? [
+              "Source evidence was missing, unreadable, too large, or changed during verification; freshness was not renewed.",
+            ]
+          : []),
+      ],
+      verified,
+    });
   }
 
   const cost = recordCost(cwd, totalCost, config.costBudgetUsd);

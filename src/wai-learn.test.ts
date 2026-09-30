@@ -253,11 +253,16 @@ describe("wai-learn", () => {
     const stamap = new Map(before.map((f) => [f.fact, f.lastVerifiedAt]));
 
     const results = [
-      { fact: before.find((f) => f.fact === "Still true.")!, status: "valid" as const, reasons: [] },
+      { fact: before.find((f) => f.fact === "Still true.")!, status: "valid" as const, reasons: [], verified: true },
       { fact: before.find((f) => f.fact === "Doubtful.")!, status: "questionable" as const, reasons: ["w"] },
       { fact: before.find((f) => f.fact === "Stale now.")!, status: "outdated" as const, reasons: ["x"] },
-      { fact: { fact: "Unknown.", timestamp: "t" }, status: "valid" as const, reasons: [] },
+      { fact: { fact: "Unknown.", timestamp: "t" }, status: "valid" as const, reasons: [], verified: true },
     ];
+    assert.equal(
+      applyVerifiedRenewals(cwd, [{ fact: before[0], status: "valid", reasons: [] }]),
+      0,
+      "a valid label without evidence cannot renew",
+    );
     const renewed = applyVerifiedRenewals(cwd, results);
     assert.equal(renewed, 1, "only the valid, known entry renews");
     const after = loadLearnedFacts(cwd);
@@ -325,8 +330,8 @@ describe("wai-learn", () => {
     const [b0, b1] = before;
     assert.notEqual(b0.id, b1.id, "even same-ms duplicates must have distinct ids");
     const renewed = applyVerifiedRenewals(cwd, [
-      { fact: b0, status: "valid", reasons: [] },
-      { fact: b1, status: "valid", reasons: [] },
+      { fact: b0, status: "valid", reasons: [], verified: true },
+      { fact: b1, status: "valid", reasons: [], verified: true },
     ]);
     assert.equal(renewed, 2, "BOTH duplicate entries renew");
     const after = loadLearnedFacts(cwd);
@@ -497,6 +502,49 @@ describe("wai-learn", () => {
     const results = verifyLearnedFacts(cwd);
     assert.equal(results[0].status, "valid");
     assert.match(formatVerificationReport(results), /1 valid/);
+    assert.equal(applyVerifiedRenewals(cwd, results), 0, "structural references do not verify the claim");
+  });
+
+  it("does not certify or renew a fact with no verifiable references", () => {
+    const fact = recordLearnedFact(cwd, "all requests enforce account ownership");
+    const results = verifyLearnedFacts(cwd);
+    assert.equal(results[0].status, "questionable");
+    assert.equal(results[0].verified, false);
+    assert.equal(applyVerifiedRenewals(cwd, results), 0);
+    assert.equal(loadLearnedFacts(cwd)[0].lastVerifiedAt, fact.lastVerifiedAt);
+  });
+
+  it("a model's valid verdict without source evidence cannot renew memory", async () => {
+    recordLearnedFact(cwd, "all requests enforce account ownership");
+    const caller = async () => ({
+      content: "STATUS: valid\nREASON: Looks correct.",
+      usage: { estimatedInputTokens: 10, estimatedOutputTokens: 5, estimatedCostUsd: 0, sessionCostUsd: 0 },
+    });
+    const { results } = await verifyLearnedFactsDeep(cwd, undefined, undefined, () => {}, undefined, caller);
+    assert.equal(results[0].status, "questionable");
+    assert.equal(applyVerifiedRenewals(cwd, results), 0);
+  });
+
+  it("does not renew when source evidence changes during deep verification", async () => {
+    writeFileSync(join(cwd, "README.md"), "Account ownership is enforced.\n");
+    recordLearnedFact(cwd, "Account ownership is enforced.", { source: "README.md" });
+    const caller = async () => {
+      writeFileSync(join(cwd, "README.md"), "Account ownership is no longer enforced.\n");
+      return {
+        content: "STATUS: valid\nREASON: Source enforces ownership.",
+        usage: { estimatedInputTokens: 10, estimatedOutputTokens: 5, estimatedCostUsd: 0, sessionCostUsd: 0 },
+      };
+    };
+    const { results } = await verifyLearnedFactsDeep(cwd, undefined, undefined, () => {}, undefined, caller);
+    assert.equal(results[0].status, "questionable");
+    assert.equal(results[0].verified, false);
+    assert.equal(applyVerifiedRenewals(cwd, results), 0);
+  });
+
+  it("surfaces persistence failure instead of returning an unsaved fact", () => {
+    mkdirSync(join(cwd, ".pi", "yoowai", "learned.json"), { recursive: true });
+    assert.throws(() => recordLearnedFact(cwd, "Never saved."), /could not be written to disk/);
+    assert.deepEqual(loadLearnedFacts(cwd), []);
   });
 
   it("deep verify uses the model caller", async () => {

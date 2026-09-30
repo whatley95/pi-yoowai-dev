@@ -69,6 +69,16 @@ after(() => {
 });
 
 describe("resolveRangeBase", () => {
+  it("SVN working-copy reviews use local BASE and preserve explicit historical ranges", () => {
+    for (const policy of ["incremental", "holistic"] as const) {
+      const vcs = { type: "svn" as const, revision: "12" };
+      assert.deepEqual(resolveRangeBase(".", policy, vcs, undefined, undefined, {}), { revision: "BASE" });
+      assert.deepEqual(resolveRangeBase(".", policy, vcs, undefined, undefined, { revision: "HEAD" }), {
+        revision: "HEAD",
+      });
+      assert.deepEqual(resolveRangeBase(".", policy, vcs, undefined, undefined, { since: "9" }), { since: "9" });
+    }
+  });
   it("fresh clean tree without anchors falls back to HEAD~1 (absolute)", { skip: !hasGit }, () => {
     const repo = makeRepo();
     tmpDirs.push(repo.cwd);
@@ -153,7 +163,7 @@ describe("resolveRangeBase", () => {
     const vcs = getVcsInfo(repo.cwd);
     const range = resolveRangeBase(repo.cwd, "incremental", vcs, repo.revParse("HEAD"), undefined, { vcs: "svn" });
     assert.equal(range.since, undefined);
-    assert.equal(range.revision, "HEAD");
+    assert.equal(range.revision, "BASE");
   });
 
   it("explicit user ranges are kept and absolutized", { skip: !hasGit }, () => {
@@ -176,7 +186,11 @@ describe("rebuiltDiff", () => {
     repo.commit({ "a.txt": "APP_MARKER\n" });
     mkdirSync(join(repo.cwd, ".pi", "yoowai"), { recursive: true });
     writeFileSync(join(repo.cwd, ".pi", "yoowai", "state.log"), "STATE_MARKER\n");
-    const result = rebuiltDiff(repo.cwd, { since: "HEAD~1", untracked: true }, ["a.txt", ".pi/yoowai/state.log"]);
+    const result = rebuiltDiff(repo.cwd, { since: "HEAD~1", untracked: true }, [
+      "a.txt",
+      ".pi/yoowai/state.log",
+      "target/classes/App.class",
+    ]);
     assert.match(result.diff, /APP_MARKER/);
     assert.doesNotMatch(result.diff, /STATE_MARKER|\.pi\//);
     assert.deepEqual(result.omitted, []);

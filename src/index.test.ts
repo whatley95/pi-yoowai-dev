@@ -632,7 +632,7 @@ describe("wai extension registration", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("wai_learn verify renews only all-clear entries", async () => {
+  it("wai_learn structural verification does not renew behavioral claims", async () => {
     const cwd = makeTempDir("wai-learn-verify-tool-");
     mkdirSync(join(cwd, "src"), { recursive: true });
     writeFileSync(join(cwd, "src", "demo.ts"), "export const demo = 1;", "utf-8");
@@ -648,11 +648,14 @@ describe("wai extension registration", () => {
     writeFileSync(path, JSON.stringify(store));
 
     const text = await callLearnTool(cwd, { verify: true });
-    assert.match(text, /Renewed 1 fact/);
+    assert.match(text, /Renewed 0 fact/);
     const after = JSON.parse(readFileSync(path, "utf-8")) as { facts: Array<Record<string, string>> };
     const valid = after.facts.find((f) => f.fact.startsWith("Use the demo"))!;
     const questionable = after.facts.find((f) => f.fact.startsWith("Call removedFunction"))!;
-    assert.ok(Date.parse(valid.lastVerifiedAt!) > Date.now() - 5000, "valid fact renewed");
+    assert.ok(
+      Date.parse(valid.lastVerifiedAt!) <= Date.now() - 9 * 24 * 60 * 60 * 1000,
+      "existing references do not prove the fact",
+    );
     assert.ok(
       Date.parse(questionable.lastVerifiedAt!) <= Date.now() - 9 * 24 * 60 * 60 * 1000,
       "questionable NOT renewed",
@@ -671,9 +674,34 @@ describe("wai extension registration", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
+  it("wai_learn exposes failed persistence as a tool error", async () => {
+    const cwd = makeTempDir("wai-learn-write-failed-");
+    try {
+      mkdirSync(join(cwd, ".pi", "yoowai", "learned.json"), { recursive: true });
+      const execute = await getToolExecutor("wai_learn");
+      const result = (await execute(
+        "write-failed",
+        { fact: "This must be saved." },
+        undefined,
+        undefined,
+        mockCtx(cwd),
+      )) as {
+        isError?: boolean;
+        details?: unknown;
+        content?: unknown;
+      };
+      assert.equal(result.isError, true);
+      assert.match(JSON.stringify(result.details), /could not be written to disk/);
+      assert.doesNotMatch(JSON.stringify(result.content), /Recorded fact/);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("wai_learn deep verify: awaited before renewal; malformed never renews", { timeout: 20000 }, async () => {
     const cwd = makeTempDir("wai-learn-deep-tool-");
-    recordLearnedFact(cwd, "Deep checked fact.");
+    writeFileSync(join(cwd, "README.md"), "Deep checked fact.\n");
+    recordLearnedFact(cwd, "Deep checked fact.", { source: "README.md" });
     const path = join(cwd, ".pi", "yoowai", "learned.json");
     const oldStamp = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
     const store = JSON.parse(readFileSync(path, "utf-8")) as { facts: Array<Record<string, string>> };
