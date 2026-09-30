@@ -2,7 +2,7 @@ import { it } from "node:test";
 import assert from "node:assert/strict";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { AgentOptions } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { createNativeToolRegistrar, reportNativeUsage } from "./native-tools.js";
@@ -13,15 +13,19 @@ function fixture(cwd: string) {
   let onResult: (event: ToolResultEvent) => { isError: boolean } | undefined;
   const pi = {
     registerTool: (definition: ToolDefinition) => definitions.push(definition),
+    getAllTools: () => definitions,
+    getSettings: () => ({}),
+    appendEntry: () => {},
     on: (_name: string, handler: typeof onResult) => {
       onResult = handler;
     },
   } as unknown as ExtensionAPI;
   return {
+    pi,
     register: createNativeToolRegistrar(pi),
     definitions,
     onResult: (event: ToolResultEvent) => onResult(event),
-    ctx: { cwd } as ExtensionContext,
+    ctx: { cwd } as Parameters<ToolDefinition["execute"]>[4],
   };
 }
 const usage = (): Usage => ({
@@ -31,6 +35,64 @@ const usage = (): Usage => ({
   cacheWrite: 4,
   totalTokens: 19,
   cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 },
+});
+
+it("reads verdicts and errors through Pi's real codemode sandbox", { timeout: 30000 }, async (t) => {
+  const host = (await import("@earendil-works/pi-coding-agent")) as unknown as {
+    createCodemodeExtension?: (options: { models: boolean }) => (pi: ExtensionAPI) => void;
+  };
+  if (!host.createCodemodeExtension) {
+    t.skip("Codemode requires Pi 0.99+");
+    return;
+  }
+  const f = fixture("native-codemode-probe");
+  let calls = 0;
+  f.register({
+    name: "wai",
+    label: "wai",
+    description: "probe",
+    parameters: Type.Object({}),
+    execute: async () => ({
+      content: [{ type: "text", text: "Human-readable report" }],
+      details: ++calls === 1 ? { review: { verdict: "needs-work" } } : { error: "provider unavailable" },
+    }),
+  });
+  host.createCodemodeExtension({ models: false })(f.pi);
+  const wai = f.definitions[0];
+  const codemode = f.definitions[1];
+  const ctx = {
+    ...f.ctx,
+    sessionManager: { getBranch: () => [] },
+    tools: [wai],
+    executeTool: async (name: string, args: unknown) => {
+      assert.equal(name, "wai");
+      const result = await wai.execute("codemode/wai", args, undefined, undefined, f.ctx);
+      return {
+        toolCall: { id: "codemode/wai", name, arguments: args },
+        result,
+        isError: !!f.onResult({ toolName: name, details: result.details } as ToolResultEvent)?.isError,
+      };
+    },
+  } as unknown as Parameters<ToolDefinition["execute"]>[4];
+  try {
+    const result = await codemode.execute(
+      "codemode",
+      { code: "text((await tools.wai({})).review.verdict); text((await tools.wai({})).error);" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const text = result.content
+      .filter((item) => item.type === "text")
+      .map((item) => item.text)
+      .join("\n");
+    assert.match(text, /Script completed/);
+    assert.match(text, /needs-work/);
+    assert.match(text, /provider unavailable/);
+    assert.equal(calls, 2);
+  } finally {
+    cancelSessionWork(f.ctx.cwd);
+  }
 });
 
 it("marks structured failures through Pi's actual agent tool-result path and preserves details and usage", async () => {
@@ -111,8 +173,34 @@ it("keeps findings successful and omits usage on a cache-only result", async () 
     execute: async () => ({ content: [], details: { review: { verdict: "needs-work" } } }),
   });
   const result = await f.definitions[0].execute("cache", {}, undefined, undefined, f.ctx);
+  assert.deepEqual((result as typeof result & { structuredContent: unknown }).structuredContent, {
+    review: { verdict: "needs-work" },
+  });
+  assert.equal((f.definitions[0] as ToolDefinition & { outputSchema: { type: string } }).outputSchema.type, "object");
   assert.equal(result.usage, undefined);
   assert.equal(f.onResult({ toolName: "wai", details: result.details } as ToolResultEvent), undefined);
+  cancelSessionWork(f.ctx.cwd);
+});
+
+it("returns JSON structured errors and omits undefined details without changing rendered content", async () => {
+  const f = fixture("native-structured-error");
+  f.register({
+    name: "wai",
+    label: "wai",
+    description: "probe",
+    parameters: Type.Object({}),
+    execute: async () => ({
+      content: [{ type: "text", text: "provider failed" }],
+      details: { action: "review", error: "provider failed", review: undefined },
+    }),
+  });
+  const result = await f.definitions[0].execute("error", {}, undefined, undefined, f.ctx);
+  assert.deepEqual((result as typeof result & { structuredContent: unknown }).structuredContent, {
+    action: "review",
+    error: "provider failed",
+  });
+  assert.deepEqual(result.content, [{ type: "text", text: "provider failed" }]);
+  assert.deepEqual(f.onResult({ toolName: "wai", details: result.details } as ToolResultEvent), { isError: true });
   cancelSessionWork(f.ctx.cwd);
 });
 

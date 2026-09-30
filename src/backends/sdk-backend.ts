@@ -52,11 +52,7 @@ const sdkOverrides: {
 let registryOverrideConfigured = false;
 
 let oauthResolverOverride:
-  | ((
-      provider: string,
-      credential: Record<string, unknown>,
-    ) => Promise<{ apiKey: string; newCredentials?: Record<string, unknown> } | undefined>)
-  | undefined;
+  ((provider: string, credential: Record<string, unknown>) => Promise<OAuthResolution | undefined>) | undefined;
 
 /** Test hook: override the pi-ai streamSimple function used by the sdk backend. */
 export function setSdkStreamSimpleOverride(fn: PiAiCompatModule["streamSimple"] | null): void {
@@ -182,12 +178,7 @@ export function clearSdkOAuthCache(): void {
 
 /** Test hook: override OAuth API-key resolution. */
 export function setSdkOAuthResolverOverride(
-  fn:
-    | ((
-        provider: string,
-        credential: Record<string, unknown>,
-      ) => Promise<{ apiKey: string; newCredentials?: Record<string, unknown> } | undefined>)
-    | null,
+  fn: ((provider: string, credential: Record<string, unknown>) => Promise<OAuthResolution | undefined>) | null,
 ): void {
   oauthResolverOverride = fn ?? undefined;
 }

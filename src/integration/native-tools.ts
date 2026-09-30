@@ -1,9 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { Type } from "@sinclair/typebox";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { beginSessionWork } from "./session-work.js";
 
 const usageScopes = new AsyncLocalStorage<{ usage?: Usage }>();
+const outputMetadata = { outputSchema: Type.Object({}, { additionalProperties: true }) };
 const mutableTools = new Set([
   "wai",
   "wai_review_min",
@@ -36,7 +38,7 @@ export function reportNativeUsage(usage: Usage): void {
   if (usage.cacheWrite1h !== undefined) sum.cacheWrite1h = (sum.cacheWrite1h ?? 0) + usage.cacheWrite1h;
 }
 
-/** Keep tool names and structured details intact; Pi owns the native error flag. */
+/** Keep human-readable content and details; Pi 0.99+ also exposes details to codemode. */
 export function createNativeToolRegistrar(pi: ExtensionAPI): ExtensionAPI["registerTool"] {
   const names = new Set<string>();
   pi.on("tool_result", (event) => {
@@ -57,6 +59,7 @@ export function createNativeToolRegistrar(pi: ExtensionAPI): ExtensionAPI["regis
     const mutable = mutableTools.has(definition.name);
     pi.registerTool({
       ...definition,
+      ...outputMetadata,
       ...(mutable ? { executionMode: "sequential" as const } : {}),
       execute: async (id, params, signal, update, ctx) => {
         const work = beginSessionWork(ctx.cwd, signal);
@@ -66,7 +69,10 @@ export function createNativeToolRegistrar(pi: ExtensionAPI): ExtensionAPI["regis
             const result = await definition.execute(id, params, work.signal, update, ctx);
             work.signal.throwIfAborted();
             const usage = usageScopes.getStore()?.usage;
-            return usage ? { ...result, usage } : result;
+            // Normalize optional undefined fields to JSON before crossing Pi's
+            // structured-result boundary. Older hosts ignore these extra fields.
+            const structuredContent = JSON.parse(JSON.stringify(result.details ?? {}));
+            return { ...result, structuredContent, ...(usage ? { usage } : {}) };
           });
         if (!mutable) return run();
         const previous = queues.get(ctx.cwd) ?? Promise.resolve();

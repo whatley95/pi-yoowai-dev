@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { ExtensionRunner, createExtensionRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { registerLifecycleHandlers, type LifecycleDeps } from "./lifecycle.js";
 import { setAuditExtensionAPI } from "./audit.js";
@@ -106,7 +106,7 @@ it("dispatches wai drafts through the latest Pi ExtensionRunner boundary API", a
   }
 });
 
-it("runs the edit, reminder, review, correction, and judge flow through Pi's in-memory boundary dispatcher", async (t) => {
+it("runs nested edits, reminders, reviews, corrections, and judge through Pi's in-memory dispatcher", async (t) => {
   if (!("emitBoundary" in ExtensionRunner.prototype)) {
     t.skip("Actionable boundaries require Pi 0.87+");
     return;
@@ -126,7 +126,6 @@ it("runs the edit, reminder, review, correction, and judge flow through Pi's in-
   try {
     setPlan(f.cwd, { summary: "finish", todo: ["one"], acceptanceCriteria: [] });
     getState(f.cwd).completedSteps = 1;
-    await f.emit("tool_result", { toolName: "write", isError: false, input: { path: "a.ts" } });
     const handlers = new Map(
       [...f.handlers].map(([name, handler]) => [name, [(event: unknown) => handler(event, f.ctx)]]),
     );
@@ -140,6 +139,19 @@ it("runs the edit, reminder, review, correction, and judge flow through Pi's in-
       SessionManager.inMemory(f.cwd),
       {} as ConstructorParameters<typeof ExtensionRunner>[4],
     );
+    const nestedResult = (toolName: string, isError = false) =>
+      ({
+        type: "tool_result",
+        toolName,
+        toolCallId: `codemode/${toolName}`,
+        parentToolCallId: "codemode",
+        input: { path: "a.ts" },
+        content: [],
+        isError,
+      }) as unknown as ToolResultEvent;
+    await runner.emitToolResult(nestedResult("write"));
+    await runner.emitToolResult(nestedResult("edit", true));
+    assert.equal(getState(f.cwd).editsSinceLastReview, 1, "only successful nested mutations count");
     const dispatch = runner as unknown as {
       emitBoundary: (
         event: unknown,
@@ -158,7 +170,22 @@ it("runs the edit, reminder, review, correction, and judge flow through Pi's in-
       canContinue: true,
     });
     const reminder = await dispatch.emitBoundary(
-      { type: "turn_end", toolResults: [{ toolName: "write", isError: false }] },
+      {
+        type: "turn_end",
+        toolResults: [
+          {
+            toolName: "codemode",
+            isError: true,
+            nestedCalls: {
+              calls: [
+                { name: "write", status: "ok" },
+                { name: "edit", status: "error" },
+              ],
+              complete: true,
+            },
+          },
+        ],
+      },
       context,
     );
     assert.equal(reminder.valid, true);
@@ -168,7 +195,7 @@ it("runs the edit, reminder, review, correction, and judge flow through Pi's in-
     assert.equal(first.continue, true);
     assert.equal(reviews, 1);
     assert.equal(judges, 0, "unresolved review findings must block the final judge");
-    await f.emit("tool_result", { toolName: "edit", isError: false, input: { path: "a.ts" } });
+    await runner.emitToolResult(nestedResult("edit"));
     const second = await dispatch.emitBoundary({ type: "agent_before_settle", outcome: "completed" }, context);
     assert.equal(second.valid, true);
     assert.equal(second.continue, false);

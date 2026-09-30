@@ -14,3 +14,13 @@ const FILE_WRITE_TOOLS = new Set(["write", "edit", "writefile", "editfile", "app
 export function isFileWriteTool(toolName: string): boolean {
   return FILE_WRITE_TOOLS.has(toolName.trim().toLowerCase());
 }
+
+/** A failed orchestrator can still contain successful nested file edits. */
+export function hasSuccessfulFileEdit(result: { toolName: string; isError: boolean; nestedCalls?: unknown }): boolean {
+  if (isFileWriteTool(result.toolName) && !result.isError) return true;
+  const nested = result.nestedCalls as { calls?: unknown } | undefined;
+  return (
+    Array.isArray(nested?.calls) &&
+    nested.calls.some((call) => call?.status === "ok" && typeof call.name === "string" && isFileWriteTool(call.name))
+  );
+}

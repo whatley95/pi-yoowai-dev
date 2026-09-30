@@ -139,7 +139,7 @@ async function extractPdfText(doc: import("mupdf").Document, pageCount: number):
   for (let i = 0; i < pagesToRead; i++) {
     const page = doc.loadPage(i);
     try {
-      const st = page.toStructuredText();
+      const st = page.toStructuredText("");
       try {
         parts.push(st.asText());
       } finally {

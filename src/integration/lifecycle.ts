@@ -11,7 +11,7 @@ import type {
   SessionCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import { isWriteToolResult, isEditToolResult } from "@earendil-works/pi-coding-agent";
-import { isFileWriteTool } from "../file-write-tools.js";
+import { hasSuccessfulFileEdit } from "../file-write-tools.js";
 import { loadYoowaiConfig } from "../config.js";
 import { setSdkSessionRegistry } from "../backends/sdk-backend.js";
 import { resolveReviewLevel } from "../review-level.js";
@@ -366,7 +366,7 @@ export function registerLifecycleHandlers(
       const workspaceChanged = syncWorkspaceChanges(ctx.cwd);
       // Do not send workflow steers from wai tool results; only from real edits.
       const toolResults = event.toolResults;
-      const hadRealEdit = toolResults.some((tr) => isFileWriteTool(tr.toolName) && !tr.isError);
+      const hadRealEdit = toolResults.some(hasSuccessfulFileEdit);
       if (!hadRealEdit && !workspaceChanged) return;
 
       const state = getState(ctx.cwd);

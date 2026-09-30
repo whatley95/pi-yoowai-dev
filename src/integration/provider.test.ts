@@ -128,6 +128,7 @@ describe("registerWaiProvider", () => {
     assert.strictEqual(registrations.length, 1);
     assert.strictEqual(registrations[0].name, "wai");
     const model = registrations[0].config.models![0];
+    assert.ok("reasoning" in model && "contextWindow" in model && "maxTokens" in model);
     assert.strictEqual(model.id, "gpt-4o");
     assert.strictEqual(model.reasoning, true);
     assert.deepStrictEqual(model.input, ["text"]);

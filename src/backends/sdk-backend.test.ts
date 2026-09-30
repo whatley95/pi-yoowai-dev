@@ -124,7 +124,7 @@ function makeCapableRegistry(opts: {
   model: Model<Api> | undefined;
   /** A full stream to return as-is, an AssistantMessage to wrap, or an Error
    *  to throw from streamSimple. Omitted → a plain "registry ok" message. */
-  streamSimple?: AssistantMessageEventStream | AssistantMessage | Error;
+  streamSimple?: AssistantMessageEventStream | AssistantMessage | Error | (() => AssistantMessageEventStream);
 }): FakeRegistry {
   const state = { findCalls: 0, streamSimpleCalls: [] as RecordedStreamCall[] };
   const registry = {
@@ -144,6 +144,7 @@ function makeCapableRegistry(opts: {
     ): AssistantMessageEventStream {
       state.streamSimpleCalls.push({ model, context, options, self: this });
       if (opts.streamSimple instanceof Error) throw opts.streamSimple;
+      if (typeof opts.streamSimple === "function") return opts.streamSimple();
       if (opts.streamSimple === undefined) return fakeSdkStream(fakeSdkAssistantMessage("registry ok"));
       if (typeof (opts.streamSimple as AssistantMessage).stopReason === "string") {
         return fakeSdkStream(opts.streamSimple as AssistantMessage);
@@ -305,6 +306,47 @@ describe("getSdkRegistry", () => {
 });
 
 describe("sdk-backend registry routing", () => {
+  it("delegates OpenAI subscription authentication to Pi and refreshes on a credential rejection", async () => {
+    const agentDir = makeAgentDir();
+    writeAuthJson(agentDir, {
+      openai: { type: "oauth", access: "subscription-token", refresh: "refresh-token", expiresAt: Date.now() + 60_000 },
+    });
+    const cwd = makeCwd();
+    let calls = 0;
+    const { registry } = makeCapableRegistry({
+      model: fakeSdkModel("openai", "gpt-6.1-sol"),
+      streamSimple: () => (++calls === 1 ? authRejectedStream() : fakeSdkStream(fakeSdkAssistantMessage("renewed"))),
+    });
+    setSdkRegistryOverride(() => registry);
+    let localAuthCalls = 0;
+    setSdkOAuthResolverOverride(async () => {
+      localAuthCalls++;
+      throw new Error("Pi must resolve subscription auth on the registry route");
+    });
+    const result = await callSdkBackend("openai", "gpt-6.1-sol", "system", "user", { cwd });
+    assert.equal(result.content, "renewed");
+    assert.equal(calls, 2);
+    assert.equal(localAuthCalls, 0);
+  });
+
+  it("resolves OpenAI OAuth headers on the compat fallback without treating the token as an API key", async () => {
+    const agentDir = makeAgentDir();
+    writeAuthJson(agentDir, {
+      openai: { type: "oauth", access: "subscription-token", refresh: "refresh-token", expiresAt: Date.now() + 60_000 },
+    });
+    const cwd = makeCwd();
+    setSdkRegistryOverride(null);
+    const compat = installCompatFakes({
+      compatModel: fakeSdkModel("openai", "gpt-6.1-sol"),
+      stream: fakeSdkStream(fakeSdkAssistantMessage("subscription ok")),
+    });
+    setSdkOAuthResolverOverride(async () => ({ headers: { Authorization: "Bearer subscription-token" } }));
+    const result = await callSdkBackend("openai", "gpt-6.1-sol", "system", "user", { cwd });
+    assert.equal(result.content, "subscription ok");
+    assert.equal(compat.streamSimpleCalls[0].options?.headers?.Authorization, "Bearer subscription-token");
+    assert.equal(compat.streamSimpleCalls[0].options?.apiKey, undefined);
+  });
+
   it("passes the selected extended reasoning level unchanged; off omits reasoning", async () => {
     makeAgentDir();
     const cwd = makeCwd();

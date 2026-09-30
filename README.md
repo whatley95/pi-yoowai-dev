@@ -177,7 +177,19 @@ When `registerProvider` is enabled, `/wai-config`, `/wai-model`, and `/wai-backe
 
 ### Pi host compatibility
 
-pi-yoowai targets Pi **>= 0.82.1** (peer floor). On Pi **0.86+** hosts the SDK backend streams the secondary model through Pi's own model registry (`ctx.modelRegistry.streamSimple()`) when available: Pi resolves authentication and the live catalog (built-in, `models.json`, and extension-registered models) at request time, with no pi-yoowai auth resolution on that route. Explicit `secondary.apiKey` / `baseUrl` / `authHeader` overrides fall back to the built-in pi-ai path, and registry execution failures are never silently retried through it — only an unresolvable model falls back. Both routes share one request builder, so headers, thinking, retries, timeouts, cache retention, and usage handling behave identically. OAuth resolution deduplicates concurrent same-credential resolutions in-process; cross-process refresh serialization remains Pi's AuthStorage lockfile (a second `getAuth` call is not a second refresh). CI checks the supported 0.82.1 host and a disposable Pi **0.87.1** install. The required `compat-latest` job typechecks all source and tests, runs the focused integration suites, and exercises Pi's real agent execution loop and actionable boundary dispatcher.
+pi-yoowai targets Pi **>= 0.82.1** (peer floor). On Pi **0.86+** hosts the SDK backend streams the secondary model through Pi's own model registry (`ctx.modelRegistry.streamSimple()`) when available: Pi resolves authentication and the live catalog (built-in, `models.json`, and extension-registered models) at request time, with no pi-yoowai auth resolution on that route. Explicit `secondary.apiKey` / `baseUrl` / `authHeader` overrides fall back to the built-in pi-ai path, and registry execution failures are never silently retried through it — only an unresolvable model falls back. Both routes share one request builder, so headers, thinking, retries, timeouts, cache retention, and usage handling behave identically. OAuth resolution deduplicates concurrent same-credential resolutions in-process; cross-process refresh serialization remains Pi's AuthStorage lockfile (a second `getAuth` call is not a second refresh). CI checks the supported 0.82.1 host and a disposable Pi **0.99.1** install. The required `compat-latest` job typechecks all source and tests, runs the focused integration suites, and exercises Pi's real agent execution loop and actionable boundary dispatcher.
+
+On Pi **0.99+**, all wai tools declare an object `outputSchema` and return JSON `structuredContent` alongside their readable reports and existing `details`. Codemode scripts receive that object directly, including structured errors. Review findings such as `needs-work` are successful assessments; an `error` field indicates a failed action. For example, with codemode enabled:
+
+```js
+const result = await tools.wai({ review: "Review the current changes" });
+if (result.error) text(result.error);
+else if (result.review) text(result.review.verdict);
+```
+
+Nested `write` and `edit` calls emit the same lifecycle events as direct calls, so successful nested edits count toward review reminders. Wai tools retain their default direct exposure and remain callable from codemode; specialist tools do not require discovery first. Older hosts continue using readable content and `details`.
+
+Pi **0.99+** also supports a ChatGPT subscription through `/login openai`. Select a model from the `openai` provider with `/wai-model`, then run `/wai-test`. The default SDK registry route delegates subscription authentication and refresh to Pi. The `openai-codex` provider remains available as the legacy route; existing configurations are not rewritten. See [Pi's authentication documentation](https://pi.dev/docs/latest/providers).
 
 ### Custom providers via `models.json`
 
