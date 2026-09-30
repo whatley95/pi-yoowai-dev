@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { REVIEW_NO_MODEL_ERROR, executeWaiReview, planAdvanceFromReview } from "./review.js";
 import { mergeReviewResults, dedupeIssues } from "./review-helpers.js";
 import { resolveReviewTaskModel } from "../config.js";
@@ -552,6 +553,56 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
   }
+
+  it("reviews scoped SVN unversioned files without a false missing-input verdict", async (t) => {
+    try {
+      execFileSync("svn", ["--version", "--quiet"], { stdio: "pipe" });
+      execFileSync("svnadmin", ["--version", "--quiet"], { stdio: "pipe" });
+    } catch {
+      t.skip("SVN is unavailable");
+      return;
+    }
+    const root = mkdtempSync(join(tmpdir(), "review-scoped-svn-"));
+    tmpDirs.push(root);
+    const repository = join(root, "repository");
+    const cwd = join(root, "checkout");
+    execFileSync("svnadmin", ["create", repository], { stdio: "pipe" });
+    execFileSync("svn", ["checkout", pathToFileURL(repository).href, cwd], { stdio: "pipe" });
+    mkdirSync(join(cwd, "src"));
+    writeFileSync(join(cwd, "src", "tracked.txt"), "before\n");
+    execFileSync("svn", ["add", "src"], { cwd, stdio: "pipe" });
+    execFileSync("svn", ["commit", "-m", "base"], { cwd, stdio: "pipe" });
+    writeFileSync(join(cwd, "src", "tracked.txt"), "SVN_TRACKED_MARKER\n");
+    mkdirSync(join(cwd, "src", "new"));
+    writeFileSync(join(cwd, "src", "new", "file.txt"), "SVN_UNVERSIONED_MARKER\n");
+    writeFileSync(join(cwd, "noise.txt"), "SVN_NOISE_MARKER\n");
+    mkdirSync(join(cwd, ".pi"));
+    const stub = await startStubServer();
+    writeSettings(cwd, {
+      reviewLevel: "min",
+      reviewStrategy: "diff-only",
+      parallelReview: false,
+      secondary: { provider: "openai", id: "gpt-4o-mini", backend: "http", baseUrl: stub.url, apiKey: "test" },
+    });
+    const scopes = ["./src/tracked.txt", "./src/new/"];
+    const result = await executeWaiReview(
+      cwd,
+      "review SVN source changes",
+      { cwd } as ExtensionContext,
+      { files: process.platform === "win32" ? scopes.map((file) => file.replaceAll("/", "\\")) : scopes },
+      undefined,
+      () => {},
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.review?.verdict, "pass");
+    assert.notEqual(result.review?.inconclusive, true);
+    assert.equal(result.review?.scopeLimited, true);
+    assert.equal(stub.bodies.length, 1);
+    assert.match(stub.bodies[0], /SVN_TRACKED_MARKER/);
+    assert.match(stub.bodies[0], /SVN_UNVERSIONED_MARKER/);
+    assert.doesNotMatch(stub.bodies[0], /SVN_NOISE_MARKER/);
+    dropSessionState(cwd);
+  });
 
   it(
     "returns an inconclusive diagnostic without calling a model when the requested diff is absent",

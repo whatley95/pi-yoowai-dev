@@ -4,7 +4,7 @@ import { captureWorkspace, workspaceMatches } from "../workspace-fingerprint.js"
 import { recordCompletionEvidence } from "../completion-evidence.js";
 import { recordFindingRound, findingGuidance } from "../finding-tracker.js";
 import { loadYoowaiConfig, resolveReviewTaskModel } from "../config.js";
-import { isSafeRelativePath, resolveProjectPath } from "../path-security.js";
+import { isSafeRelativePath, normalizeReviewPath, resolveProjectPath } from "../path-security.js";
 import { getDiff, splitDiffByFile, splitDiffByHunk, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js";
@@ -164,7 +164,7 @@ export async function executeWaiReview(
   }
   const missingScopes = (options.files ?? []).filter((requested) => {
     if (!isSafeRelativePath(requested) || ["*", "?", "[", "]"].some((char) => requested.includes(char))) return false;
-    const scope = requested.replaceAll("\\", "/").replace(/\/$/, "");
+    const scope = normalizeReviewPath(requested);
     if (scope === ".") return false;
     return !changedFiles.some((file) => file === scope || file.startsWith(`${scope}/`));
   });

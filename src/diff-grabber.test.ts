@@ -123,6 +123,68 @@ describe("diff-grabber helpers", () => {
     }
   });
 
+  it("captures scoped SVN additions and unversioned descendants without noise", { skip: !hasSvn }, () => {
+    const root = mkdtempSync(join(tmpdir(), "wai-scoped-svn-"));
+    const repository = join(root, "repository");
+    const cwd = join(root, "checkout");
+    try {
+      execFileSync("svnadmin", ["create", repository], { stdio: "pipe" });
+      execFileSync("svn", ["checkout", pathToFileURL(repository).href, cwd], { stdio: "pipe" });
+      mkdirSync(join(cwd, "src"));
+      writeFileSync(join(cwd, "src", "tracked.ts"), "before\n");
+      execFileSync("svn", ["add", "src"], { cwd, stdio: "pipe" });
+      execFileSync("svn", ["commit", "-m", "base"], { cwd, stdio: "pipe" });
+      writeFileSync(join(cwd, "src", "tracked.ts"), "TRACKED_MARKER\n");
+      writeFileSync(join(cwd, "src", "added.ts"), "ADDED_MARKER\n");
+      execFileSync("svn", ["add", "src/added.ts"], { cwd, stdio: "pipe" });
+      mkdirSync(join(cwd, "src", "new"));
+      const requested = ["src/tracked.ts", "src/added.ts"];
+      for (let i = 0; i < 5; i++) {
+        const file = `src/new/file${i}.ts`;
+        requested.push(file);
+        writeFileSync(join(cwd, file), `NEW_MARKER_${i}\n`);
+      }
+      mkdirSync(join(cwd, "noise"));
+      for (let i = 0; i < 225; i++) writeFileSync(join(cwd, "noise", `${i}.txt`), "NOISE_MARKER\n");
+
+      const result = getSvnDiff(cwd, { files: requested, untracked: true });
+      assert.equal(result.unavailableReason, undefined);
+      assert.deepEqual([...result.changedFiles].sort(), [...requested].sort());
+      assert.match(result.diff, /TRACKED_MARKER/);
+      assert.match(result.diff, /ADDED_MARKER/);
+      for (let i = 0; i < 5; i++) assert.match(result.diff, new RegExp(`NEW_MARKER_${i}`));
+      assert.doesNotMatch(result.diff, /NOISE_MARKER/);
+
+      const directory = getSvnDiff(cwd, { files: ["./src/"], exclude: ["./src/new/"], untracked: true });
+      assert.deepEqual([...directory.changedFiles].sort(), ["src/added.ts", "src/tracked.ts"]);
+      assert.doesNotMatch(directory.diff, /NEW_MARKER|NOISE_MARKER/);
+      execFileSync("svn", ["add", "src/new"], { cwd, stdio: "pipe" });
+      const scheduled = getSvnDiff(cwd, { files: ["src/new/"], exclude: ["src/new/file4.ts"], untracked: true });
+      assert.deepEqual([...scheduled.changedFiles].sort(), requested.slice(2, -1).sort());
+      for (let i = 0; i < 4; i++) {
+        assert.equal(scheduled.diff.split(`NEW_MARKER_${i}`).length - 1, 1, "each addition must appear once");
+      }
+      assert.doesNotMatch(scheduled.diff, /NEW_MARKER_4|NOISE_MARKER/);
+      if (process.platform === "win32") {
+        const windows = getSvnDiff(cwd, {
+          files: requested.map((file) => file.replaceAll("/", "\\")),
+          untracked: true,
+        });
+        assert.deepEqual([...windows.changedFiles].sort(), [...requested].sort());
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  });
+
+  it("normalizes SVN header paths for extraction and splitting", () => {
+    const path = process.platform === "win32" ? ".\\src\\new\\file.ts" : "./src/new/file.ts";
+    const diff = `Index: ${path}\n===================================================================\n+content`;
+    assert.deepEqual(extractChangedFiles(diff, "svn"), ["src/new/file.ts"]);
+    assert.deepEqual(Object.keys(splitDiffByFile(diff, "svn")), ["src/new/file.ts"]);
+    assert.equal(applyExclude(diff, ["./src/new/"]), "");
+  });
+
   it("excludes matching SVN blocks", () => {
     const diff = [
       "Index: src/a.ts",

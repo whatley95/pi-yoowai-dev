@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isSafeRelativePath, resolveProjectPath, validateRevision } from "./path-security.js";
+import { isSafeRelativePath, normalizeReviewPath, resolveProjectPath, validateRevision } from "./path-security.js";
 
 describe("path-security", () => {
   const cwd = mkdtempSync(join(tmpdir(), "wai-path-test-"));
@@ -21,6 +21,13 @@ describe("path-security", () => {
   it("accepts safe relative paths", () => {
     assert.equal(isSafeRelativePath("src/index.ts"), true);
     assert.equal(isSafeRelativePath("safe.txt"), true);
+  });
+
+  it("normalizes review scopes using the host path semantics", () => {
+    assert.equal(normalizeReviewPath("./src/nested/../file.ts"), "src/file.ts");
+    assert.equal(normalizeReviewPath("./src/"), "src");
+    assert.equal(normalizeReviewPath("./"), ".");
+    assert.equal(normalizeReviewPath("src\\file.ts"), process.platform === "win32" ? "src/file.ts" : "src\\file.ts");
   });
 
   it("resolves only safe project paths", () => {

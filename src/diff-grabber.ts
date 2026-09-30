@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { logEvent } from "./logger.js";
-import { isSafeRelativePath, validateRevision } from "./path-security.js";
+import { isSafeRelativePath, normalizeReviewPath, validateRevision } from "./path-security.js";
 import { gitSpawnEnv } from "./git-env.js";
 
 export const DEFAULT_MAX_DIFF_CHARS = 200_000;
@@ -340,7 +340,8 @@ export function getSvnDiff(
   const revision = validateRevision(options.revision);
   const since = validateRevision(options.since);
   const maxDiffChars = options.maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
-  const safeExcludes = options.exclude?.filter((e) => isSafeRelativePath(e)) ?? [];
+  const safeExcludes = options.exclude?.filter((e) => isSafeRelativePath(e)).map(normalizeReviewPath) ?? [];
+  const scopes = options.files?.map(normalizeReviewPath) ?? [];
 
   try {
     const statusOutput = runVcsDiff(cwd, ["svn", "status"]);
@@ -352,8 +353,10 @@ export function getSvnDiff(
     for (const line of statusOutput.split("\n")) {
       if (!line.trim()) continue;
       const statusChar = line.charAt(0);
-      const path = line.slice(8).trim();
-      if (!path || isPiStatePath(path)) continue;
+      const rawPath = line.slice(8).trim();
+      if (!rawPath) continue;
+      const path = normalizeReviewPath(rawPath);
+      if (isPiStatePath(path)) continue;
       if (statusChar === "M") modified.push(path);
       else if (statusChar === "A") added.push(path);
       else if (statusChar === "D") deleted.push(path);
@@ -391,10 +394,7 @@ export function getSvnDiff(
     const isExcluded = (p: string): boolean => safeExcludes.some((e) => p === e || p.startsWith(e + "/"));
     const filterPaths = (paths: string[]): string[] =>
       paths.filter(
-        (p) =>
-          !isPiStatePath(p) &&
-          !isExcluded(p) &&
-          (!options.files || options.files.length === 0 || options.files.some((f) => matchesScope(p, f))),
+        (p) => !isPiStatePath(p) && !isExcluded(p) && (scopes.length === 0 || scopes.some((f) => matchesScope(p, f))),
       );
 
     const modifiedFiltered = filterPaths(modified);
@@ -412,14 +412,11 @@ export function getSvnDiff(
       if (diff.trim()) patches.push(diff);
     }
 
-    // Scheduled-add: svn diff --new-file includes full content.
+    // SVN includes scheduled additions in a plain diff; --new-file is not a
+    // supported SVN option. Let capture failures reach the diagnostic below.
     for (const addedPath of addedFiltered) {
-      try {
-        const diff = runVcsDiff(cwd, ["svn", "diff", "--new-file", addedPath]);
-        if (diff.trim()) patches.push(diff);
-      } catch {
-        /* skip */
-      }
+      const diff = runVcsDiff(cwd, ["svn", "diff", "--depth", "empty", addedPath]);
+      if (diff.trim()) patches.push(diff);
     }
 
     if (options.untracked) {
@@ -445,7 +442,16 @@ export function getSvnDiff(
     }
     const combined = patches.join("\n");
     if (combined.trim()) {
-      const filtered = safeExcludes.length > 0 ? applyExclude(combined, safeExcludes) : combined;
+      // SVN can emit descendants when diffing an added directory even with
+      // --depth empty. Keep only in-scope blocks, once per canonical path.
+      const blocks = new Map<string, string>();
+      for (const block of combined.split(/^(?=Index: )/m)) {
+        const match = block.match(/^Index:\s*(.+)$/m);
+        if (match) blocks.set(normalizeReviewPath(match[1].trim()), block);
+      }
+      const filtered = filterPaths([...blocks.keys()])
+        .map((path) => blocks.get(path)!)
+        .join("\n");
       return processDiff(filtered, "svn", maxDiffChars);
     }
   } catch (err) {
@@ -468,10 +474,16 @@ export function getSvnDiff(
 }
 export function applyExclude(diff: string, exclude?: string[]): string {
   if (!exclude || exclude.length === 0) return diff;
-  const patterns = exclude.map((e) => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const regex = new RegExp(`^(Index: |--- )(${patterns.join("|")})(?:\\s|$)`, "m");
+  const scopes = exclude.map(normalizeReviewPath);
   const blocks = diff.split(/^(?=Index: )/m);
-  return blocks.filter((b) => !regex.test(b)).join("");
+  return blocks
+    .filter((block) => {
+      const match = block.match(/^Index:\s*(.+)$/m);
+      if (!match) return true;
+      const file = normalizeReviewPath(match[1].trim());
+      return !scopes.some((scope) => scope === "." || file === scope || file.startsWith(`${scope}/`));
+    })
+    .join("");
 }
 
 function runVcsDiff(cwd: string, command: string[]): string {
@@ -596,7 +608,7 @@ export function extractChangedFiles(diff: string, vcs: VcsType): string[] {
     const regex = /^Index:\s*(.+)$/gm;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(diff)) !== null) {
-      files.add(match[1].trim());
+      files.add(normalizeReviewPath(match[1].trim()));
     }
     return [...files];
   }
@@ -646,7 +658,7 @@ export function splitDiffByFile(diff: string, vcs?: VcsType): Record<string, str
     const blocks = diff.split(/^(?=Index: )/m);
     for (const block of blocks) {
       const match = block.match(/^Index:\s*(.+)$/m);
-      if (match) result[match[1].trim()] = block;
+      if (match) result[normalizeReviewPath(match[1].trim())] = block;
     }
     return result;
   }

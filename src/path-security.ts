@@ -1,6 +1,14 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, normalize, relative, resolve, sep } from "node:path";
 
+/** Canonical spelling for comparing already-validated review paths. */
+export function normalizeReviewPath(path: string): string {
+  const normalized = normalize(path);
+  // Backslashes are separators on Windows and literal filename characters on
+  // POSIX. Preserve that distinction when matching and loading files.
+  return (sep === "\\" ? normalized.replaceAll("\\", "/") : normalized).replace(/\/$/, "");
+}
+
 export function isSafeRelativePath(path: string): boolean {
   if (!path || typeof path !== "string") return false;
   if (path.includes("\0")) return false;
