@@ -31,6 +31,14 @@ function writeProjectSettings(cwd: string, settings: Record<string, unknown>): v
 }
 
 describe("validateWaiToolParams", () => {
+  it("accepts scan refresh only for the scan action", () => {
+    const scan = validateWaiToolParams({ scan: true, scanRefresh: true });
+    assert.ok(scan.ok);
+    if (scan.ok) assert.equal(scan.params.scanRefresh, true);
+    const review = validateWaiToolParams({ review: "changes", scanRefresh: true });
+    assert.ok(review.ok);
+    if (review.ok) assert.equal(review.params.scanRefresh, undefined);
+  });
   it("accepts an advisor question as its own action", () => {
     const result = validateWaiToolParams({ advisor: "Map or Record for this cache?" });
     assert.equal(result.ok, true);

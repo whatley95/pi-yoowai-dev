@@ -422,7 +422,7 @@ Plan steps can include `priority` (`high`, `medium`, `low`) and `dependsOn` (1-b
 
 ### `wai_index` tool
 
-The `wai_index` tool is a fast, read-only lookup for stored wai context. It does not call a model.
+The `wai_index` tool retrieves stored wai context without calling a model. Prefer a specific `topic`, `files`, and `query` during ongoing work instead of repeatedly requesting `all`. Symbol-index reads refresh an existing stale graph locally; `update: true` also builds a missing index.
 
 | Call                                                      | What it returns                                                                                                                                                                                                                              |
 | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -488,11 +488,19 @@ Memory stays **relevant, not just persistent**. Every entry carries a freshness 
 - **Decisions: 90 days** (`FRESHNESS_BUDGET_MS.decision`)
 - **Facts: 365 days** (`FRESHNESS_BUDGET_MS.fact`)
 
-Stale entries are **never injected** into the main agent's context or the review `<decisions>` block (filtered before the newest-20/400-token and 600-token slices) — but they are **retained** under the 200-entry cap and surfaced by `wai_learn({ stale: true })` and `wai_index({ topic: "learned" })` with a `STALE` marker and a `verify, update, or revoke` hint. Legacy entries without a stamp (or with a malformed one) age from their creation time; an unusable timestamp makes the entry stale without rejecting the record.
+Stale entries are **never injected** into the main agent's context or the review `<decisions>` block — but they are **retained** under the 200-entry cap and surfaced by `wai_learn({ stale: true })` and `wai_index({ topic: "learned" })` with a `STALE` marker and a `verify, update, or revoke` hint. Fresh knowledge is ranked by task keywords, category, and matching source paths; recency breaks ties. The main agent receives up to 20 selected entries within 400 tokens, including source pointers. Review selects fresh decisions for the changed files and task within its 600-token allowance. Legacy entries without a stamp (or with a malformed one) age from their creation time; an unusable timestamp makes the entry stale without rejecting the record.
+
+When injected context exceeds `contextInjectMaxTokens`, wai first shrinks learned knowledge to a small allowance (up to 20% of the budget, capped at 160 tokens), then drops design/convention sections and shrinks advisor notes. Mandatory workflow instructions still take precedence if the budget cannot fit any whole fact. Learned facts, conventions, and review-memory JSON use a bounded read cache checked against modification/change times, size, and file identity. Writes invalidate it; callers receive independent copies, and age-based expiry is evaluated on every read.
 
 **Renewal is guarded.** Shallow `verify` never renews a fact. Deep verification renews only a valid, evidence-backed result after the model call resolves; questionable, outdated, empty, malformed, or unsupported results never renew. `reaffirm` renews explicitly by exact fact text (duplicate texts are rejected as ambiguous unless targeted by entry id). Every entry has a stable per-entry id; writes report whether persistence succeeded (`write-failed` is surfaced as an error).
 
 > Contestability (automatically challenging stale decisions when a review contradicts them) is deliberately **deferred**; the current UX is the explicit stale listing with a `verify, update, or revoke` hint.
+
+### Reusing project scans
+
+`wai({ scan: true })` and `/wai scan` reuse a successful scan for up to 24 hours when the scan prompt, local heuristics, complete scanned file list, model settings, depth, and instruction inputs match. This skips the secondary-model call. Deep scans still check and refresh the TypeScript/JavaScript symbol graph, including unsampled files. Reuse does not extend the original expiry, and malformed/truncated responses are not cached. Clearing or manually changing saved conventions invalidates reuse.
+
+Use `wai({ scan: true, scanRefresh: true })` or `/wai scan --refresh` to explicitly call the scan model again; combine with `scanDeep: true` or `--deep` as needed. A scan uses representative samples rather than reading every source file. Changes outside those samples may leave the scan inputs unchanged; use refresh when you need the model to reassess, and use targeted current-source reads for behavioral claims.
 
 ### `wai_design_ref` tool
 

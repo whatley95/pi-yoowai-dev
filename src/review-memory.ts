@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readCachedJson, invalidateJsonReadCache } from "./json-read-cache.js";
 import { getSessionConfigDir, getSessionConfigPath } from "./session-scope.js";
 import { logEvent } from "./logger.js";
 import type { MemoryEntry, ReviewIssue } from "./types.js";
@@ -25,8 +26,7 @@ function loadMemory(cwd: string): MemoryStore {
     return { files: {}, updatedAt: new Date().toISOString() };
   }
   try {
-    const raw = readFileSync(path, "utf-8");
-    const data = JSON.parse(raw) as MemoryStore;
+    const data = readCachedJson(path) as MemoryStore;
     const files: Record<string, FileMemory> = {};
     const cutoff = Date.now() - ISSUE_TTL_MS;
     for (const [file, entry] of Object.entries(data.files ?? {})) {
@@ -62,7 +62,9 @@ function saveMemory(cwd: string, memory: MemoryStore): void {
     const dir = getSessionConfigDir(cwd, "memory.json");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     memory.updatedAt = new Date().toISOString();
-    writeFileSync(getMemoryPath(cwd), JSON.stringify(memory, null, 2), { encoding: "utf-8", mode: 0o600 });
+    const path = getMemoryPath(cwd);
+    invalidateJsonReadCache(path);
+    writeFileSync(path, JSON.stringify(memory, null, 2), { encoding: "utf-8", mode: 0o600 });
   } catch (err) {
     logEvent(cwd, "error", "Failed to save wai review memory", {
       error: err instanceof Error ? err.message : String(err),

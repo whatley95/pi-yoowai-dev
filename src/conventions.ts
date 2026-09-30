@@ -6,6 +6,7 @@ import { gitSpawnEnv } from "./git-env.js";
 import { logEvent } from "./logger.js";
 import { GENERATED_DIRECTORIES, isGeneratedFile } from "./file-policy.js";
 import type { Conventions, ScanResult } from "./types.js";
+import { readCachedJson, invalidateJsonReadCache } from "./json-read-cache.js";
 
 function getConventionsPath(cwd: string): string {
   return getProjectConfigPath(cwd, "yoowai", "conventions.json");
@@ -41,7 +42,7 @@ export function loadConventions(cwd: string): Conventions | null {
   const path = getConventionsPath(cwd);
   if (!existsSync(path)) return null;
   try {
-    const data = JSON.parse(readFileSync(path, "utf-8"));
+    const data = readCachedJson(path);
     const conventions = isValidConventions(data);
     if (!conventions) {
       logEvent(cwd, "warn", "Invalid conventions file shape; ignoring", { path });
@@ -57,7 +58,9 @@ export function saveConventions(cwd: string, conventions: Conventions): void {
   try {
     const dir = getProjectConfigPath(cwd, "yoowai");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(getConventionsPath(cwd), JSON.stringify(conventions, null, 2), { encoding: "utf-8", mode: 0o600 });
+    const path = getConventionsPath(cwd);
+    invalidateJsonReadCache(path);
+    writeFileSync(path, JSON.stringify(conventions, null, 2), { encoding: "utf-8", mode: 0o600 });
   } catch (err) {
     logEvent(cwd, "error", "Failed to save conventions", { error: err instanceof Error ? err.message : String(err) });
   }
@@ -587,6 +590,7 @@ export function clearConventions(cwd: string): void {
   const path = getConventionsPath(cwd);
   try {
     if (existsSync(path)) {
+      invalidateJsonReadCache(path);
       writeFileSync(path, JSON.stringify(emptyConventions()), { encoding: "utf-8", mode: 0o600 });
     }
   } catch (err) {

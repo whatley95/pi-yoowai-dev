@@ -11,6 +11,8 @@ import { getProjectConfigPath } from "./pi-paths.js";
 import { loadFreshProjectIndex } from "./project-index.js";
 import { callSecondaryModel } from "./secondary-model.js";
 import type { UsageCost } from "./types.js";
+import { readCachedJson, invalidateJsonReadCache } from "./json-read-cache.js";
+import { estimateTokens } from "./token-budget.js";
 
 export interface LearnedFact {
   fact: string;
@@ -98,8 +100,7 @@ function loadLearned(cwd: string): LearnedStore {
     return { facts: [], updatedAt: new Date().toISOString() };
   }
   try {
-    const raw = readFileSync(path, "utf-8");
-    const data = JSON.parse(raw) as unknown;
+    const data = readCachedJson(path);
     if (!isValidLearnedStore(data)) {
       logEvent(cwd, "warn", "Invalid learned facts file shape; ignoring", { path });
       return { facts: [], updatedAt: new Date().toISOString() };
@@ -141,6 +142,7 @@ function saveLearned(cwd: string, store: LearnedStore): boolean {
     const dir = dirname(path);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     store.updatedAt = new Date().toISOString();
+    invalidateJsonReadCache(path);
     writeFileSync(path, JSON.stringify(store, null, 2), { encoding: "utf-8", mode: 0o600 });
     return true;
   } catch (err) {
@@ -203,6 +205,61 @@ export function findLearnedFacts(cwd: string, query?: string, kind?: "fact" | "d
     )
     .slice()
     .reverse();
+}
+
+export interface LearnedContextOptions {
+  query?: string;
+  files?: string[];
+  kind?: "fact" | "decision";
+  limit?: number;
+}
+
+const QUERY_STOP_WORDS = new Set(["the", "and", "for", "with", "this", "that", "from", "please", "use", "fix"]);
+
+function knowledgeTerms(text: string): Set<string> {
+  return new Set(
+    (
+      text
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .toLowerCase()
+        .match(/[\p{L}\p{N}_]+/gu) ?? []
+    ).filter((term) => term.length > 2 && !QUERY_STOP_WORDS.has(term)),
+  );
+}
+
+/** Rank fresh knowledge by the task and source paths. Recency breaks ties;
+ * a lookup never verifies a claim or renews its freshness stamp. */
+export function selectLearnedFacts(cwd: string, options: LearnedContextOptions = {}): LearnedFact[] {
+  const query = knowledgeTerms(options.query ?? "");
+  const files = (options.files ?? []).map((file) => file.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase());
+  const scored = findLearnedFacts(cwd, undefined, options.kind)
+    .filter((fact) => isFactFresh(fact))
+    .map((fact, order) => {
+      const source = fact.source?.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+      let score = source && files.includes(source) ? 12 : 0;
+      for (const [text, weight] of [
+        [fact.fact, 1],
+        [fact.category ?? "", 3],
+        [source ?? "", 2],
+      ] as const) {
+        const terms = knowledgeTerms(text);
+        for (const term of query) if (terms.has(term)) score += weight;
+      }
+      return { fact, score, order };
+    });
+  scored.sort((a, b) => b.score - a.score || a.order - b.order);
+  return scored.slice(0, options.limit ?? 20).map(({ fact }) => fact);
+}
+
+/** Whole facts only; skip an oversized entry so shorter useful facts still fit. */
+export function formatLearnedContext(facts: LearnedFact[], maxTokens: number): string {
+  const lines: string[] = [];
+  for (const fact of facts) {
+    const source = fact.source ? ` (source: ${fact.source.replace(/\s+/g, " ")})` : "";
+    const line = `- ${fact.kind === "decision" ? "[decision] " : ""}${fact.fact.replace(/\s+/g, " ")}${source}`;
+    if (estimateTokens([...lines, line].join("\n")) <= maxTokens) lines.push(line);
+  }
+  return lines.join("\n");
 }
 
 /** Stale entries that should currently be EXCLUDED from injection/prompts

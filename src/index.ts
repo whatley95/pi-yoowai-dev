@@ -362,7 +362,7 @@ export default async function (pi: ExtensionAPI) {
           done: await executeWaiPlanUpdate(ctx.cwd, p.planUpdate as string, signal, progress, ctx.sessionManager),
         };
       } else {
-        result = await executeWaiScan(ctx.cwd, signal, progress, ctx.sessionManager, p.scanDeep);
+        result = await executeWaiScan(ctx.cwd, signal, progress, ctx.sessionManager, p.scanDeep, p.scanRefresh);
       }
 
       signal?.throwIfAborted();
@@ -585,6 +585,7 @@ export default async function (pi: ExtensionAPI) {
       REVIEW_SCOPE_GUIDANCE,
       "Pick the review depth by the change's risk and complexity: wai_review_min for docs, comments, config, tests-only, or tiny mechanical changes (renames, version bumps); wai_review_med as the default for normal features and bugfixes when unsure; wai_review_high for changes touching auth, secrets, payments, migrations, public APIs, or concurrency, and for complex logic such as algorithm changes, state machines, intricate control flow, or cross-module refactors. The configured pi-yoowai.reviewLevel is the default authority for plain `wai review` calls; the explicit wai_review_min/med/high tools always override it.",
       "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans. Add scanDeep:true on that first scan to also sample source files and build the project symbol index.",
+      "Scan reuses matching inputs for 24 hours without a model call. Set scanRefresh:true to explicitly re-run the scan model; a reused deep scan still refreshes the symbol graph.",
       "Use wai({ advisor: '<question>' }) for quick judgment calls before committing to an approach or when stuck. When the question needs a structured comparison of alternatives, use suggest instead.",
       "Use wai({ suggest: '<question>' }) for structured alternative approaches with evidence. If stuck or looping, consult suggest or advisor before asking the user for implementation guidance.",
       "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call wai.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without wai.",
@@ -655,6 +656,11 @@ export default async function (pi: ExtensionAPI) {
         Type.Boolean({
           description:
             "For scan: also sample representative source files and build the project symbol index. Recommended on the first scan of a project.",
+        }),
+      ),
+      scanRefresh: Type.Optional(
+        Type.Boolean({
+          description: "For scan: bypass the 24-hour cache for matching scan inputs and call the model again.",
         }),
       ),
       test: Type.Optional(
@@ -835,8 +841,9 @@ export default async function (pi: ExtensionAPI) {
       "Use topic 'logs' to see recent wai errors or warnings.",
       "Use topic 'index' to see the project symbol index built by wai scan-deep or wai_index update.",
       "Use topic 'learned' to see facts recorded with wai_learn.",
+      "Prefer a specific topic, files, and query over topic 'all' during ongoing work to avoid repeatedly returning unrelated context.",
       "Set update:true to rebuild the symbol index on demand.",
-      "wai_index does not call a model; it only reads data wai already stored.",
+      "wai_index does not call a model. Symbol-index reads refresh an existing stale graph locally; update:true also builds a missing index.",
     ],
     parameters: Type.Object({
       topic: Type.Optional(
@@ -863,7 +870,7 @@ export default async function (pi: ExtensionAPI) {
       ),
       query: Type.Optional(
         Type.String({
-          description: "Optional keyword filter applied to memory text and index symbols.",
+          description: "Optional keyword filter applied to learned facts, memory text, and index symbols.",
         }),
       ),
       update: Type.Optional(
@@ -1227,6 +1234,7 @@ export default async function (pi: ExtensionAPI) {
       "Keep facts concise and actionable.",
       "Include a project-relative source file for factual claims. Stored memory is context; verify it against current code before acting on it.",
       "Recorded facts appear in wai_index topic 'learned'.",
+      "Fresh learned facts are automatically selected by task and source-file relevance for the main agent, within its context budget. Fresh decisions are also selected for review prompts.",
       "Use verify:true for structural reference checks; these do not renew freshness or prove a behavioral claim.",
       "Add deep:true to verify with the secondary model for higher accuracy (costs tokens per fact).",
     ],

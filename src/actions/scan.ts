@@ -14,7 +14,8 @@ import {
 import { buildScanPrompt, validateConventionsResult, parseJsonResponse } from "../prompts.js";
 import { resolveModelInfo } from "../model-registry.js";
 import { estimateTokens } from "../token-budget.js";
-import { buildProjectIndex, saveProjectIndex, enrichConventionsFromIndex } from "../project-index.js";
+import { loadFreshProjectIndex, enrichConventionsFromIndex } from "../project-index.js";
+import { getCachedScan, saveScanCache, scanFingerprint } from "../scan-cache.js";
 import { logEvent } from "../logger.js";
 import {
   STAGES,
@@ -32,6 +33,7 @@ export async function executeWaiScan(
   progress: ProgressReporter,
   sessionManager?: ExtensionContext["sessionManager"],
   deepOverride?: boolean | number,
+  refresh = false,
 ): Promise<WaiToolResult> {
   const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "scan");
@@ -97,27 +99,52 @@ export async function executeWaiScan(
       ? `\n\n<code_samples>\n${trimmedSamples.map((s) => `--- ${s.file} ---\n${s.content}`).join("\n\n")}\n</code_samples>`
       : "";
 
+  const prompt = `${user}\n\nFiles:\n${filesForPrompt.join("\n")}${configFilesText}${deepScanText}`;
+  const localConventions = { ...localScan.conventions, generatedAt: undefined };
+  const cacheKey = scanFingerprint({
+    version: 1,
+    system,
+    prompt,
+    modelConfig,
+    deepScan: deepScanEnabled ?? false,
+    files: localScan.files,
+    localConventions,
+  });
+  const cached = refresh ? null : getCachedScan(cwd, cacheKey);
+  if (cached && !signal?.aborted) {
+    progress(2, STAGES.scan, "Reusing unchanged scan inputs…");
+    if (deepScanEnabled) {
+      try {
+        const index = loadFreshProjectIndex(cwd, true)!;
+        const enriched = enrichConventionsFromIndex(cached, index);
+        cached.publicApi = enriched.publicApi;
+        cached.commonPatterns = enriched.commonPatterns;
+        saveConventions(cwd, cached);
+        saveScanCache(cwd, cacheKey, cached, true);
+      } catch (error) {
+        logEvent(cwd, "warn", "Failed to refresh cached scan index", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { action: "scan", scan: { conventions: cached, files: localScan.files, cached: true }, model: modelProfile };
+  }
+
   progress(2, STAGES.scan, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const {
     content: raw,
     usage,
     rounds,
     truncated: finalTruncated,
-  } = await callSecondaryModel(
-    modelConfig.provider,
-    modelConfig.id,
-    system,
-    `${user}\n\nFiles:\n${filesForPrompt.join("\n")}${configFilesText}${deepScanText}`,
-    {
-      signal,
-      thinking: modelConfig.thinking,
-      cwd,
-      sessionManager,
-      task: "scan",
-      structuredOutput: true,
-      onStreamProgress: createStreamProgressCallback(progress, 2, STAGES.scan),
-    },
-  );
+  } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, prompt, {
+    signal,
+    thinking: modelConfig.thinking,
+    cwd,
+    sessionManager,
+    task: "scan",
+    structuredOutput: true,
+    onStreamProgress: createStreamProgressCallback(progress, 2, STAGES.scan),
+  });
 
   progress(3, STAGES.scan, "Merging conventions…");
   const parsed = parseJsonResponse(raw);
@@ -133,8 +160,7 @@ export async function executeWaiScan(
 
   if (deepScanEnabled) {
     try {
-      const index = buildProjectIndex(cwd);
-      saveProjectIndex(cwd, index);
+      const index = loadFreshProjectIndex(cwd, true)!;
       const enriched = enrichConventionsFromIndex(conventions, index);
       conventions.publicApi = enriched.publicApi;
       conventions.commonPatterns = enriched.commonPatterns;
@@ -151,6 +177,10 @@ export async function executeWaiScan(
       });
     }
   }
+
+  // Invalid/truncated model responses are retryable; do not freeze a local-only
+  // fallback as if the secondary model had completed its scan.
+  if (llmConventions && !finalTruncated && !signal?.aborted) saveScanCache(cwd, cacheKey, conventions);
 
   logEvent(cwd, "info", "Scan completed", {
     deepScan: Boolean(deepScanEnabled),

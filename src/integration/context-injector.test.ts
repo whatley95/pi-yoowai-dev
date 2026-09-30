@@ -343,7 +343,7 @@ describe("context-injector", () => {
     }
   });
 
-  it("drops project knowledge first when the context exceeds its budget", () => {
+  it("preserves the plan when a tiny budget cannot fit any whole learned fact", () => {
     setPlan(cwd, { summary: "Refactor auth", todo: ["Move login logic"], acceptanceCriteria: [] });
     // A big learned store + conventions, with a tiny contextInjectMaxTokens.
     for (let i = 0; i < 30; i++) {
@@ -381,9 +381,36 @@ describe("context-injector", () => {
     const content = typeof lastUser?.content === "string" ? lastUser.content : "";
     assert.ok(
       !content.includes("<project_knowledge>"),
-      "project knowledge must be dropped first under budget pressure",
+      "whole facts that cannot fit the knowledge allowance must be omitted",
     );
     assert.ok(content.includes("Refactor auth"), "the plan must survive budget pressure");
+  });
+
+  it("selects older relevant facts and preserves knowledge when conventions exceed the budget", () => {
+    recordLearnedFact(cwd, "Login refresh uses the shared lock", { source: "src/auth.ts", category: "auth" });
+    for (let i = 0; i < 25; i++) recordLearnedFact(cwd, `Unrelated styling rule ${i}`);
+    saveConventions(cwd, {
+      stack: "Node/TS",
+      naming: "camelCase",
+      structure: "src/",
+      patterns: ["Large conventions ".repeat(300)],
+      entryPoints: [],
+      scripts: [],
+      generatedAt: new Date().toISOString(),
+    });
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    const user = event.messages[0];
+    assert.ok(user.role === "user");
+    user.content = "Fix auth login refresh";
+    emitContext(event, makeContext(cwd));
+    const content = user.content as string;
+    assert.ok(content.includes("<project_knowledge>"));
+    assert.ok(content.includes("Login refresh uses the shared lock"));
+    assert.ok(!content.includes("Large conventions"));
+    const block = content.slice(content.indexOf("<wai_context>"));
+    assert.ok(Math.ceil(block.length / 4) <= 800);
   });
 
   it("does nothing when autoInjectContext is false", () => {

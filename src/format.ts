@@ -446,6 +446,7 @@ export function formatResultText(result: WaiToolResult): string {
   if (result.scan) {
     lines.push(`## wai scan${formatModelSuffix(result.model)}`);
     lines.push("");
+    if (result.scan.cached) lines.push("_Reused stored conventions: scan inputs match (no model call)._", "");
     lines.push(formatConventions(result.scan.conventions));
     lines.push("");
     lines.push(`Scanned ${result.scan.files.length} files.`);

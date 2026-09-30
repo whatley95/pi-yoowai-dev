@@ -345,6 +345,8 @@ export interface WaiToolParams {
   judge?: string;
   scan?: boolean;
   scanDeep?: boolean;
+  /** Bypass reuse of matching scan inputs and call the scan model again. */
+  scanRefresh?: boolean;
   test?: string;
   security?: string;
   done?: string | number | boolean;
@@ -483,6 +485,7 @@ export interface Conventions {
 }
 
 export interface ScanResult {
+  cached?: boolean;
   conventions: Conventions;
   files: string[];
 }

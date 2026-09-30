@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { formatLanguageDirective, loadYoowaiConfig } from "../config.js";
 import { loadConventions } from "../conventions.js";
-import { findLearnedFacts, isFactFresh } from "../wai-learn.js";
+import { selectLearnedFacts, formatLearnedContext } from "../wai-learn.js";
+import type { YoowaiConfig } from "../types.js";
 import { isUiFile } from "../design-ref.js";
 import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
@@ -50,7 +51,9 @@ export function clearWaiToolExecution(cwd: string): void {
 
 type ContextMessage = ContextEvent["messages"][number];
 
-function isUserStringMessage(message: ContextMessage): boolean {
+function isUserStringMessage(
+  message: ContextMessage,
+): message is Extract<ContextMessage, { role: "user" }> & { content: string } {
   return message.role === "user" && typeof message.content === "string";
 }
 
@@ -91,8 +94,7 @@ function projectVcs(cwd: string): "git" | "svn" | undefined {
   }
 }
 
-function buildContextBlock(cwd: string): string {
-  const config = loadYoowaiConfig(cwd);
+function buildContextBlock(cwd: string, config: YoowaiConfig, query: string): string {
   const planSummary = getPlanSummary(cwd);
   const conventionsText = getConventionsText(cwd);
   const editState = getEditTracker(cwd);
@@ -117,17 +119,11 @@ function buildContextBlock(cwd: string): string {
   }
   if (planSummary) parts.push(planSummary, PLAN_ALIGNMENT_GUIDANCE);
   if (conventionsText) parts.push(`<project_conventions>\n${conventionsText}\n</project_conventions>`);
-  // Learned knowledge: newest-first FRESH facts + decisions (compact,
-  // token-bounded) so the main agent starts each turn with project
-  // knowledge that persists across sessions — no model calls. Stale entries
-  // are filtered out BEFORE slicing (they remain listed by wai_index).
-  const learned = findLearnedFacts(cwd).filter((f) => isFactFresh(f));
+  // Task/file relevance precedes recency; stale entries are omitted before
+  // selection. Stored context is a hint, not verification of the current code.
+  const learned = selectLearnedFacts(cwd, { query: `${query}\n${planSummary}`, files: editState.editedFiles });
   if (learned.length > 0) {
-    const factsText = learned
-      .slice(0, 20)
-      .map((f) => `- ${f.kind === "decision" ? "[decision] " : ""}${f.fact}`)
-      .join("\n");
-    const learnedBlock = `<project_knowledge>\n${truncateFacts(factsText, 400)}\n</project_knowledge>`;
+    const learnedBlock = `<project_knowledge>\n${formatLearnedContext(learned, 400)}\n</project_knowledge>`;
     if (learnedBlock.length > "<project_knowledge>\n\n</project_knowledge>".length) {
       parts.push(learnedBlock);
     }
@@ -141,7 +137,7 @@ function buildContextBlock(cwd: string): string {
   // Advisor notes: state-derived heads-up (no model calls) so the main agent
   // is reminded of recent review issues in the files it is actively editing.
   if (config.advisorNotes !== false && editState.editedFiles.length > 0) {
-    const memoryContext = getPastIssuesForFiles(cwd, editState.editedFiles);
+    const memoryContext = getPastIssuesForFiles(cwd, editState.editedFiles, query || undefined);
     if (memoryContext.trim()) {
       parts.push(`<advisor_notes>\n${memoryContext.trim()}\n</advisor_notes>`);
     }
@@ -194,7 +190,7 @@ function truncateFacts(text: string, maxTokens: number): string {
     // Account for the joining newline: check the candidate WITH the next
     // line included before keeping it.
     const candidate = kept.length > 0 ? [...kept, line].join("\n") : line;
-    if (estimateTokens(candidate) > maxTokens) break;
+    if (estimateTokens(candidate) > maxTokens) continue;
     kept.push(line);
   }
   return kept.join("\n");
@@ -203,13 +199,15 @@ function truncateFacts(text: string, maxTokens: number): string {
 function truncateBlock(block: string, maxTokens: number): string {
   if (estimateTokens(block) <= maxTokens) return block;
 
-  // Drop the least critical sections first: project knowledge (learned
-  // facts/decisions are useful but replaceable), then design rules, then
-  // conventions — preserving plan, advisor notes, and reminders. Advisor
-  // notes stay above conventions/design rules because they are
-  // decision-relevant for the current edits (recent review issues in files
-  // being touched).
-  for (const tag of ["project_knowledge", "design_rules", "project_conventions"]) {
+  // Reserve up to 20% (160 tokens) for the best-ranked whole facts instead
+  // of dropping all learned knowledge whenever the block is oversized.
+  const knowledge = block.match(/<project_knowledge>\n([\s\S]*?)\n<\/project_knowledge>/);
+  if (knowledge) {
+    const content = truncateFacts(knowledge[1], Math.min(160, Math.floor(maxTokens * 0.2)));
+    block = block.replace(knowledge[0], content ? `<project_knowledge>\n${content}\n</project_knowledge>` : "");
+    if (estimateTokens(block) <= maxTokens) return block;
+  }
+  for (const tag of ["design_rules", "project_conventions"]) {
     const match = block.match(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`));
     if (match) {
       const without = block.replace(match[0], "").replace(/\n\n+/g, "\n\n");
@@ -249,7 +247,9 @@ function truncateBlock(block: string, maxTokens: number): string {
     block = withCappedNotes;
   }
 
-  // Then truncate the remaining block.
+  // Mandatory workflow instructions still take precedence for tiny budgets.
+  block = block.replace(/<project_knowledge>[\s\S]*?<\/project_knowledge>/, "");
+  if (estimateTokens(block) <= maxTokens) return block;
   return truncateToTokenBudget(block, maxTokens);
 }
 
@@ -260,7 +260,12 @@ export function registerContextInjector(pi: ExtensionAPI): void {
     if (executingCwds.has(ctx.cwd)) return;
     if (!event.messages || event.messages.length === 0) return;
 
-    let block = buildContextBlock(ctx.cwd);
+    const latestUser = event.messages.findLast(isUserStringMessage);
+    const query =
+      typeof latestUser?.content === "string"
+        ? latestUser.content.replace(/<wai_context>[\s\S]*?<\/wai_context>/g, "")
+        : "";
+    let block = buildContextBlock(ctx.cwd, config, query);
     if (!block) return;
 
     const maxTokens = config.contextInjectMaxTokens ?? 800;

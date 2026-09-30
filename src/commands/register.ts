@@ -765,8 +765,9 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           result = await executeWaiJudge(ctx.cwd, restText || "all done", signal, notifyProgress, ctx.sessionManager);
           break;
         case "scan": {
-          const deep = restText.includes("--deep") ? true : undefined;
-          result = await executeWaiScan(ctx.cwd, signal, notifyProgress, ctx.sessionManager, deep);
+          const deep = /(^|\s)--deep(?=\s|$)/.test(restText) ? true : undefined;
+          const refresh = /(^|\s)--refresh(?=\s|$)/.test(restText);
+          result = await executeWaiScan(ctx.cwd, signal, notifyProgress, ctx.sessionManager, deep, refresh);
           break;
         }
         case "test": {

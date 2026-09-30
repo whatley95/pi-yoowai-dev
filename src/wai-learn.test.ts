@@ -8,6 +8,8 @@ import {
   recordLearnedFact,
   loadLearnedFacts,
   findLearnedFacts,
+  selectLearnedFacts,
+  formatLearnedContext,
   listStaleFacts,
   getFactFreshness,
   isFactFresh,
@@ -28,6 +30,47 @@ describe("wai-learn", () => {
 
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "wai-learn-test-"));
+  });
+
+  it("expires cached learned decisions without renewing or rewriting them", (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-01T00:00:00Z") });
+    const entry = recordLearnedFact(cwd, "Login refresh uses the shared lock", { kind: "decision" });
+    assert.equal(selectLearnedFacts(cwd).length, 1);
+    t.mock.timers.tick(FRESHNESS_BUDGET_MS.decision);
+    assert.equal(selectLearnedFacts(cwd).length, 0);
+    assert.equal(loadLearnedFacts(cwd)[0].lastVerifiedAt, entry.lastVerifiedAt);
+  });
+
+  it("ranks task and file knowledge ahead of newer unrelated facts without renewing them", () => {
+    const relevant = recordLearnedFact(cwd, "Login refresh uses the shared lock", {
+      category: "auth",
+      source: "src/auth.ts",
+    });
+    for (let i = 0; i < 24; i++) recordLearnedFact(cwd, `Unrelated styling rule ${i}`);
+    const facts = selectLearnedFacts(cwd, { query: "Fix auth login refresh", files: ["src\\auth.ts"] });
+    assert.equal(facts.length, 20);
+    assert.equal(facts[0].id, relevant.id);
+    assert.equal(loadLearnedFacts(cwd)[0].lastVerifiedAt, relevant.lastVerifiedAt);
+    assert.equal(selectLearnedFacts(cwd)[0].fact, "Unrelated styling rule 23");
+  });
+
+  it("omits stale knowledge before ranking, filters kind, and keeps whole facts within budget", () => {
+    recordLearnedFact(cwd, "Login refresh uses the shared lock", { kind: "decision" });
+    recordLearnedFact(cwd, "auth ".repeat(500));
+    const path = join(cwd, ".pi", "yoowai", "learned.json");
+    const store = JSON.parse(readFileSync(path, "utf-8"));
+    store.facts[1].lastVerifiedAt = "2000-01-01T00:00:00.000Z";
+    writeFileSync(path, JSON.stringify(store));
+    assert.equal(selectLearnedFacts(cwd, { query: "auth" }).length, 1);
+    assert.equal(selectLearnedFacts(cwd, { kind: "fact" }).length, 0);
+    const text = formatLearnedContext(
+      [
+        { fact: "x".repeat(1000), timestamp: new Date().toISOString() },
+        { fact: "Use the lock", timestamp: new Date().toISOString() },
+      ],
+      12,
+    );
+    assert.equal(text, "- Use the lock");
   });
 
   it("sets the verification stamp at creation", () => {

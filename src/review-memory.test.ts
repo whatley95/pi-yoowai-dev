@@ -13,6 +13,16 @@ import {
 import { reflectOnMemory } from "./reflect.js";
 import type { ReviewIssue } from "./types.js";
 
+it("expires cached findings as time advances without changing the memory file", (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "wai-memory-clock-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-01T00:00:00Z") });
+  recordIssues(cwd, [{ severity: "high", file: "src/auth.ts", issue: "Token refresh race", suggestion: "Use a lock" }]);
+  assert.match(getPastIssuesForFiles(cwd, ["src/auth.ts"]), /Token refresh race/);
+  t.mock.timers.tick(8 * 24 * 60 * 60 * 1000);
+  assert.equal(getPastIssuesForFiles(cwd, ["src/auth.ts"]), "");
+});
+
 describe("review-memory", () => {
   const cwd = mkdtempSync(join(tmpdir(), "wai-test-"));
 
