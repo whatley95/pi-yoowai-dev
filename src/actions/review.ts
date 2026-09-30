@@ -60,6 +60,7 @@ import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache
 import { getReviewLevelSettings, resolveRiskReviewLevel } from "../review-level.js";
 import type { ProgressReporter } from "../progress.js";
 import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../types.js";
+import { INCONCLUSIVE_REVIEW_GUIDANCE } from "../workflow-guidance.js";
 
 /** Error returned when no review model can be resolved — the effective level
  *  drives the per-level task lookup (reviewMin/reviewMed/reviewHigh) with the
@@ -1090,9 +1091,7 @@ export async function executeWaiReview(
     review.suggestions.push(
       review.planStale
         ? "The model flagged the active plan as stale but found no actionable code issue. This review cannot certify the plan step; update the plan to match the work before another whole-tree review."
-        : review.suggestions.length > 0
-          ? "The review returned a non-pass verdict but reported no issues — the verdict contradicts its own findings, so it is inconclusive (likely a verdict slip by the model, not a real failure). Re-run wai.review; if the change is genuinely fine the re-run should pass."
-          : "The review returned a verdict with no issues, so it is inconclusive — the model response was likely truncated or off-scope. Re-run wai.review; if it repeats, lower the thinking level or scope the diff with files:[...].",
+        : `The model returned a non-pass verdict without actionable code issues. ${INCONCLUSIVE_REVIEW_GUIDANCE}`,
     );
     logEvent(cwd, "warn", "Review verdict had no issues; marked inconclusive", {
       verdict: review.verdict,

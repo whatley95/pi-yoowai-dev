@@ -224,8 +224,10 @@ describe("lifecycle", () => {
     // With an active plan the reminder names the current step.
     assert.ok(steers[0].message.includes("Step 1/1 (Step 1) has 3 unreviewed file edit(s)"));
     assert.ok(steers[0].message.includes("WORKFLOW REMINDER"));
-    // An active plan with remaining steps adds the done nudge.
-    assert.ok(steers[0].message.includes("wai({ done: true })"));
+    // Inspect progress first: review may already advance the completed step.
+    assert.ok(steers[0].message.includes("review.planProgress/review.nextStep"));
+    assert.ok(steers[0].message.includes("only if the same reviewed step remains current"));
+    assert.ok(steers[0].message.includes("do not advance an unfinished next step"));
     assert.ok(steers[0].message.includes("plan step (1/1)"));
     assert.strictEqual(steers[0].options?.deliverAs, "steer");
   });

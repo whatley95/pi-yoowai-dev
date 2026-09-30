@@ -1766,6 +1766,11 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     assert.equal(result.review?.verdict, "needs-work");
     assert.equal(result.review?.inconclusive, true);
     assert.equal(getPendingReviewCommit(cwd), undefined, "an inconclusive review must not pin the anchor");
+    const guidance = result.review?.suggestions.join(" ") ?? "";
+    assert.match(guidance, /Check diagnostics, the working directory/);
+    assert.match(guidance, /input\/output truncation/);
+    assert.match(guidance, /report the blocker/);
+    assert.doesNotMatch(guidance, /lower the thinking level|the re-run should pass|likely a verdict slip/);
     assert.equal(getLastReviewedCommit(cwd), undefined);
   });
 

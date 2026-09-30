@@ -267,6 +267,10 @@ test("formatResultText renders inconclusive review guidance instead of a fix act
   assert.match(text, /wai review ⚠ inconclusive/);
   assert.ok(text.includes("re-run `wai.review`"));
   assert.ok(!text.includes("Fix the issues above"));
+  assert.match(text, /Check diagnostics, the working directory/);
+  assert.match(text, /input\/output truncation/);
+  assert.match(text, /report the blocker/);
+  assert.doesNotMatch(text, /lower the thinking level|the re-run should pass/);
 });
 
 test("formatResultText explains that a scoped pass cannot clear the done gate", () => {
@@ -277,6 +281,26 @@ test("formatResultText explains that a scoped pass cannot clear the done gate", 
   assert.match(text, /Scoped review.*does not clear the whole-tree review gate/);
   assert.match(text, /whole-tree certification is still pending/);
   assert.doesNotMatch(text, /step is complete/);
+  assert.doesNotMatch(text, /call `wai.done` with those step numbers/);
+  assert.match(text, /complete whole-tree review before certifying/);
+});
+
+test("formatResultText directs a whole-tree pass to inspect progress before considering done", () => {
+  const text = formatResultText({
+    action: "review",
+    review: {
+      verdict: "pass",
+      issues: [],
+      suggestions: [],
+      consensus: true,
+      planProgress: "1/2 steps done",
+      nextStep: "Step 2",
+    },
+  });
+  assert.match(text, /Progress:.*1\/2 steps done/);
+  assert.match(text, /only if the same reviewed step remains current/);
+  assert.match(text, /do not advance an unfinished next step/);
+  assert.doesNotMatch(text, /step is complete|call `wai.done` with those step numbers/);
 });
 
 test("formatResultText gives VCS guidance when review input is incomplete", () => {

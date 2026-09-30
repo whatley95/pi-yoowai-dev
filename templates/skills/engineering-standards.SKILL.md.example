@@ -45,6 +45,19 @@ repo-specific and actionable; put always-true rules in AGENTS.md instead.
 - Required before review: `<FILL ME — evidence: CI steps or package scripts>` (typecheck), `<FILL ME — evidence: CI steps or package scripts>` (tests), `<FILL ME — evidence: CI steps or package scripts>` (contract check).
 - Required negative tests: `<FILL ME — evidence: existing test files>`.
 
+## Review, progress, and completion
+
+- Use scoped reviews for focused feedback. Scoped or historical passes do not clear the done gate or advance the plan. Before certifying a step or finishing the task, run a complete whole-tree review with new files included and without `files`, `exclude`, `revision`, or `since`.
+- A passing whole-tree review can advance the plan. Inspect its returned progress/next step or `wai_index({ topic: "plan" })` before `done`; call it only if the same reviewed step remains current and its acceptance criteria are met. Do not advance an unfinished next step.
+- For inconclusive results, check the working directory, file scope, VCS range, missing inputs, input/output limits, and plan mismatch. Correct the cause before retrying. Report a persistent blocker instead of retrying unchanged inputs or lowering thinking depth blindly.
+- Commit when the user requests or has already authorized it. Inspect exact commit contents and preserve unrelated user changes. A review pass alone is not commit authorization.
+- In the completion report, distinguish executed checks and outcomes, skipped/failing checks, review/judge scope and coverage, unresolved findings, verified/unverified acceptance criteria, and commit status/hash. A model pass or generic test success does not prove every acceptance criterion.
+
+## Git working trees
+
+- Before final whole-tree review, inspect `git status` and stage only intended task files or hunks, using explicit paths for `git add`.
+- Before an authorized commit, inspect `git diff --cached`; verify intended new files are included and unrelated changes, `.pi/`, and generated outputs are not accidentally staged. If staging changes after review, run the whole-tree review again.
+
 ## SVN working copies
 
 - Wai reviews unversioned files without `svn add`, but `svn commit` omits files marked `?`.

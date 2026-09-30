@@ -201,7 +201,26 @@ describe("context-injector", () => {
       const message = event.messages.find((entry) => entry.role === "user");
       assert.ok(message && typeof message.content === "string");
       assert.equal(message.content.includes("SVN WORKFLOW"), expected);
+      assert.equal(message.content.includes("GIT WORKFLOW"), !expected);
     }
+  });
+
+  it("injects Git commit preparation guidance without a plan and recognizes worktree marker files", () => {
+    writeFileSync(join(cwd, ".git"), "gitdir: elsewhere\n");
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+    const message = event.messages.find((entry) => entry.role === "user");
+    assert.ok(message && typeof message.content === "string");
+    assert.ok(message.content.includes("GIT WORKFLOW"));
+    assert.ok(message.content.includes("stage only intended task files or hunks"));
+    assert.ok(message.content.includes("using explicit paths"));
+    assert.ok(message.content.includes("git diff --cached"));
+    assert.ok(message.content.includes("intended new files are included"));
+    assert.ok(message.content.includes("Before an authorized commit"));
+    assert.ok(message.content.includes("If staging changes after review"));
+    assert.ok(!message.content.includes("SVN WORKFLOW"));
   });
 
   it("injects the configured language directive before all other context", () => {
@@ -441,8 +460,10 @@ describe("context-injector", () => {
     assert.ok(typeof lastUser.content === "string");
     assert.ok(lastUser.content.includes("WORKFLOW REMINDER"));
     assert.ok(lastUser.content.includes("3 file edit(s) since the last review"));
-    // An active plan with remaining steps adds the done nudge.
-    assert.ok(lastUser.content.includes("wai({ done: true })"));
+    // Inspect progress first: review may already advance the completed step.
+    assert.ok(lastUser.content.includes("review.planProgress/review.nextStep"));
+    assert.ok(lastUser.content.includes("only if the same reviewed step remains current"));
+    assert.ok(lastUser.content.includes("do not advance an unfinished next step"));
     assert.ok(lastUser.content.includes("plan step (1/1)"));
   });
 

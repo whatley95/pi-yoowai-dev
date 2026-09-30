@@ -283,6 +283,22 @@ describe("wai extension registration", () => {
     );
   });
 
+  it("registers guidance consistent with review certification, progress, commit authorization, and tool schemas", async () => {
+    const { pi, toolDefs } = createMockPi();
+    await initWai(pi);
+    const guidance = (toolDefs.find((tool) => tool.name === "wai")?.promptGuidelines as string[]).join("\n");
+    assert.match(guidance, /scoped or historical pass cannot clear the done gate/);
+    assert.match(guidance, /without files, exclude, revision, or since/);
+    assert.match(guidance, /only if the same reviewed step remains current/);
+    assert.match(guidance, /do not advance an unfinished next step/);
+    assert.match(guidance, /Commit when the user requests or has already authorized it/);
+    assert.match(guidance, /git diff --cached/);
+    assert.match(guidance, /acceptance criteria verified or still unverified/);
+    assert.match(guidance, /report the blocker/);
+    assert.doesNotMatch(guidance, /Scope reviews.*not the whole repo|never auto-commit|then done:true/);
+    assert.doesNotMatch(guidance, /\b(?:plan|review|advisor|suggest|recommend|judge|test|security):\s*true\b/);
+  });
+
   it("session_start attaches the current model registry and sessions replace/detach it", async () => {
     const { pi, eventHandlers } = createMockPi();
     await initWai(pi);

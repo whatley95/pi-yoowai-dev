@@ -9,6 +9,7 @@ import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
 import { getPastIssuesForFiles } from "../review-memory.js";
 import { estimateTokens, truncateToTokenBudget } from "../token-budget.js";
+import { buildPlanReviewReminder, GIT_COMMIT_GUIDANCE } from "../workflow-guidance.js";
 
 const executingCwds = new Map<string, { count: number }>();
 
@@ -74,13 +75,13 @@ function getConventionsText(cwd: string): string {
   return parts.join("\n");
 }
 
-function isSvnWorkingCopy(cwd: string): boolean {
+function projectVcs(cwd: string): "git" | "svn" | undefined {
   let directory = cwd;
   while (true) {
-    if (existsSync(join(directory, ".svn"))) return true;
-    if (existsSync(join(directory, ".git"))) return false;
+    if (existsSync(join(directory, ".svn"))) return "svn";
+    if (existsSync(join(directory, ".git"))) return "git";
     const parent = dirname(directory);
-    if (parent === directory) return false;
+    if (parent === directory) return undefined;
     directory = parent;
   }
 }
@@ -97,7 +98,9 @@ function buildContextBlock(cwd: string): string {
   // active (the parts.length guard below would otherwise emit nothing).
   const languageDirective = formatLanguageDirective(config.language);
   if (languageDirective) parts.push(languageDirective);
-  if (isSvnWorkingCopy(cwd)) {
+  const vcs = projectVcs(cwd);
+  if (vcs === "git") parts.push(GIT_COMMIT_GUIDANCE);
+  if (vcs === "svn") {
     parts.push(
       "SVN WORKFLOW: wai reviews unversioned files, but svn commit omits files marked ?. " +
         "Before the final whole-tree review, inspect `svn status` and schedule intended new task files with " +
@@ -141,7 +144,7 @@ function buildContextBlock(cwd: string): string {
     const state = getState(cwd);
     const planNudge =
       state.plan && state.completedSteps < state.totalSteps
-        ? ` If this work completes the current plan step (${state.completedSteps + 1}/${state.totalSteps}), call \`wai({ done: true })\` after the review passes to keep the plan tracker in sync.`
+        ? buildPlanReviewReminder(state.completedSteps, state.totalSteps)
         : "";
     const noPlanNudge =
       !state.plan || state.totalSteps === 0

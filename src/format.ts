@@ -3,6 +3,7 @@ import { formatCost } from "./cost-tracker.js";
 import { formatConventions } from "./conventions.js";
 import { planStepDescription, isPlanStep } from "./types.js";
 import type { StageProfile, WaiToolResult, ReviewLevel } from "./types.js";
+import { INCONCLUSIVE_REVIEW_GUIDANCE, REVIEW_PROGRESS_GUIDANCE } from "./workflow-guidance.js";
 
 export function issueEmoji(severity: "high" | "medium" | "low"): string {
   switch (severity) {
@@ -174,7 +175,7 @@ export function formatResultText(result: WaiToolResult): string {
       lines.push(
         result.review.scopeLimited
           ? "**Consensus:** The requested scope passed review; whole-tree certification is still pending."
-          : "**Consensus:** Both agents agree — step is complete.",
+          : "**Consensus:** No actionable issues reported for the reviewed change.",
       );
       if (result.review.planProgress) {
         lines.push(`**Progress:** ${result.review.planProgress}`);
@@ -187,7 +188,9 @@ export function formatResultText(result: WaiToolResult): string {
       }
       lines.push("");
       lines.push(
-        "**Workflow:** 1) If this single change finished multiple plan steps, call `wai.done` with those step numbers now. 2) Otherwise, implement the next step above. 3) Run `wai.review` when the step is ready. 4) Run `wai.judge` after the final step.",
+        result.review.scopeLimited
+          ? "**Workflow:** Use this result as feedback for the requested scope. Run a complete whole-tree review before certifying the step or calling done."
+          : `**Workflow:** ${REVIEW_PROGRESS_GUIDANCE} Run \`wai.judge\` after completing all plan steps.`,
       );
     } else if (result.review.verdict === "needs-work" || result.review.verdict === "blocked") {
       if (result.review.inconclusive) {
@@ -196,7 +199,7 @@ export function formatResultText(result: WaiToolResult): string {
             ? "**Review input incomplete:** Wai did not run a model review. Check the working directory, file scope, and VCS range before retrying."
             : result.review.planStale
               ? "**Inconclusive plan review:** The model reported a plan mismatch but no actionable code issue. Update the plan to match the work before retrying whole-tree certification."
-              : "**Inconclusive:** The review produced a non-pass verdict but no actionable issues — a truncated response or a verdict inconsistent with its own findings. Do not treat this as a pass or as a real failure; re-run `wai.review` (lower the thinking level or scope the diff with `files:[...]` if it repeats).",
+              : `**Inconclusive:** The model returned a non-pass verdict without actionable code issues. ${INCONCLUSIVE_REVIEW_GUIDANCE}`,
         );
       } else {
         lines.push("**Action:** Fix the issues above and call `wai.review` again.");

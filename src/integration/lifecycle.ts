@@ -43,6 +43,7 @@ import { supportsActionableSettle } from "./host-capabilities.js";
 import { updateWaiPlanWidget } from "./widget.js";
 import { flushSessionState, applyReviewOutcome } from "../session-state.js";
 import { unregisterWaiProvider } from "./provider.js";
+import { buildPlanReviewReminder } from "../workflow-guidance.js";
 
 const STEER_COOLDOWN_MS = 30_000;
 
@@ -399,11 +400,11 @@ export function registerLifecycleHandlers(
           : "";
 
       state.lastSteerAt = now;
-      // Nudge the plan tick too: tracker drift mostly happens because agents
-      // review but forget to mark the step done. Only when a plan is active.
+      // Review can advance the plan itself; inspect returned progress before
+      // considering done, so an unfinished next step cannot be skipped.
       const planNudge =
         state.plan && state.completedSteps < state.totalSteps
-          ? ` If this work completes the current plan step (${state.completedSteps + 1}/${state.totalSteps}), call \`wai({ done: true })\` after the review passes to keep the plan tracker in sync.`
+          ? buildPlanReviewReminder(state.completedSteps, state.totalSteps)
           : "";
       const noPlanEscalated = noActivePlan && (state.noPlanTurns ?? 0) >= (config.noPlanSteerEscalationThreshold ?? 3);
       const noPlanNudge = noActivePlan
