@@ -45,4 +45,10 @@ repo-specific and actionable; put always-true rules in AGENTS.md instead.
 - Required before review: `<FILL ME — evidence: CI steps or package scripts>` (typecheck), `<FILL ME — evidence: CI steps or package scripts>` (tests), `<FILL ME — evidence: CI steps or package scripts>` (contract check).
 - Required negative tests: `<FILL ME — evidence: existing test files>`.
 
+## SVN working copies
+
+- Wai reviews unversioned files without `svn add`, but `svn commit` omits files marked `?`.
+- Before the final whole-tree review, inspect `svn status` and run `svn add --parents -- <explicit file paths>` for intended new source, tests, and assets. Do not bulk-add `.`, `.pi/`, generated outputs, or unrelated files.
+- Before an authorized commit, verify intended new files show `A`. Adding files after a passing review changes the workspace fingerprint; run the whole-tree review again.
+
 > Authoritative docs: `<FILL ME — evidence: docs/README or API reference>` — do not duplicate full docs here.

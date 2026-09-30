@@ -164,6 +164,46 @@ describe("context-injector", () => {
     assert.ok(lastUser.content.includes("Node/TS"));
   });
 
+  it("reminds the main agent to schedule intended SVN files before final review even without a plan", () => {
+    mkdirSync(join(cwd, ".svn"));
+    const nestedCwd = join(cwd, "src");
+    mkdirSync(nestedCwd);
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(nestedCwd));
+    const message = event.messages.find((entry) => entry.role === "user");
+    assert.ok(message && typeof message.content === "string");
+    const content = message.content;
+    assert.ok(content.includes("SVN WORKFLOW"));
+    assert.ok(content.includes("svn commit omits files marked ?"));
+    assert.ok(content.includes("Before the final whole-tree review"));
+    assert.ok(content.includes("svn add --parents -- <explicit file paths>"));
+    assert.ok(content.includes("do not bulk-add '.', .pi/, generated outputs, or unrelated files"));
+    assert.ok(content.includes("verify intended new files show A"));
+    assert.ok(content.includes("run the whole-tree review again"));
+  });
+
+  it("uses the nearest VCS marker for the SVN workflow reminder", () => {
+    mkdirSync(join(cwd, ".svn"));
+    const gitCwd = join(cwd, "git-project");
+    mkdirSync(join(gitCwd, ".git"), { recursive: true });
+    const svnCwd = join(gitCwd, "svn-project");
+    mkdirSync(join(svnCwd, ".svn"), { recursive: true });
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    for (const [directory, expected] of [
+      [gitCwd, false],
+      [svnCwd, true],
+    ] as const) {
+      const event = makeMessages();
+      emitContext(event, makeContext(directory));
+      const message = event.messages.find((entry) => entry.role === "user");
+      assert.ok(message && typeof message.content === "string");
+      assert.equal(message.content.includes("SVN WORKFLOW"), expected);
+    }
+  });
+
   it("injects the configured language directive before all other context", () => {
     setPlan(cwd, {
       summary: "Refactor auth",

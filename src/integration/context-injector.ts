@@ -1,4 +1,6 @@
 import type { ExtensionAPI, ContextEvent } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { formatLanguageDirective, loadYoowaiConfig } from "../config.js";
 import { loadConventions } from "../conventions.js";
 import { findLearnedFacts, isFactFresh } from "../wai-learn.js";
@@ -72,6 +74,17 @@ function getConventionsText(cwd: string): string {
   return parts.join("\n");
 }
 
+function isSvnWorkingCopy(cwd: string): boolean {
+  let directory = cwd;
+  while (true) {
+    if (existsSync(join(directory, ".svn"))) return true;
+    if (existsSync(join(directory, ".git"))) return false;
+    const parent = dirname(directory);
+    if (parent === directory) return false;
+    directory = parent;
+  }
+}
+
 function buildContextBlock(cwd: string): string {
   const config = loadYoowaiConfig(cwd);
   const planSummary = getPlanSummary(cwd);
@@ -84,6 +97,15 @@ function buildContextBlock(cwd: string): string {
   // active (the parts.length guard below would otherwise emit nothing).
   const languageDirective = formatLanguageDirective(config.language);
   if (languageDirective) parts.push(languageDirective);
+  if (isSvnWorkingCopy(cwd)) {
+    parts.push(
+      "SVN WORKFLOW: wai reviews unversioned files, but svn commit omits files marked ?. " +
+        "Before the final whole-tree review, inspect `svn status` and schedule intended new task files with " +
+        "`svn add --parents -- <explicit file paths>`. Add only the intended source, tests, and assets; " +
+        "do not bulk-add '.', .pi/, generated outputs, or unrelated files. Before an authorized commit, " +
+        "verify intended new files show A. If you add files after review, run the whole-tree review again.",
+    );
+  }
   if (planSummary) parts.push(planSummary);
   if (conventionsText) parts.push(`<project_conventions>\n${conventionsText}\n</project_conventions>`);
   // Learned knowledge: newest-first FRESH facts + decisions (compact,
