@@ -89,7 +89,7 @@ export async function runWithConcurrencyLimit<T>(
   await Promise.all(workers);
   // Workers stop early on abort, leaving unstarted slots as holes. Fill them so
   // callers iterating outcomes don't hit a TypeError on undefined elements.
-  return results.map((r) => r ?? { ok: false, error: new Error("aborted") });
+  return Array.from(results, (r) => r ?? { ok: false, error: new Error("aborted") });
 }
 
 function normalizeIssueText(text: string): string {

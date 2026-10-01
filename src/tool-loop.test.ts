@@ -1,10 +1,12 @@
-import { describe, it, before } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executeToolLoop } from "./tool-loop.js";
 import type { UsageCost } from "./types.js";
+import { BENCHMARK_CASES } from "./review-benchmark.js";
+import { readRecentLogs } from "./logger.js";
 
 function zeroUsage(): UsageCost {
   return { estimatedInputTokens: 0, estimatedOutputTokens: 0, estimatedCostUsd: 0, sessionCostUsd: 0 };
@@ -26,6 +28,7 @@ describe("executeToolLoop", () => {
     mkdirSync(join(cwd, "src"), { recursive: true });
     writeFileSync(join(cwd, "src", "foo.ts"), "export function foo(): string { return 'hello'; }\n");
   });
+  after(() => rmSync(cwd, { recursive: true, force: true }));
 
   it("returns content in one pass when no tool is requested", async () => {
     const responses = ['{"verdict": "pass"}'];
@@ -103,11 +106,7 @@ describe("executeToolLoop", () => {
   });
 
   it("enforces the iteration cap", async () => {
-    const responses = [
-      '{"tool": "read_file", "path": "src/foo.ts"}',
-      '{"tool": "read_file", "path": "src/foo.ts"}',
-      '{"verdict": "pass"}',
-    ];
+    const responses = ['{"tool": "read_file", "path": "src/foo.ts"}', '{"verdict": "pass"}'];
     const calls: Array<{ system: string; user: string }> = [];
     const callModel = async (system: string, user: string) => {
       calls.push({ system, user });
@@ -117,9 +116,10 @@ describe("executeToolLoop", () => {
 
     const result = await executeToolLoop(cwd, "system", "user", {}, callModel, 1);
 
-    // 1 tool call + 1 cap warning + 1 forced final = 3 calls
-    assert.equal(calls.length, 3);
-    assert.equal(calls[2].user.includes("maximum number of tool requests"), true);
+    // Keep the one allowed context request, then ask for the verdict directly.
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].user.includes("maximum number of tool requests"), true);
+    assert.equal(calls[1].system, calls[0].system, "finalization preserves the cacheable system prefix");
     assert.equal(result.content, '{"verdict": "pass"}');
   });
 
@@ -274,7 +274,8 @@ describe("executeToolLoop", () => {
 
     const toolResult = calls[1];
     assert.equal(toolResult.includes("truncated — file has 500 lines"), true);
-    assert.equal(toolResult.includes('"startLine":1'), true);
+    const next = JSON.parse(toolResult.match(/next page: (\{[^\n]+\})/)![1]);
+    assert.ok(next.startLine > 1, "paging must advance past the first page");
   });
 
   it("truncates run_command output keeping head and tail", async () => {
@@ -304,14 +305,256 @@ describe("executeToolLoop", () => {
     const calls: string[] = [];
     const callModel = async (_system: string, user: string) => {
       calls.push(user);
-      return { content: '{"tool": "read_file", "path": "src/foo.ts"}', usage: zeroUsage() };
+      return {
+        content: calls.length <= 5 ? '{"tool": "read_file", "path": "src/foo.ts"}' : '{"verdict":"pass"}',
+        usage: zeroUsage(),
+      };
     };
 
     await executeToolLoop(cwd, "system", "user", {}, callModel);
 
-    // 5 tool requests within the cap + 1 at the cap + 1 forced final call.
-    assert.equal(calls.length, 7);
-    assert.equal(calls[6].includes("maximum number of tool requests"), true);
+    // The same five permitted requests, with no discarded sixth request.
+    assert.equal(calls.length, 6);
+    assert.equal(calls[5].includes("maximum number of tool requests"), true);
+  });
+
+  it("fails closed when the model requests more tools after the final-only prompt", async () => {
+    let calls = 0;
+    await assert.rejects(
+      executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        {},
+        async () => {
+          calls++;
+          return { content: '{"tool":"read_file","path":"src/foo.ts"}', usage: zeroUsage() };
+        },
+        1,
+      ),
+      /allowance exhausted/,
+    );
+    assert.equal(calls, 2);
+  });
+
+  it("batches file reads without losing any seeded-bug or clean-control evidence", async () => {
+    const files = BENCHMARK_CASES.map((fixture) => {
+      const path = `src/${fixture.id}.js`;
+      writeFileSync(join(cwd, path), fixture.after);
+      return path;
+    });
+    const run = async (batchSize: number) => {
+      let cursor = 0;
+      const calls: string[] = [];
+      const result = await executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        {},
+        async (_system, user) => {
+          calls.push(user);
+          const reads = files.slice(cursor, cursor + batchSize).map((path) => ({ tool: "read_file", path }));
+          cursor += reads.length;
+          return {
+            content: reads.length
+              ? JSON.stringify(reads.length === 1 ? reads[0] : { tools: reads })
+              : '{"verdict":"pass"}',
+            usage: zeroUsage(),
+          };
+        },
+        files.length,
+      );
+      for (const fixture of BENCHMARK_CASES) assert.ok(calls.at(-1)!.includes(fixture.after.trim()), fixture.id);
+      return { calls, result };
+    };
+    const serial = await run(1);
+    const batched = await run(4);
+    assert.equal(serial.calls.length, 9);
+    assert.equal(batched.calls.length, 3);
+    assert.equal(batched.result.content, serial.result.content);
+  });
+
+  it("counts every batch read against the unchanged request allowance", async () => {
+    await assert.rejects(
+      executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        {},
+        async () => ({
+          content: JSON.stringify({
+            tools: Array.from({ length: 3 }, () => ({ tool: "read_file", path: "src/foo.ts" })),
+          }),
+          usage: zeroUsage(),
+        }),
+        2,
+      ),
+      /batch exceeds.*2 remaining/,
+    );
+    await assert.rejects(
+      executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        {},
+        async () => ({
+          content: '{"tools":[{"tool":"run_command","command":"node --version"}]}',
+          usage: zeroUsage(),
+        }),
+        2,
+      ),
+      /read_file only/,
+    );
+  });
+
+  it("keeps unsafe batch paths visibly rejected while returning the allowed file", async () => {
+    let calls = 0;
+    await executeToolLoop(
+      cwd,
+      "system",
+      "user",
+      {},
+      async (_system, user) => {
+        calls++;
+        if (calls === 2) {
+          assert.match(user, /Path is not allowed/);
+          assert.match(user, /export function foo/);
+        }
+        return {
+          content:
+            calls === 1
+              ? '{"tools":[{"tool":"read_file","path":"../private.txt"},{"tool":"read_file","path":"src/foo.ts"}]}'
+              : '{"verdict":"pass"}',
+          usage: zeroUsage(),
+        };
+      },
+      2,
+    );
+  });
+
+  it("references an unchanged prior read, then refreshes after the file changes", async () => {
+    const path = "src/reused.ts";
+    writeFileSync(join(cwd, path), "ORIGINAL_EVIDENCE");
+    let calls = 0;
+    await executeToolLoop(
+      cwd,
+      "system",
+      "user",
+      {},
+      async (_system, user) => {
+        calls++;
+        if (calls === 3) {
+          assert.match(user, /already returned in context request 1/);
+          assert.equal(user.match(/ORIGINAL_EVIDENCE/g)?.length, 1);
+          writeFileSync(join(cwd, path), "UPDATED_EVIDENCE_LONGER");
+        }
+        if (calls === 4) assert.match(user, /UPDATED_EVIDENCE_LONGER/);
+        return {
+          content: calls < 4 ? JSON.stringify({ tool: "read_file", path }) : '{"verdict":"pass"}',
+          usage: zeroUsage(),
+        };
+      },
+      3,
+    );
+  });
+
+  for (const ranged of [false, true]) {
+    it(`pages through ${ranged ? "an absolute line range" : "a very long line"} without gaps or repeated content`, async () => {
+      const lines = ranged
+        ? Array.from({ length: 600 }, (_, i) => `row-${i + 1}-${"x".repeat(30)}`)
+        : ["LONG_LINE_" + "x".repeat(9400) + "_TAIL"];
+      const path = `src/paged-${ranged}.ts`;
+      writeFileSync(join(cwd, path), lines.join("\n"));
+      const pages: string[] = [];
+      let next: unknown = { tool: "read_file", path, ...(ranged ? { startLine: 150, endLine: 400 } : {}) };
+      await executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        {},
+        async (_system, user) => {
+          if (pages.length > 0 || user.includes("## Tool result:")) {
+            const result = user.slice(user.lastIndexOf("## Tool result:"));
+            const page = result
+              .slice(result.indexOf("]\n") + 2)
+              .split("\n… (truncated")[0]
+              .split("\n\nRemaining context requests:")[0];
+            pages.push(page);
+            const hint = result.match(/next page: (\{[^\n]+\})/);
+            next = hint ? JSON.parse(hint[1]) : { verdict: "pass" };
+            if (hint && ranged) assert.ok((next as { startLine: number }).startLine >= 150);
+          }
+          return { content: JSON.stringify(next), usage: zeroUsage() };
+        },
+        5,
+      );
+      assert.equal(pages.join(""), (ranged ? lines.slice(149, 400) : lines).join("\n"));
+    });
+  }
+
+  it("logs correlated model/tool timings, file ranges, and repeat-read reuse", async () => {
+    let calls = 0;
+    await executeToolLoop(
+      cwd,
+      "system",
+      "user",
+      { task: "review", relevantPaths: ["src/foo.ts"] },
+      async () => ({
+        content:
+          ++calls < 3 ? '{"tool":"read_file","path":"src/foo.ts","startLine":1,"endLine":1}' : '{"verdict":"pass"}',
+        usage: zeroUsage(),
+      }),
+      2,
+    );
+    const logs = readRecentLogs(cwd, 100);
+    const completed = logs.find((line) => line.includes("Tool loop completed") && line.includes('"toolRequests":2'))!;
+    const loopId = JSON.parse(completed.split(" | ")[1]).loopId;
+    const entries = logs.filter((line) => line.includes(loopId)).map((line) => JSON.parse(line.split(" | ")[1]));
+    assert.ok(entries.some((entry) => entry.startLine === 1 && entry.endLine === 1 && entry.reused === true));
+    assert.ok(entries.some((entry) => entry.modelCall === 3 && entry.finalOnly === true));
+    assert.ok(entries.some((entry) => typeof entry.elapsedMs === "number" && entry.files?.includes("src/foo.ts")));
+  });
+
+  it("always reruns commands and records user cancellation separately from model failure", async () => {
+    const script = "src/live-command.cjs";
+    const countPath = join(cwd, "command-runs");
+    writeFileSync(
+      join(cwd, script),
+      "const fs = require('node:fs'); const p = 'command-runs'; const n = fs.existsSync(p) ? Number(fs.readFileSync(p, 'utf8')) : 0; fs.writeFileSync(p, String(n + 1)); console.log(n + 1);",
+    );
+    let calls = 0;
+    await executeToolLoop(
+      cwd,
+      "system",
+      "user",
+      {},
+      async () => ({
+        content:
+          ++calls < 3 ? JSON.stringify({ tool: "run_command", command: `node ${script}` }) : '{"verdict":"pass"}',
+        usage: zeroUsage(),
+      }),
+      2,
+    );
+    const { readFileSync } = await import("node:fs");
+    assert.equal(readFileSync(countPath, "utf8"), "2");
+    const controller = new AbortController();
+    await assert.rejects(
+      executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        { signal: controller.signal },
+        async () => {
+          controller.abort();
+          throw new Error("manual cancellation");
+        },
+        2,
+      ),
+      /manual cancellation/,
+    );
+    assert.ok(
+      readRecentLogs(cwd).some((line) => line.includes("Tool loop model stopped") && line.includes('"cancelled":true')),
+    );
   });
 
   it("executes a search_code request and returns file:line matches with context", async () => {

@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { logEvent } from "./logger.js";
 import { parseJsonResponse } from "./prompts.js";
 import { runPreReviewCommands } from "./pre-review.js";
@@ -14,6 +15,8 @@ export interface ToolRequest {
   /** Optional 1-based inclusive line range for read_file. */
   startLine?: number;
   endLine?: number;
+  /** Zero-based character offset into the selected range (for very long lines). */
+  offset?: number;
   /** Regex pattern for search_code. */
   pattern?: string;
   /** Surrounding lines per match for search_code (0-5, default 1). */
@@ -28,6 +31,7 @@ export interface ToolResult {
 const DEFAULT_MAX_ITERATIONS = 5;
 const MAX_TOOL_FILE_BYTES = 100 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 4000;
+const MAX_BATCH_READS = 4;
 const MAX_SEARCH_MATCHES = 50;
 // Guardrails for the model-generated search pattern: length cap, and a
 // nested-quantifier heuristic for catastrophic-backtracking shapes like
@@ -45,14 +49,21 @@ const MAX_SEARCH_LINE_CHARS = 10_000;
 const NESTED_QUANTIFIER_RE = /\([^)]*[+*{][^)]*\)\s*[+*{]/;
 
 function buildToolInstruction(maxIterations: number): string {
+  const batchExample = JSON.stringify({
+    tools: [
+      { tool: "read_file", path: "src/component.ts" },
+      ...(maxIterations > 1 ? [{ tool: "read_file", path: "src/component.spec.ts" }] : []),
+    ],
+  });
   return `You may request additional context before producing your final structured JSON result. To request context, output a single JSON block exactly like one of these examples and nothing else:
 
 {"tool": "read_file", "path": "relative/path/to/file.ts"}
 {"tool": "read_file", "path": "relative/path/to/file.ts", "startLine": 100, "endLine": 200}
+${batchExample}
 {"tool": "search_code", "pattern": "functionName\\\\(", "path": "src", "contextLines": 2}
 {"tool": "run_command", "command": "npm run typecheck"}
 
-read_file accepts optional startLine/endLine (1-based, inclusive) to page through large files; when a file is truncated, the result tells you the total line count so you can request a specific range. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match) — use it to locate callers, definitions, or patterns, then read_file the hits. run_command blocks destructive subcommands (push/reset/publish/…); for git, use "<command> -h" for terminal usage — full help ("--help" or "git help …") is rejected because it can open an external viewer (a browser on Windows).
+read_file accepts optional startLine/endLine (1-based, inclusive) and offset (zero-based characters within that range) to page through large files. Follow the exact next-page request in a truncated result; it preserves absolute line numbers and does not repeat the first page. Batch up to ${Math.min(MAX_BATCH_READS, maxIterations)} read_file requests in a tools array when you already know which files you need. Each read counts against the same request allowance. Use the diff, file contents, and previous tool results already provided before requesting more context; repeated identical reads add no evidence unless the file changes. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match). run_command accepts ONE allowlisted command without shell operators: no semicolons, pipes, &&, substitutions, grep, or ls. Use search_code/read_file for source inspection. It blocks destructive subcommands (push/reset/publish/…); for git, use "<command> -h" for terminal usage — full help ("--help" or "git help …") is rejected because it can open an external viewer (a browser on Windows).
 
 You may make up to ${maxIterations} such request(s). After each request, the tool result will be appended to this conversation. Once you have enough context, produce the final structured JSON result requested below. Do not output explanatory text with a tool request. If no additional context is needed, produce the final JSON result immediately.`;
 }
@@ -74,21 +85,53 @@ function parseToolRequest(text: string): ToolRequest | null {
     command: typeof obj.command === "string" ? obj.command : undefined,
     startLine: typeof obj.startLine === "number" && Number.isFinite(obj.startLine) ? obj.startLine : undefined,
     endLine: typeof obj.endLine === "number" && Number.isFinite(obj.endLine) ? obj.endLine : undefined,
+    offset:
+      typeof obj.offset === "number" && Number.isFinite(obj.offset) ? Math.max(0, Math.floor(obj.offset)) : undefined,
     pattern: typeof obj.pattern === "string" ? obj.pattern : undefined,
     contextLines,
   };
 }
 
-/** Truncate file content with a paging hint so the model can request a
- *  specific line range next. */
-function truncateFileOutput(text: string, path: string): string {
-  if (text.length <= MAX_TOOL_OUTPUT_CHARS) return text;
-  const totalLines = text.split(/\r?\n/).length;
-  const endLine = Math.min(totalLines, 300);
-  return (
-    text.slice(0, MAX_TOOL_OUTPUT_CHARS) +
-    `\n… (truncated — file has ${totalLines} lines; request {"tool":"read_file","path":"${path}","startLine":1,"endLine":${endLine}} for a specific range)`
-  );
+function parseToolRequests(text: string): ToolRequest[] | null {
+  const parsed = parseJsonResponse(text);
+  if (parsed && typeof parsed === "object" && "tools" in parsed) {
+    const batch = (parsed as { tools?: unknown }).tools;
+    if (!Array.isArray(batch) || batch.length === 0 || batch.length > MAX_BATCH_READS)
+      throw new Error(`Context batches must contain 1-${MAX_BATCH_READS} read_file requests.`);
+    const requests = batch.map((item) => parseToolRequest(JSON.stringify(item)));
+    if (requests.some((item) => !item || item.tool !== "read_file"))
+      throw new Error("Context batches support read_file only; run other tools separately.");
+    return requests as ToolRequest[];
+  }
+  const request = parseToolRequest(text);
+  return request ? [request] : null;
+}
+
+/** Bound each page, preserve full lines where possible, and give a request
+ *  that advances even when a single line exceeds the output cap. */
+function pageFileOutput(lines: string[], path: string, start: number, end: number, offset = 0): string {
+  const selected = lines.slice(start - 1, end).join("\n");
+  offset = Math.min(offset, selected.length);
+  let page = selected.slice(offset, offset + MAX_TOOL_OUTPUT_CHARS);
+  if (offset + page.length < selected.length) {
+    const newline = page.lastIndexOf("\n");
+    if (newline >= 0) page = page.slice(0, newline + 1);
+  }
+  const consumed = offset + page.length;
+  const prefix = selected.slice(0, consumed);
+  const nextLine = start + (prefix.match(/\n/g)?.length ?? 0);
+  const header = `[${path}: requested lines ${start}-${end}; file has ${lines.length} lines; offset ${offset}]\n`;
+  if (consumed >= selected.length) return header + page;
+  const lastNewline = prefix.lastIndexOf("\n");
+  const nextOffset = consumed - lastNewline - 1;
+  const nextRequest = {
+    tool: "read_file",
+    path,
+    startLine: nextLine,
+    endLine: end,
+    ...(nextOffset > 0 ? { offset: nextOffset } : {}),
+  };
+  return header + page + `\n… (truncated — file has ${lines.length} lines; next page: ${JSON.stringify(nextRequest)})`;
 }
 
 /** Truncate command output keeping head (~70%) and tail (~30%) — command
@@ -101,28 +144,20 @@ function truncateCommandOutput(text: string): string {
   return `${text.slice(0, headChars)}\n… (${elided} chars elided) …\n${text.slice(-tailChars)}`;
 }
 
-function readFileTool(cwd: string, path: string, startLine?: number, endLine?: number): ToolResult {
+function readFileTool(cwd: string, path: string, startLine?: number, endLine?: number, offset?: number): ToolResult {
   const safePath = resolveProjectPath(cwd, path);
   if (!safePath) {
     return { output: "", error: `Path is not allowed: ${path}` };
   }
   try {
     const content = readFileSync(safePath, "utf-8");
-    if (startLine !== undefined || endLine !== undefined) {
-      const lines = content.split(/\r?\n/);
-      // Clamp to file bounds; swap when inverted. Non-finite values were
-      // already filtered during request parsing.
-      let start = Math.max(1, Math.floor(startLine ?? 1));
-      let end = Math.min(lines.length, Math.floor(endLine ?? lines.length));
-      if (start > end) [start, end] = [Math.max(1, Math.min(end, lines.length)), Math.min(lines.length, start)];
-      const ranged = lines.slice(start - 1, end).join("\n");
-      return { output: truncateFileOutput(ranged, path) };
-    }
-    const stats = statSync(safePath);
-    if (stats.size > MAX_TOOL_FILE_BYTES) {
-      return { output: truncateFileOutput(content, path) };
-    }
-    return { output: truncateFileOutput(content, path) };
+    const lines = content.split(/\r?\n/);
+    // Clamp to file bounds; swap when inverted. Non-finite values were
+    // already filtered during request parsing.
+    let start = Math.max(1, Math.floor(startLine ?? 1));
+    let end = Math.min(lines.length, Math.floor(endLine ?? lines.length));
+    if (start > end) [start, end] = [Math.max(1, Math.min(end, lines.length)), Math.min(lines.length, start)];
+    return { output: pageFileOutput(lines, path, start, end, offset) };
   } catch (err) {
     return { output: "", error: err instanceof Error ? err.message : String(err) };
   }
@@ -228,13 +263,20 @@ function searchCodeTool(cwd: string, request: ToolRequest): ToolResult {
 
   if (matches === 0) return { output: `No matches for /${pattern}/ in ${files.length} file(s).` };
   const header = stoppedEarly ? `… (stopped after ${MAX_SEARCH_MATCHES} matches)\n` : "";
-  return { output: truncateFileOutput(header + out.join("\n"), request.path ?? "(search)") };
+  const output = header + out.join("\n");
+  return {
+    output:
+      output.length > MAX_TOOL_OUTPUT_CHARS
+        ? output.slice(0, MAX_TOOL_OUTPUT_CHARS) +
+          "\n… (search results truncated; narrow the pattern or path to inspect more matches)"
+        : output,
+  };
 }
 
 async function executeTool(cwd: string, request: ToolRequest, signal?: AbortSignal): Promise<ToolResult> {
   if (request.tool === "read_file") {
     if (!request.path) return { output: "", error: "read_file requires a path" };
-    return readFileTool(cwd, request.path, request.startLine, request.endLine);
+    return readFileTool(cwd, request.path, request.startLine, request.endLine, request.offset);
   }
   if (request.tool === "search_code") {
     return searchCodeTool(cwd, request);
@@ -249,12 +291,23 @@ async function executeTool(cwd: string, request: ToolRequest, signal?: AbortSign
 function formatToolResult(request: ToolRequest, result: ToolResult): string {
   const description =
     request.tool === "read_file"
-      ? `read_file ${request.path}`
+      ? `read_file ${request.path}${request.startLine !== undefined || request.endLine !== undefined ? ` lines ${request.startLine ?? 1}-${request.endLine ?? "end"}` : ""}${request.offset ? ` offset ${request.offset}` : ""}`
       : request.tool === "search_code"
         ? `search_code /${request.pattern}/${request.path ? ` in ${request.path}` : ""}`
         : `run_command ${request.command}`;
   const body = result.error ? `Error: ${result.error}\n${result.output}` : result.output;
-  return `\n\n## Tool result: ${description}\n${body}\n\nYou may request another tool or produce the final structured JSON result.`;
+  return `\n\n## Tool result: ${description}\n${body}`;
+}
+
+function fileStamp(cwd: string, path: string | undefined): string | undefined {
+  const resolved = path && resolveProjectPath(cwd, path);
+  if (!resolved) return undefined;
+  try {
+    const stat = statSync(resolved);
+    return JSON.stringify([resolved, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs]);
+  } catch {
+    return undefined;
+  }
 }
 
 // NOTE: The tool-loop path is intentionally excluded from full continuation handling
@@ -274,69 +327,145 @@ export async function executeToolLoop(
   ) => Promise<{ content: string; usage: UsageCost; truncated?: boolean }>,
   maxToolIterations = DEFAULT_MAX_ITERATIONS,
 ): Promise<{ content: string; usage: UsageCost; truncated?: boolean }> {
+  maxToolIterations = Number.isFinite(maxToolIterations)
+    ? Math.max(0, Math.floor(maxToolIterations))
+    : DEFAULT_MAX_ITERATIONS;
   const toolInstruction = buildToolInstruction(maxToolIterations);
   const augmentedSystem = `${toolInstruction}\n\n${systemPrompt}`;
-
+  const loopId = randomUUID();
+  const started = Date.now();
+  const metadata = { loopId, task: options.task, files: options.relevantPaths };
   let currentUser = userPrompt;
   let totalUsage: UsageCost | undefined;
+  let used = 0;
+  let modelCalls = 0;
+  const reads = new Map<string, { stamp: string; result: ToolResult; iteration: number }>();
 
-  for (let i = 0; i <= maxToolIterations; i++) {
-    const { content, usage, truncated } = await callModel(augmentedSystem, currentUser, options);
+  while (used <= maxToolIterations) {
+    const finalOnly = used >= maxToolIterations;
+    // Keep the system/prompt prefix stable for provider prompt caching.
+    const system = augmentedSystem;
+    const user = finalOnly
+      ? currentUser +
+        "\n\nYou have reached the maximum number of tool requests. Produce the final structured JSON result now without additional tools. If necessary evidence is missing, state that limitation; do not claim complete coverage."
+      : currentUser;
+    modelCalls++;
+    const modelStarted = Date.now();
+    logEvent(cwd, "info", "Tool loop model started", {
+      ...metadata,
+      modelCall: modelCalls,
+      finalOnly,
+      remainingRequests: maxToolIterations - used,
+    });
+    let response: Awaited<ReturnType<typeof callModel>>;
+    try {
+      response = await callModel(system, user, options);
+    } catch (error) {
+      logEvent(cwd, options.signal?.aborted ? "info" : "warn", "Tool loop model stopped", {
+        ...metadata,
+        modelCall: modelCalls,
+        elapsedMs: Date.now() - modelStarted,
+        cancelled: options.signal?.aborted === true,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    const { content, usage, truncated } = response;
     totalUsage = totalUsage ? mergeUsageCost(totalUsage, usage) : usage;
-
-    const request = parseToolRequest(content);
-    if (!request) {
-      return toolLoopWrapTruncated(
+    logEvent(cwd, "info", "Tool loop model completed", {
+      ...metadata,
+      modelCall: modelCalls,
+      elapsedMs: Date.now() - modelStarted,
+      finalOnly,
+    });
+    const requests = parseToolRequests(content);
+    if (!requests) {
+      const result = await toolLoopWrapTruncated(
         cwd,
-        augmentedSystem,
-        currentUser,
+        system,
+        user,
         options,
-        callModel,
+        async (s, u, o) => {
+          const resumeStarted = Date.now();
+          modelCalls++;
+          logEvent(cwd, "info", "Tool loop model started", {
+            ...metadata,
+            modelCall: modelCalls,
+            phase: "resume",
+            finalOnly: true,
+          });
+          try {
+            const resumed = await callModel(s, u, o);
+            logEvent(cwd, "info", "Tool loop model completed", {
+              ...metadata,
+              modelCall: modelCalls,
+              phase: "resume",
+              elapsedMs: Date.now() - resumeStarted,
+              finalOnly: true,
+            });
+            return resumed;
+          } catch (error) {
+            logEvent(cwd, o.signal?.aborted ? "info" : "warn", "Tool loop model stopped", {
+              ...metadata,
+              modelCall: modelCalls,
+              phase: "resume",
+              elapsedMs: Date.now() - resumeStarted,
+              cancelled: o.signal?.aborted === true,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            throw error;
+          }
+        },
         content,
         totalUsage,
         truncated,
       );
+      logEvent(cwd, "info", "Tool loop completed", {
+        ...metadata,
+        modelCalls,
+        toolRequests: used,
+        elapsedMs: Date.now() - started,
+        truncated: result.truncated,
+      });
+      return result;
     }
 
-    logEvent(cwd, "info", "Tool loop request", {
-      iteration: i + 1,
-      tool: request.tool,
-      path: request.path,
-      command: request.command,
-    });
-
-    if (i >= maxToolIterations) {
-      currentUser +=
-        "\n\nYou have reached the maximum number of tool requests. Please produce the final structured JSON result now without additional tools.";
-      const {
-        content: finalContent,
-        usage: finalUsage,
-        truncated: finalTruncated,
-      } = await callModel(augmentedSystem, currentUser, options);
-      totalUsage = mergeUsageCost(totalUsage, finalUsage);
-      return toolLoopWrapTruncated(
-        cwd,
-        augmentedSystem,
-        currentUser,
-        options,
-        callModel,
-        finalContent,
-        totalUsage,
-        finalTruncated,
+    if (finalOnly)
+      throw new Error(
+        "Context-request allowance exhausted: the reviewer requested more evidence instead of producing a final result.",
       );
+    if (requests.length > maxToolIterations - used)
+      throw new Error(
+        `Context batch exceeds the ${maxToolIterations - used} remaining request(s); coverage is incomplete.`,
+      );
+    for (const request of requests) {
+      options.signal?.throwIfAborted();
+      used++;
+      const detail = { ...metadata, iteration: used, modelCall: modelCalls, batchSize: requests.length, ...request };
+      logEvent(cwd, "info", "Tool loop request", detail);
+      const toolStarted = Date.now();
+      const key = JSON.stringify(request);
+      const stamp = request.tool === "read_file" ? fileStamp(cwd, request.path) : undefined;
+      const previous = stamp && reads.get(key);
+      const reused = previous && previous.stamp === stamp;
+      const result = reused
+        ? {
+            output: `The unchanged file/range was already returned in context request ${previous.iteration}. Use that result above; request a different range if you need missing lines.`,
+          }
+        : await executeTool(cwd, request, options.signal);
+      options.signal?.throwIfAborted();
+      if (stamp && !reused && !result.error && fileStamp(cwd, request.path) === stamp)
+        reads.set(key, { stamp, result, iteration: used });
+      logEvent(cwd, "info", "Tool loop result", {
+        ...detail,
+        elapsedMs: Date.now() - toolStarted,
+        reused: !!reused,
+        error: result.error,
+        outputLength: result.output.length,
+      });
+      currentUser += formatToolResult(request, result);
     }
-
-    const result = await executeTool(cwd, request, options.signal);
-    options.signal?.throwIfAborted();
-    logEvent(cwd, "info", "Tool loop result", {
-      iteration: i + 1,
-      tool: request.tool,
-      path: request.path,
-      command: request.command,
-      error: result.error,
-      outputLength: result.output.length,
-    });
-    currentUser += formatToolResult(request, result);
+    currentUser += `\n\nRemaining context requests: ${maxToolIterations - used}. Batch known file reads within that allowance, request only missing evidence, or produce the final structured JSON result.`;
   }
 
   // All loop iterations return early; this path is unreachable.

@@ -50,7 +50,7 @@ jobs:
             "type": "module",
             "scripts": {
               "typecheck": "tsc --noEmit",
-              "test-focused": "node --import tsx --test src/file-write-tools.test.ts src/backends/sdk-backend.test.ts src/integration/*.test.ts src/index.test.ts src/wai-vision.test.ts src/secondary-model.test.ts src/auth-reader.test.ts src/actions/scan.test.ts src/actions/test.test.ts src/actions/done.test.ts src/json-read-cache.test.ts src/wai-learn.test.ts src/review-memory.test.ts src/wai-index.test.ts"
+              "test-focused": "node --import tsx --test src/file-write-tools.test.ts src/backends/sdk-backend.test.ts src/integration/*.test.ts src/index.test.ts src/wai-vision.test.ts src/secondary-model.test.ts src/auth-reader.test.ts src/actions/scan.test.ts src/actions/test.test.ts src/actions/done.test.ts src/json-read-cache.test.ts src/wai-learn.test.ts src/review-memory.test.ts src/wai-index.test.ts src/tool-loop.test.ts src/actions/review-batching.test.ts"
             },
             "dependencies": {
               "@earendil-works/pi-agent-core": "0.99.2",

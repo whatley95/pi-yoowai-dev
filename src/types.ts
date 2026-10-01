@@ -87,6 +87,8 @@ export interface YoowaiConfig {
   toolUseLoop?: boolean | number;
   /** Run a separate review call per changed file in parallel. Boolean enables default concurrency; number sets max concurrency. */
   parallelReview?: boolean | number;
+  /** Opt-in maximum related files per parallel batch (default 1 preserves per-file routing). */
+  reviewBatchFiles?: number;
   /** Run a deeper project scan by reading representative source files. Boolean enables default sampling; number sets max files to read. */
   deepScan?: boolean | number;
   /** Per-model token-budget overrides. Key is the model id (e.g. "qwen3.7-max"). */

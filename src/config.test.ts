@@ -28,6 +28,23 @@ function writeProjectSettings(cwd: string, yooSettings: Record<string, unknown>)
   writeFileSync(join(piDir, "settings.json"), JSON.stringify({ "pi-yoowai": yooSettings }, null, 2), "utf-8");
 }
 
+it("requires explicit positive integer opt-in for review file grouping", () => {
+  const cwd = makeTempDir("config-review-batches-");
+  const agentDir = makeTempDir("config-review-batches-agent-");
+  const previousAgentDir = getAgentDir();
+  try {
+    setAgentDirForTests(() => agentDir);
+    for (const value of [1, 3, 0, -1, 1.5, "3"]) {
+      writeProjectSettings(cwd, { reviewBatchFiles: value });
+      assert.equal(loadYoowaiConfig(cwd).reviewBatchFiles, value === 3 ? 3 : 1);
+    }
+  } finally {
+    setAgentDirForTests(() => previousAgentDir);
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
 describe("language config", () => {
   const tmpDirs: string[] = [];
   const originalAgentDir = getAgentDir();

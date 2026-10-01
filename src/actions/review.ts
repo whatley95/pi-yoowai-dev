@@ -18,6 +18,7 @@ import { getPastIssuesForFiles, recordIssues } from "../review-memory.js";
 import { selectLearnedFacts, formatLearnedContext } from "../wai-learn.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
 import { resolveEffectivePreReviewCommands, resolveEffectiveToolLoop } from "./context-shared.js";
+import { groupRelatedReviewFiles } from "./review-batching.js";
 import { calculateReviewBudget, estimateTokens, truncateToTokenBudget, type ReviewBudget } from "../token-budget.js";
 import { getSessionCost, getReservedCost, formatCost } from "../cost-tracker.js";
 import { logEvent } from "../logger.js";
@@ -385,6 +386,7 @@ export async function executeWaiReview(
     reviewStrategy: effectiveConfig.reviewStrategy,
     reviewFullFileThresholdLines: config.reviewFullFileThresholdLines,
     parallelReview: config.parallelReview,
+    reviewBatchFiles: config.reviewBatchFiles ?? 1,
     selfVerify: config.selfVerify,
     conventionsText,
     memoryContext,
@@ -785,10 +787,76 @@ export async function executeWaiReview(
       }),
     );
 
+    const batchBudget = (items: FilePrep[]) =>
+      calculateReviewBudget(
+        modelConfig.provider,
+        modelConfig.id,
+        effectiveConfig,
+        {
+          systemPrompt: "",
+          sessionContext,
+          conventionsText,
+          preReviewOutput,
+          description,
+          memoryContext: [...new Set(items.map((p) => p.fileMemoryContext))].join("\n\n"),
+        },
+        modelConfig,
+      );
+    const contextTokens = [
+      codemap,
+      designRefText,
+      instructionsText,
+      priorRoundContext,
+      decisionsText,
+      relatedContext,
+    ].reduce((total, text) => total + estimateTokens(text ?? ""), 0);
+    const groups = groupRelatedReviewFiles(
+      preps.map((p) => ({ ...p, content: p.fileResult.entries.map((entry) => entry.content).join("\n") })),
+      config.reviewBatchFiles ?? 1,
+      (items) => {
+        if (
+          items.some(
+            (p) =>
+              p.droppedForBudget.length ||
+              perFileTruncated.has(p.file) ||
+              p.fileResult.entries.length === 0 ||
+              p.fileResult.entries.some((entry) => entry.mode !== "full"),
+          )
+        )
+          return false;
+        const tokens = items.reduce(
+          (total, p) => total + p.fileResult.totalTokens + estimateTokens(fileDiffs[p.file] ?? ""),
+          0,
+        );
+        const budget = batchBudget(items);
+        return (
+          tokens + contextTokens + 1000 + (effectiveConfig.evidencePackMaxTokens ?? 1200) <=
+          Math.min(budget.availableInputTokens, budget.hardInputCap ?? Infinity)
+        );
+      },
+    );
+    const batches = groups.map((items) => ({
+      files: items.map((p) => p.file),
+      fileMemoryContext: [...new Set(items.map((p) => p.fileMemoryContext))].join("\n\n"),
+      fileBudget: items.length === 1 ? items[0].fileBudget : batchBudget(items),
+      fileResult: {
+        entries: items.flatMap((p) => p.fileResult.entries),
+        dropped: items.flatMap((p) => p.fileResult.dropped),
+      },
+      droppedForBudget: items.flatMap((p) => p.droppedForBudget),
+      diff: items.map((p) => fileDiffs[p.file] ?? "").join("\n"),
+    }));
+    logEvent(cwd, "info", "Review batches prepared", {
+      fileCount: preps.length,
+      batchCount: batches.length,
+      filesPerBatch: batches.map((p) => p.files),
+      reviewBatchFiles: config.reviewBatchFiles ?? 1,
+    });
+
     let projectedCost = 0;
-    for (const p of preps) {
+    for (const p of batches) {
       const contentTokens = p.fileResult.entries.reduce((sum, e) => sum + e.tokenEstimate, 0);
-      const diffTokens = estimateTokens(fileDiffs[p.file] ?? "");
+      const diffTokens = estimateTokens(p.diff);
       const inputEstimate =
         1000 + estimateTokens(sharedContextEstimate) + contentTokens + diffTokens + estimateTokens(p.fileMemoryContext);
       projectedCost += estimateCost(modelConfig.provider, modelConfig.id, inputEstimate, outputEstimate);
@@ -804,53 +872,76 @@ export async function executeWaiReview(
       }
     }
 
-    const tasks = preps.map((p) => async () => {
-      const result = await runReviewBatch({
-        cwd,
-        description,
-        files: p.fileResult.entries,
-        diff: fileDiffs[p.file] ?? "",
-        vcs,
-        criteria,
-        currentStep,
-        sessionContext,
-        conventionsText,
-        preReviewOutput,
-        memoryContext: p.fileMemoryContext,
-        decisionsContext: decisionsText,
-        priorRoundContext,
-        relatedContext,
-        codemap,
-        designRefText,
-        instructionsText,
-        // After a successful rebuild each batch's diff is complete: only its
-        // own per-file cap should mark it truncated, not the original
-        // combined-diff cap.
-        truncated: shouldRebuildPerFileDiffs ? perFileTruncated.has(p.file) : truncated,
-        droppedFiles: p.droppedForBudget,
-        budget: p.fileBudget,
-        modelConfig,
-        signal,
-        sessionManager: ctx.sessionManager,
-        relevantPaths: [p.file],
-        nativeJson,
-        focusFiles: stepFocusFiles,
-        evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
-        levelInstructions: reviewSettings.instructions,
-        ...toolLoopOptions(loopConfig),
+    const tasks = batches.map((p) => async () => {
+      const started = Date.now();
+      logEvent(cwd, "info", "Review batch started", {
+        files: p.files,
+        provider: modelConfig.provider,
+        model: modelConfig.id,
+        thinking: modelConfig.thinking,
       });
-      return {
-        file: p.file,
-        review: result.review,
-        usage: result.usage,
-        dropped: p.fileResult.dropped,
-        rounds: result.rounds,
-        truncated: result.truncated,
-      };
+      try {
+        const result = await runReviewBatch({
+          cwd,
+          description,
+          files: p.fileResult.entries,
+          diff: p.diff,
+          vcs,
+          criteria,
+          currentStep,
+          sessionContext,
+          conventionsText,
+          preReviewOutput,
+          memoryContext: p.fileMemoryContext,
+          decisionsContext: decisionsText,
+          priorRoundContext,
+          relatedContext,
+          codemap,
+          designRefText,
+          instructionsText,
+          // After a successful rebuild each batch's diff is complete: only its
+          // own per-file cap should mark it truncated, not the original
+          // combined-diff cap.
+          truncated: shouldRebuildPerFileDiffs ? p.files.some((file) => perFileTruncated.has(file)) : truncated,
+          droppedFiles: p.droppedForBudget,
+          budget: p.fileBudget,
+          modelConfig,
+          signal,
+          sessionManager: ctx.sessionManager,
+          relevantPaths: p.files,
+          nativeJson,
+          focusFiles: stepFocusFiles,
+          evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
+          levelInstructions: reviewSettings.instructions,
+          ...toolLoopOptions(loopConfig),
+        });
+        logEvent(cwd, "info", "Review batch completed", {
+          files: p.files,
+          elapsedMs: Date.now() - started,
+          verdict: result.review.verdict,
+          truncated: result.truncated || result.review.truncated,
+        });
+        return {
+          files: p.files,
+          review: result.review,
+          usage: result.usage,
+          dropped: p.fileResult.dropped,
+          rounds: result.rounds,
+          truncated: result.truncated,
+        };
+      } catch (error) {
+        logEvent(cwd, signal?.aborted ? "info" : "warn", "Review batch stopped", {
+          files: p.files,
+          elapsedMs: Date.now() - started,
+          cancelled: signal?.aborted === true,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
     });
 
     const outcomes: ConcurrencyOutcome<{
-      file: string;
+      files: string[];
       review: ReviewResult;
       usage: UsageCost;
       dropped: string[];
@@ -859,7 +950,7 @@ export async function executeWaiReview(
     }>[] = await runWithConcurrencyLimit(tasks, maxConcurrency, signal);
 
     const successes: {
-      file: string;
+      files: string[];
       review: ReviewResult;
       usage: UsageCost;
       dropped: string[];
@@ -867,11 +958,13 @@ export async function executeWaiReview(
       truncated?: boolean;
     }[] = [];
     const failures: string[] = [];
-    for (const outcome of outcomes) {
+    for (const [batchIndex, outcome] of outcomes.entries()) {
       if (outcome.ok) {
         successes.push(outcome.value);
       } else {
-        failures.push(outcome.error instanceof Error ? outcome.error.message : String(outcome.error));
+        failures.push(
+          `${batches[batchIndex].files.join(", ")}: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`,
+        );
       }
     }
 
@@ -901,7 +994,9 @@ export async function executeWaiReview(
     continuationTruncated = successes.some((s) => s.truncated);
 
     if (failures.length > 0) {
-      review.suggestions.unshift(`Review failed for ${failures.length} file(s): ${failures.join("; ")}`);
+      review.suggestions.unshift(
+        `Review failed for ${preps.length - successes.reduce((total, s) => total + s.files.length, 0)} file(s): ${failures.join("; ")}`,
+      );
       review.consensus = false;
       reviewIncomplete = true;
       // Only the successful batches were actually reviewed: record them with
@@ -911,7 +1006,7 @@ export async function executeWaiReview(
       for (const s of successes) {
         recordReviewedFiles(
           cwd,
-          [s.file],
+          s.files,
           s.review.truncated === true || s.truncated === true ? "needs-work" : s.review.verdict,
         );
       }
@@ -919,8 +1014,9 @@ export async function executeWaiReview(
 
     logEvent(cwd, "info", "Parallel review completed", {
       fileCount: preps.length,
-      successCount: successes.length,
-      failureCount: failures.length,
+      batchCount: batches.length,
+      successCount: successes.reduce((total, s) => total + s.files.length, 0),
+      failureCount: preps.length - successes.reduce((total, s) => total + s.files.length, 0),
       provider: modelConfig.provider,
       model: modelConfig.id,
       estimatedCostUsd: cost?.estimatedCostUsd,

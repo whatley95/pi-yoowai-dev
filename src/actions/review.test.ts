@@ -26,6 +26,7 @@ import { estimateTokens } from "../token-budget.js";
 import { gitSpawnEnv } from "../git-env.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ReviewResult, ReviewIssue, YoowaiConfig } from "../types.js";
+import { readRecentLogs } from "../logger.js";
 
 /** A valid ReviewResult with optional overrides (constructed directly, so
  *  consensus does NOT get re-derived like validateReviewResult would). */
@@ -567,6 +568,93 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
 
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
+  }
+
+  for (const scenario of [
+    { maxFiles: 1, expectedCalls: 3, cap: undefined, fail: false },
+    { maxFiles: 3, expectedCalls: 2, cap: undefined, fail: false },
+    { maxFiles: 3, expectedCalls: 3, cap: 1600, fail: false },
+    { maxFiles: 3, expectedCalls: 2, cap: undefined, fail: true },
+  ]) {
+    it(
+      `preserves full review evidence with grouping ${scenario.maxFiles}, cap ${scenario.cap}, failure ${scenario.fail}`,
+      { skip: !hasGit },
+      async () => {
+        const cwd = makeRepoWithMultiFileChange({
+          "jobs.ts": "export const job = 2; // CORE_FULL_CONTEXT_MARKER\n",
+          "jobs.spec.ts":
+            "import { job } from './jobs.js'; // SPEC_FULL_CONTEXT_MARKER\nexport const expected = job === 2;\n",
+          "unrelated.ts": "export const other = 3; // OTHER_FULL_CONTEXT_MARKER\n",
+        });
+        const { url, bodies } = await startStubServer({
+          failOnMarker: scenario.fail ? "SPEC_FULL_CONTEXT_MARKER" : undefined,
+        });
+        const model = {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          contextWindow: 16000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: url,
+          apiKey: "test-key",
+          maxRetries: 0,
+        };
+        writeSettings(cwd, {
+          secondary: model,
+          taskModels: { reviewHigh: model },
+          parallelReview: true,
+          reviewBatchFiles: scenario.maxFiles,
+          reviewMaxInputTokens: scenario.cap,
+          selfVerify: false,
+          toolUseLoop: false,
+          autoJudge: false,
+        });
+        const result = await executeWaiReview(
+          cwd,
+          "Review all related changes",
+          { cwd } as ExtensionContext,
+          { level: "high" },
+          undefined,
+          () => {},
+        );
+        assert.equal(bodies.length, scenario.expectedCalls);
+        for (const marker of ["CORE_FULL_CONTEXT_MARKER", "SPEC_FULL_CONTEXT_MARKER", "OTHER_FULL_CONTEXT_MARKER"])
+          assert.ok(
+            bodies.some((body) => body.includes(marker)),
+            marker,
+          );
+        if (scenario.expectedCalls === 2)
+          assert.ok(
+            bodies.some(
+              (body) => body.includes("CORE_FULL_CONTEXT_MARKER") && body.includes("SPEC_FULL_CONTEXT_MARKER"),
+            ),
+          );
+        if (scenario.fail) {
+          assert.equal(result.review?.verdict, "needs-work");
+          assert.ok(result.review?.suggestions.some((suggestion) => suggestion.includes("2 file(s)")));
+          assert.equal(getReviewedFiles(cwd)["jobs.ts"], undefined);
+          assert.ok(getReviewedFiles(cwd)["unrelated.ts"]);
+        } else {
+          assert.equal(result.review?.verdict, "pass", result.error ?? "Expected a complete passing review");
+          assert.ok(!result.review?.truncated);
+        }
+        const logs = readRecentLogs(cwd, 100);
+        assert.ok(
+          logs.some(
+            (line) =>
+              line.includes("Review batches prepared") && line.includes(`"batchCount":${scenario.expectedCalls}`),
+          ),
+        );
+        assert.ok(
+          logs.some(
+            (line) =>
+              line.includes(scenario.fail ? "Review batch stopped" : "Review batch completed") &&
+              line.includes('"elapsedMs":'),
+          ),
+        );
+      },
+    );
   }
 
   it("reviews scoped SVN unversioned files without a false missing-input verdict", async (t) => {

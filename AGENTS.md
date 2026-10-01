@@ -417,6 +417,7 @@ Core keys:
 - `verifyByDefault` / `selfVerify` — ask the main agent to confirm every wai finding, and/or run a second verification pass on `review`/`judge` results.
 - `toolUseLoop` — let the secondary model use `read_file`, `search_code`, and allowlisted `run_command` in a loop (number sets max iterations, default 5).
 - `parallelReview` — review multiple changed files in parallel (number sets concurrency, default 3 when enabled).
+- `reviewBatchFiles` — opt-in maximum related files per parallel review batch (positive integer, default `1`; `3` groups related sources/tests only when complete evidence fits). Keeps all coverage/fingerprint guards and per-file fallback. See `actions/review-batching.ts` and `docs/review-latency-2026-10-01.md`.
 - `deepScan` — include code samples and build a symbol index during `wai.scan`.
 - `costBudgetUsd` — admission cap on estimated spend plus concurrent reservations for the current Pi session. Each underlying provider/tool/continuation call reserves centrally and settles immediately; action-level usage bookkeeping is idempotent. Actual reported usage can exceed an estimate, after which further calls stop. Negative values are treated as unset; `0` means no spend is allowed. `cost.json` is reset at the start of each Pi session and can also be cleared with `/wai-clear`.
 - `processTimeoutMs` / `testTimeoutMs` — timeouts for child pi process calls (default 5 min) and per-model `/wai test` checks (default 2 min).
