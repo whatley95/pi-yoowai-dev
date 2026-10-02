@@ -79,6 +79,52 @@ describe("Pi read tool dispatch", () => {
     }
   });
 
+  it("dispatches no rejected batch reads and respects native denial after correction", async () => {
+    let modelCalls = 0;
+    let nativeCalls = 0;
+    const incomplete = '{"verdict":"needs-work","contextLimited":true}';
+    const result = await withNativeReadTools(
+      context(async (name, args) => {
+        nativeCalls++;
+        assert.equal(name, "read");
+        assert.equal(args.path, join(cwd, "src", "one.ts"));
+        return outcome("Blocked by host policy", true);
+      }),
+      () =>
+        executeToolLoop(
+          cwd,
+          "system",
+          "user",
+          {},
+          async (_system, user) => {
+            modelCalls++;
+            if (modelCalls === 2) {
+              assert.equal(nativeCalls, 0);
+              assert.match(user, /None of these requests executed/);
+            }
+            if (modelCalls === 3) {
+              assert.equal(nativeCalls, 1);
+              assert.match(user, /Blocked by host policy/);
+              assert.doesNotMatch(user, /LOCAL_PRIVATE_MARKER/);
+            }
+            return {
+              content:
+                modelCalls === 1
+                  ? '{"tools":[{"tool":"read_file","path":"src/one.ts"},{"tool":"read_file","path":"src/one.ts"}]}'
+                  : modelCalls === 2
+                    ? '{"tool":"read_file","path":"src/one.ts"}'
+                    : incomplete,
+              usage,
+            };
+          },
+          1,
+        ),
+    );
+    assert.equal(result.content, incomplete);
+    assert.equal(modelCalls, 3);
+    assert.equal(nativeCalls, 1);
+  });
+
   it("retains the local reader only when the native execution API is absent", async () => {
     const prompt = await withNativeReadTools({ cwd }, () => review([{ tool: "read_file", path: "src/one.ts" }]));
     assert.match(prompt, /LOCAL_PRIVATE_MARKER/);

@@ -984,6 +984,56 @@ describe("sdk backend", () => {
     assert.equal(getSessionCost(cwd).calls, 0);
   });
 
+  for (const budgetReached of [false, true]) {
+    it(`applies normal usage and cost guards to batch correction (${budgetReached ? "budget reached" : "completed"})`, async () => {
+      const cwd = makeTempDir("wai-batch-correction-budget-");
+      tmpDirs.push(cwd);
+      const agentDir = makeTempDir("wai-batch-correction-agent-");
+      tempAgentDirs.push(agentDir);
+      setAgentDirForTests(() => agentDir);
+      writeSettings(
+        cwd,
+        { provider: "openai", id: "gpt-4o-mini", backend: "sdk", apiKey: "test", thinking: "off" },
+        { costBudgetUsd: budgetReached ? 0.01 : 1 },
+      );
+      writeFileSync(join(cwd, "evidence.ts"), "REVIEW_EVIDENCE");
+      const responses = [
+        '{"tools":[{"tool":"read_file","path":"evidence.ts"},{"tool":"read_file","path":"evidence.ts"}]}',
+        '{"tool":"read_file","path":"evidence.ts"}',
+        '{"verdict":"pass"}',
+      ];
+      let calls = 0;
+      setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+      setSdkStreamSimpleOverride((_model, context) => {
+        calls++;
+        assert.ok(getReservedCost(cwd) > 0, "correction and finalization must reserve cost too");
+        if (calls === 2) assert.ok(JSON.stringify(context).includes("None of these requests executed"));
+        return fakeSdkStream(
+          fakeSdkAssistantMessage(responses[calls - 1], { input: budgetReached ? 1_000_000 : 10, output: 5 }),
+        );
+      });
+      const run = () =>
+        callSecondaryModel("openai", "gpt-4o-mini", "system", "user", {
+          cwd,
+          enableToolLoop: true,
+          maxToolIterations: 1,
+        });
+      if (budgetReached) {
+        await assert.rejects(run, /cost budget/);
+        assert.equal(calls, 1, "over-budget correction must not reach the provider");
+      } else {
+        const result = await run();
+        assert.equal(result.content, '{"verdict":"pass"}');
+        assert.equal(calls, 3);
+        assert.equal(result.usage.estimatedInputTokens, 30);
+        assert.equal(result.usage.estimatedOutputTokens, 15);
+        assert.ok(result.usage.estimatedCostUsd > 0);
+      }
+      assert.equal(getSessionCost(cwd).calls, calls, "each model round is recorded exactly once");
+      assert.equal(getReservedCost(cwd), 0);
+    });
+  }
+
   it("resolves runtime-registry providers (extension/models.json) on the sdk backend", async () => {
     const cwd = makeTempDir("wai-sdk-runtime-");
     tmpDirs.push(cwd);

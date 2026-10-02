@@ -375,22 +375,28 @@ describe("executeToolLoop", () => {
   });
 
   it("counts every batch read against the unchanged request allowance", async () => {
+    let calls = 0;
     await assert.rejects(
       executeToolLoop(
         cwd,
         "system",
         "user",
         {},
-        async () => ({
-          content: JSON.stringify({
-            tools: Array.from({ length: 3 }, () => ({ tool: "read_file", path: "src/foo.ts" })),
-          }),
-          usage: zeroUsage(),
-        }),
+        async (_system, user) => {
+          calls++;
+          assert.doesNotMatch(user, /## Tool result:/, "no part of the oversized batch should execute");
+          return {
+            content: JSON.stringify({
+              tools: Array.from({ length: 3 }, () => ({ tool: "read_file", path: "src/foo.ts" })),
+            }),
+            usage: zeroUsage(),
+          };
+        },
         2,
       ),
-      /batch exceeds.*2 remaining/,
+      /batch exceeds.*2 remaining.*after one correction/,
     );
+    assert.equal(calls, 2, "only one correction call is allowed");
     await assert.rejects(
       executeToolLoop(
         cwd,
@@ -405,6 +411,115 @@ describe("executeToolLoop", () => {
       ),
       /read_file only/,
     );
+  });
+
+  it("corrects an oversized batch with one request remaining without discarding or executing its reads", async () => {
+    writeFileSync(join(cwd, "src", "last-read.ts"), "LAST_MISSING_EVIDENCE");
+    const responses = [
+      '{"tools":[{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/foo.ts"}]}',
+      '{"tools":[{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/last-read.ts"}]}',
+      '{"tool":"read_file","path":"src/last-read.ts"}',
+      '{"verdict":"pass"}',
+    ];
+    const calls: Array<{ system: string; user: string }> = [];
+    const result = await executeToolLoop(
+      cwd,
+      "system",
+      "user",
+      {},
+      async (system, user) => {
+        calls.push({ system, user });
+        if (calls.length === 2) assert.match(user, /Remaining context requests: 1\. Request at most one tool/);
+        if (calls.length === 3) {
+          assert.match(user, /None of these requests executed/);
+          assert.match(user, /This correction does not increase the request allowance/);
+          assert.ok(user.includes(responses[1]), "both rejected reads remain visible to the reviewer");
+          assert.doesNotMatch(user, /LAST_MISSING_EVIDENCE/);
+          assert.equal(user.match(/## Tool result:/g)?.length, 2);
+        }
+        if (calls.length === 4) {
+          assert.match(user, /LAST_MISSING_EVIDENCE/);
+          assert.match(user, /Remaining context requests: 0/);
+          assert.match(user, /maximum number of tool requests/);
+          assert.equal(user.match(/## Tool result:/g)?.length, 3);
+        }
+        return { content: responses[calls.length - 1], usage: zeroUsage() };
+      },
+      3,
+    );
+    assert.equal(result.content, '{"verdict":"pass"}');
+    assert.equal(calls.length, 4);
+    assert.ok(
+      calls.every((call) => call.system === calls[0].system),
+      "prompt-cache prefix remains stable",
+    );
+  });
+
+  it("keeps an explicit incomplete-coverage result when the requested evidence cannot fit", async () => {
+    let calls = 0;
+    const incomplete = JSON.stringify({ verdict: "needs-work", issues: [], contextLimited: true });
+    const result = await executeToolLoop(
+      cwd,
+      "system",
+      "user",
+      {},
+      async (_system, user) => {
+        calls++;
+        if (calls === 2) {
+          assert.doesNotMatch(user, /## Tool result:/);
+          assert.match(user, /report incomplete coverage/);
+          assert.match(user, /never claim that unread evidence was reviewed/);
+        }
+        return {
+          content:
+            calls === 1
+              ? '{"tools":[{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/missing.ts"}]}'
+              : incomplete,
+          usage: zeroUsage(),
+        };
+      },
+      1,
+    );
+    assert.equal(result.content, incomplete);
+    assert.equal(calls, 2);
+  });
+
+  it("limits batch correction to once for the entire loop, even after valid reads", async () => {
+    const responses = [
+      '{"tools":[{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/foo.ts"}]}',
+      '{"tool":"read_file","path":"src/foo.ts"}',
+      '{"tools":[{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/foo.ts"}]}',
+    ];
+    let calls = 0;
+    await assert.rejects(
+      executeToolLoop(cwd, "system", "user", {}, async () => ({ content: responses[calls++], usage: zeroUsage() }), 2),
+      /batch exceeds.*1 remaining.*after one correction/,
+    );
+    assert.equal(calls, 3);
+  });
+
+  it("honors cancellation before an oversized-batch correction makes another call", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    await assert.rejects(
+      executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        { signal: controller.signal },
+        async () => {
+          calls++;
+          controller.abort();
+          return {
+            content: '{"tools":[{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/foo.ts"}]}',
+            usage: zeroUsage(),
+          };
+        },
+        1,
+      ),
+      { name: "AbortError" },
+    );
+    assert.equal(calls, 1);
   });
 
   it("keeps unsafe batch paths visibly rejected while returning the allowed file", async () => {

@@ -72,7 +72,7 @@ function buildToolInstruction(maxIterations: number): string {
 ${reads ? `{"tool": "read_file", "path": "relative/path/to/file.ts"}\n{"tool": "read_file", "path": "relative/path/to/file.ts", "startLine": 100, "endLine": 200}\n${batchExample}\n` : ""}${searches ? '{"tool": "search_code", "pattern": "functionName\\\\(", "path": "src", "contextLines": 2}\n' : ""}
 {"tool": "run_command", "command": "npm run typecheck"}
 
-read_file accepts optional startLine/endLine (1-based, inclusive) and offset (zero-based characters within that range) to page through large files. Follow the exact next-page request in a truncated result; it preserves absolute line numbers and does not repeat the first page. Batch up to ${Math.min(MAX_BATCH_READS, maxIterations)} read_file requests in a tools array when you already know which files you need. Each read counts against the same request allowance. Use the diff, file contents, and previous tool results already provided before requesting more context; repeated identical reads add no evidence unless the file changes. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match). run_command accepts ONE allowlisted command without shell operators: no semicolons, pipes, &&, substitutions, grep, or ls. Use search_code/read_file for source inspection. It blocks destructive subcommands (push/reset/publish/…); for git, use "<command> -h" for terminal usage — full help ("--help" or "git help …") is rejected because it can open an external viewer (a browser on Windows).
+read_file accepts optional startLine/endLine (1-based, inclusive) and offset (zero-based characters within that range) to page through large files. Follow the exact next-page request in a truncated result; it preserves absolute line numbers and does not repeat the first page. Batch up to ${Math.min(MAX_BATCH_READS, maxIterations)} read_file requests in a tools array when you already know which files you need, but never exceed the latest remaining context-request allowance. Each read counts against that same allowance; with one request remaining, request only one tool. Use the diff, file contents, and previous tool results already provided before requesting more context; repeated identical reads add no evidence unless the file changes. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match). run_command accepts ONE allowlisted command without shell operators: no semicolons, pipes, &&, substitutions, grep, or ls. Use search_code/read_file for source inspection. It blocks destructive subcommands (push/reset/publish/…); for git, use "<command> -h" for terminal usage — full help ("--help" or "git help …") is rejected because it can open an external viewer (a browser on Windows).
 
 ${reads ? "" : "read_file is unavailable: Pi has no callable read tool in this session. Do not request it.\n"}${searches ? "" : "search_code is unavailable: Pi has no callable grep tool in this session. Do not request it.\n"}${nativeTools === undefined ? "" : "Pi controls the availability of reads and searches. Never bypass an unavailable or blocked operation with commands or another reader. Use the evidence already supplied, request permitted missing context, or report that required evidence is unavailable.\n"}
 
@@ -116,6 +116,16 @@ function parseToolRequests(text: string): ToolRequest[] | null {
   }
   const request = parseToolRequest(text);
   return request ? [request] : null;
+}
+
+function remainingRequestInstruction(remaining: number): string {
+  const instruction =
+    remaining === 0
+      ? "Produce the final structured JSON result without additional tools."
+      : remaining === 1
+        ? "Request at most one tool. Do not batch multiple reads; use existing evidence or request the single missing read."
+        : `Batch at most ${Math.min(MAX_BATCH_READS, remaining)} read_file requests; use existing evidence before requesting missing context.`;
+  return `\n\nRemaining context requests: ${remaining}. ${instruction} If required evidence cannot be obtained within this allowance, report incomplete coverage in the final result; never claim that unread evidence was reviewed.`;
 }
 
 /** Bound each page, preserve full lines where possible, and give a request
@@ -482,6 +492,7 @@ export async function executeToolLoop(
   let totalUsage: UsageCost | undefined;
   let used = 0;
   let modelCalls = 0;
+  let batchCorrectionUsed = false;
   const reads = new Map<string, { stamp: string; result: ToolResult; iteration: number }>();
   const nativeReads = new Map<string, { output: string; iteration: number }>();
 
@@ -578,10 +589,30 @@ export async function executeToolLoop(
       throw new Error(
         "Context-request allowance exhausted: the reviewer requested more evidence instead of producing a final result.",
       );
-    if (requests.length > maxToolIterations - used)
+    if (requests.length > maxToolIterations - used) {
+      const remaining = maxToolIterations - used;
+      logEvent(cwd, "warn", "Tool loop batch rejected", {
+        ...metadata,
+        modelCall: modelCalls,
+        batchSize: requests.length,
+        remainingRequests: remaining,
+        correctionAvailable: !batchCorrectionUsed,
+        requests,
+      });
+      if (!batchCorrectionUsed) {
+        options.signal?.throwIfAborted();
+        // One protocol correction, not a larger tool allowance or a partial
+        // batch. Every requested read remains visibly unexecuted until the
+        // model submits an admissible request; normal per-call cost guards apply.
+        batchCorrectionUsed = true;
+        currentUser += `\n\n## Context batch rejected\n${JSON.stringify({ tools: requests })}\nNone of these requests executed: the batch contains ${requests.length} reads but only ${remaining} context request(s) remain. Correct the batch size once, reuse evidence already supplied, or report incomplete coverage if the necessary evidence cannot fit. This correction does not increase the request allowance.`;
+        currentUser += remainingRequestInstruction(remaining);
+        continue;
+      }
       throw new Error(
-        `Context batch exceeds the ${maxToolIterations - used} remaining request(s); coverage is incomplete.`,
+        `Context batch exceeds the ${remaining} remaining request(s) after one correction; coverage is incomplete. Inspect the context-request logs and toolUseLoop allowance before retrying.`,
       );
+    }
     for (const request of requests) {
       options.signal?.throwIfAborted();
       used++;
@@ -625,7 +656,7 @@ export async function executeToolLoop(
       });
       currentUser += formatToolResult(request, result);
     }
-    currentUser += `\n\nRemaining context requests: ${maxToolIterations - used}. Batch known file reads within that allowance, request only missing evidence, or produce the final structured JSON result.`;
+    currentUser += remainingRequestInstruction(maxToolIterations - used);
   }
 
   // All loop iterations return early; this path is unreachable.

@@ -35,6 +35,12 @@ export function getReviewRecovery(result: WaiToolResult): ReviewRecovery | undef
         message,
         "Finish pending edits and checks, then review the current working tree again.",
       );
+    if (/context batch exceeds|context-request allowance exhausted/i.test(message))
+      return recovery(
+        "input-coverage",
+        message,
+        "Inspect context-request logs for repeated reads and missing evidence. Reuse supplied evidence or explicitly adjust toolUseLoop if more reads are necessary. This is a context-request limit; keep the requested thinking depth and obtain complete coverage before certification.",
+      );
     if (/context budget|truncate|too large for/i.test(message))
       return recovery(
         "input-coverage",

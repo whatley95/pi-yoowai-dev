@@ -52,6 +52,21 @@ it("preserves verdict and scope; suggestions alone never become diagnostic evide
   assert.deepEqual(result.recovery?.affectedFiles, ["a.ts"]);
 });
 
+it("diagnoses context-request exhaustion separately from provider and token limits", () => {
+  for (const error of [
+    "All secondary model attempts failed: openai-codex:gpt-6.1-sol -> Context batch exceeds the 1 remaining request(s); coverage is incomplete.",
+    "Context batch exceeds the 1 remaining request(s) after one correction; coverage is incomplete.",
+    "Context-request allowance exhausted: the reviewer requested more evidence instead of producing a final result.",
+  ]) {
+    const info = getReviewRecovery({ action: "review", error });
+    assert.equal(info?.reason, "input-coverage");
+    assert.equal(info?.retry, "after-change");
+    assert.match(info!.nextAction, /toolUseLoop/);
+    assert.match(info!.nextAction, /keep the requested thinking depth/);
+    assert.doesNotMatch(info!.nextAction, /authentication|context window|lower thinking/i);
+  }
+});
+
 it("reports actual post-review tracker progress without clearing pending edits", () => {
   const cwd = mkdtempSync(join(tmpdir(), "wai-workflow-snapshot-"));
   try {
