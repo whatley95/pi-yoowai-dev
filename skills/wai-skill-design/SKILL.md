@@ -1,6 +1,6 @@
 ---
 name: wai-skill-design
-description: Build, improve, or review product interfaces, interaction states, accessibility, and motion. Use for UI implementation or design feedback; load only the references needed for the requested work. Supports web and Flutter interfaces.
+description: Build, improve, or review product interfaces, interaction states, accessibility, and motion. Use for UI implementation or design feedback; load only the references needed for the requested work. Supports web, Flutter, and native Android interfaces.
 license: MIT
 ---
 
@@ -27,7 +27,8 @@ by the actual task, rather than loading the entire library:
 
 Use the repository's framework and components. CSS and React examples are web
 examples, not instructions to introduce those technologies into Flutter or another
-platform. For Flutter work, also load `wai-flutter` when available.
+platform. For Flutter work, also load `wai-flutter` when available. For native Android
+work, use the existing Compose or Views/XML toolkit and load `wai-kotlin` when available.
 
 Treat numeric motion values as starting points constrained by the product's tokens,
 platform conventions, frequency of use, and user preferences. Distinguish a verified

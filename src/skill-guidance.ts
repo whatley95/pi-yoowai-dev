@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { estimateTokens } from "./token-budget.js";
+import { resolveProjectPath } from "./path-security.js";
 
 export const PACKAGED_SKILLS = [
   "wai-skill-design",
@@ -11,6 +12,7 @@ export const PACKAGED_SKILLS = [
   "wai-api-contracts",
   "wai-delivery",
   "wai-flutter",
+  "wai-kotlin",
   "wai-spring",
   "wai-node",
 ] as const;
@@ -29,6 +31,41 @@ function readManifest(cwd: string, file: string): string {
 export function isFlutterProject(cwd: string): boolean {
   return /^\s*flutter:\s*(?:#.*)?\r?\n\s+sdk:\s*flutter\s*(?:#.*)?$/m.test(readManifest(cwd, "pubspec.yaml"));
 }
+
+/** Inspect the containing module, stopping at a non-Android Gradle boundary.
+ * Kotlin syntax/build scripts alone are not Android evidence. The optional
+ * cache belongs to one classification call, never a persisted workspace. */
+export function isAndroidModuleFile(cwd: string, file: string, modules?: Map<string, boolean>): boolean {
+  if (!/\.(?:kt|kts|java|xml)$/i.test(file)) return false;
+  const absolute = resolveProjectPath(cwd, file.replace(/\\/g, "/"));
+  if (!absolute) return false;
+  const root = resolve(cwd);
+  const visited: string[] = [];
+  const remember = (android: boolean): boolean => {
+    for (const dir of visited) modules?.set(dir, android);
+    return android;
+  };
+  for (let dir = dirname(absolute), depth = 0; depth < 24; dir = dirname(dir), depth++) {
+    const known = modules?.get(dir);
+    if (known !== undefined) return remember(known);
+    visited.push(dir);
+    const module = relative(root, dir);
+    const manifest = resolveProjectPath(cwd, join(module, "src", "main", "AndroidManifest.xml"));
+    if (manifest && existsSync(manifest)) return remember(true);
+    const builds = ["build.gradle", "build.gradle.kts"].map((name) => resolveProjectPath(cwd, join(module, name)));
+    const present = builds.filter((path): path is string => path !== null && existsSync(path));
+    if (
+      present.some((path) =>
+        /com\.android\.(?:application|library|dynamic-feature|test|kotlin\.multiplatform\.library)\b/.test(
+          readManifest(cwd, relative(root, path)),
+        ),
+      )
+    )
+      return remember(true);
+    if (present.length || dir === root) return remember(false);
+  }
+  return false;
+}
 /** Criteria are optional guidance, never evidence or a coverage decision. */
 export function selectEvaluationSkills(cwd: string, action: string, files: string[]): PackagedSkill[] {
   if (!["review", "judge", "test", "security"].includes(action) || files.length === 0) return [];
@@ -44,6 +81,8 @@ export function selectEvaluationSkills(cwd: string, action: string, files: strin
   )
     selected.push("wai-api-contracts");
   if (paths.some((file) => /\.dart$/i.test(file)) && isFlutterProject(cwd)) selected.push("wai-flutter");
+  const androidModules = new Map<string, boolean>();
+  if (paths.some((file) => isAndroidModuleFile(cwd, file, androidModules))) selected.push("wai-kotlin");
   if (
     paths.some((file) => /\.java$/i.test(file)) &&
     ["pom.xml", "build.gradle", "build.gradle.kts"].some((file) =>

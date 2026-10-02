@@ -18,7 +18,7 @@ npx pi-yoowai@latest setup --preset=openai
 
 Then make sure credentials for the chosen provider are available (`~/.pi/agent/auth.json`, an environment variable such as `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, or Pi's `/login`), restart Pi, and run `/wai-test` to verify connectivity. From a local clone, `npm run setup` runs the same installer (exposed as the `pi-yoowai` bin entry).
 
-Pi loads the nine Wai-owned skills directly from the package manifest: design, debugging, testing, refactoring, API contracts, delivery, Flutter, Spring, and Node. Full guidance is read only when relevant. The installer offers an optional copy for legacy/direct-file loading; existing skill directories are preserved, and /wai-status reports potential overrides and older design copies.
+Pi loads the ten Wai-owned skills directly from the package manifest: design, debugging, testing, refactoring, API contracts, delivery, Flutter, Kotlin/Android, Spring, and Node. Full guidance is read only when relevant. The installer offers an optional copy for legacy/direct-file loading; existing skill directories are preserved, and /wai-status reports potential overrides and older design copies.
 
 ## Install
 
@@ -521,7 +521,7 @@ Call this when building, reviewing, or improving UI/animation code to get detail
 
 #### Native design and development skills
 
-Package discovery uses native pi.skills; no resources_discover hook re-adds filtered skills. Pi advertises each skill's name, description, and path, and instructs the main agent to read SKILL.md when the task matches. These nine skills permit automatic selection:
+Package discovery uses native pi.skills; no resources_discover hook re-adds filtered skills. Pi advertises each skill's name, description, and path, and instructs the main agent to read SKILL.md when the task matches. These ten skills permit automatic selection:
 
 | Skill | When it helps |
 | --- | --- |
@@ -532,6 +532,7 @@ Package discovery uses native pi.skills; no resources_discover hook re-adds filt
 | wai-api-contracts | Producer/consumer compatibility, data/auth boundaries and migrations |
 | wai-delivery | Wai plans, stale-plan diagnosis, review recovery, Git/SVN preparation |
 | wai-flutter | Confirmed Flutter widget/navigation/lifecycle work |
+| wai-kotlin | Kotlin/Android apps, Compose or XML UI, coroutine/Flow lifecycle, native Flutter integrations, and mobile tests |
 | wai-spring | Confirmed Java/Spring service/persistence work |
 | wai-node | Confirmed TypeScript/JavaScript Node module/service work |
 
@@ -541,7 +542,9 @@ wai-skill-design loads focused references for foundations, motion, recipes, flui
 
 The secondary model does not inherit skill bodies read by the main agent. Review/judge/test/security select short evaluation criteria shared with relevant development skill references, within instructionsMaxTokens (up to 400 tokens of the existing allowance). Project instructions consume the budget first and explicit requirements take precedence. No added provider call or source-coverage bypass is involved. The exact selected text participates in existing prompt/cache keys.
 
-Flutter UI detection requires Flutter SDK evidence plus UI paths; Dart services do not trigger web design rules. Flutter prompts keep platform-neutral defaults and custom project rules, omitting web-only default rules. Source-owned legacy default text is adapted in prompts without rewriting the user's stored rules.
+Flutter UI detection requires Flutter SDK evidence plus UI paths; Dart services do not trigger web design rules. Android criteria require an Android plugin or manifest in the containing module; an ordinary Kotlin/JVM Gradle module does not trigger Android guidance. Likely Android UI paths also receive platform-neutral design rules. Both mobile platforms keep custom project rules and omit web-only defaults. Source-owned legacy default text is adapted in prompts without rewriting the user's stored rules.
+
+wai-kotlin supports Compose and Views/XML without forcing a UI migration. It covers lifecycle/cancellation, state restoration, navigation, permissions/platform boundaries, Gradle variants, and honest local versus instrumented/device evidence. Build guidance checks the installed AGP/Kotlin setup, including built-in Kotlin, rather than blindly adding kotlin-android. Force it with /skill:wai-kotlin when needed.
 
 /wai-status and wai_index({topic:'guidance'}) show packaged availability, observed successful skill reads, selected secondary criteria, and detected override/legacy-copy paths. Availability is not proof of activation, and an observed read is not proof that guidance was followed. Pi's actual collision diagnostics identify which same-name skill wins. No user copy is automatically removed.
 

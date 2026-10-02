@@ -1,0 +1,3 @@
+- For confirmed Android modules, inspect coroutine/Flow ownership, main-thread blocking, cancellation, Compose effects or View cleanup, and affected configuration/process-restoration behavior.
+- Check changed navigation, permission/API guards, manifest exposure, platform-channel contracts, and accessible UI states where relevant; use the project's existing toolkit.
+- For build changes, verify the actual Gradle/Kotlin setup, including built-in Kotlin where enabled. Distinguish local JVM tests from lint, instrumented/device, and production integration evidence.

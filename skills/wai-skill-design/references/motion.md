@@ -16,6 +16,8 @@ for entry, WAAPI for programmatic control, and an existing motion library for ge
 springs, exits, or layout coordination. Do not add a library for a simple fade.
 Flutter: use existing implicit/explicit animation patterns, dispose controllers,
 and respect the platform's reduced-animation preference.
+Android: use the existing Compose or Views animation APIs; verify lifecycle and
+system animation/accessibility settings with the target toolkit.
 
 ## Timing and curves
 

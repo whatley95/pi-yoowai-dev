@@ -7,7 +7,7 @@ import { getProjectConfigPath } from "./pi-paths.js";
 import { estimateTokens } from "./token-budget.js";
 import { seedDefaultDesignRules } from "./design-ref-defaults.js";
 import { adaptDefaultDesignRule, DEFAULT_RULES_SOURCE } from "./design-ref-defaults.js";
-import { getPackagedSkillsRoot, isFlutterProject } from "./skill-guidance.js";
+import { getPackagedSkillsRoot, isFlutterProject, isAndroidModuleFile } from "./skill-guidance.js";
 
 export interface DesignRule {
   rule: string;
@@ -31,6 +31,18 @@ export function isUiFile(path: string): boolean {
 
 export function hasUiChanges(cwd: string, files: readonly string[]): boolean {
   if (files.some(isUiFile)) return true;
+  const androidModules = new Map<string, boolean>();
+  if (
+    files.some((file) => {
+      const path = file.replace(/\\/g, "/");
+      const ui =
+        /(?:^|\/)(?:ui|screens?|views?|widgets?|presentation|components?)\/.*\.(?:kt|java)$/i.test(path) ||
+        /(?:Activity|Fragment|Screen|Composable|View)\.(?:kt|java)$/i.test(path) ||
+        /\/res\/(?:layout|menu|navigation|drawable|values)(?:-[^/]+)?\/[^/]+\.xml$/i.test(path);
+      return ui && isAndroidModuleFile(cwd, path, androidModules);
+    })
+  )
+    return true;
   return (
     isFlutterProject(cwd) &&
     files.some((file) => {

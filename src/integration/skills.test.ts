@@ -37,7 +37,7 @@ async function resources(cwd: string, skills?: string[]) {
 }
 
 describe("native packaged skills", () => {
-  it("loads exactly the nine Wai skills through Pi's actual package manifest", async () => {
+  it("loads the packaged Wai skills through Pi's actual package manifest", async () => {
     const result = await resources(temp());
     assert.deepEqual(result.skills.map((skill) => skill.name).sort(), [...PACKAGED_SKILLS].sort());
     assert.deepEqual(result.diagnostics, []);
@@ -58,7 +58,7 @@ describe("native packaged skills", () => {
   });
   it("honors per-skill exclusions without rediscovering the excluded skill", async () => {
     const result = await resources(temp(), ["!skills/wai-skill-design/SKILL.md"]);
-    assert.equal(result.skills.length, 8);
+    assert.equal(result.skills.length, PACKAGED_SKILLS.length - 1);
     assert.ok(!result.skills.some((skill) => skill.name === "wai-skill-design"));
   });
   it("does not load references as extra skill entries", async () => {

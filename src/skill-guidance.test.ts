@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { selectEvaluationSkills, getSkillSelections, clearSkillSelections } from "./skill-guidance.js";
+import {
+  selectEvaluationSkills,
+  getSkillSelections,
+  clearSkillSelections,
+  isAndroidModuleFile,
+} from "./skill-guidance.js";
 import { capActionInstructions } from "./instructions.js";
 import { hasUiChanges, formatDesignRulesForPrompt, addDesignRule, readDesignRefPage } from "./design-ref.js";
 import { DEFAULT_RULES_SOURCE } from "./design-ref-defaults.js";
@@ -23,6 +28,51 @@ afterEach(() => {
 });
 
 describe("selected development guidance", () => {
+  it("selects Kotlin Android guidance without requiring a separate Kotlin plugin", () => {
+    const cwd = temp(),
+      module = join(cwd, "android", "app");
+    mkdirSync(module, { recursive: true });
+    writeFileSync(join(module, "build.gradle.kts"), 'plugins { id("com.android.application") }\n');
+    writeFileSync(join(cwd, "pubspec.yaml"), "dependencies:\n  flutter:\n    sdk: flutter\n");
+    const file = "android\\app\\src\\main\\kotlin\\app\\MainActivity.kt";
+    assert.ok(selectEvaluationSkills(cwd, "review", [file]).includes("wai-kotlin"));
+    assert.ok(selectEvaluationSkills(cwd, "test", ["android/app/build.gradle.kts"]).includes("wai-kotlin"));
+    const text = capActionInstructions(cwd, "review", 800, [file]);
+    assert.ok(text.includes("wai-kotlin"));
+    assert.ok(estimateTokens(text) <= 800);
+    assert.equal(isAndroidModuleFile(cwd, "../outside/MainActivity.kt"), false);
+  });
+  it("uses module manifest evidence for catalog aliases and keeps JVM modules separate", () => {
+    const cwd = temp(),
+      app = join(cwd, "app"),
+      backend = join(cwd, "backend");
+    mkdirSync(join(app, "src", "main"), { recursive: true });
+    mkdirSync(backend);
+    writeFileSync(
+      join(cwd, "build.gradle.kts"),
+      'plugins { id("com.android.application") version "9.0.0" apply false }',
+    );
+    writeFileSync(join(app, "build.gradle.kts"), "plugins { alias(libs.plugins.mobile) }");
+    writeFileSync(join(app, "src", "main", "AndroidManifest.xml"), '<manifest package="example" />');
+    writeFileSync(join(backend, "build.gradle.kts"), 'plugins { kotlin("jvm") }');
+    assert.ok(selectEvaluationSkills(cwd, "review", ["app/src/main/kotlin/MainActivity.kt"]).includes("wai-kotlin"));
+    assert.ok(!selectEvaluationSkills(cwd, "review", ["backend/src/main/kotlin/Server.kt"]).includes("wai-kotlin"));
+    assert.ok(!selectEvaluationSkills(backend, "review", ["src/main/kotlin/Server.kt"]).includes("wai-kotlin"));
+  });
+  it("injects platform-neutral design rules only for confirmed Android UI paths", () => {
+    const cwd = temp(),
+      app = join(cwd, "app");
+    mkdirSync(app);
+    const ui = "app/src/main/kotlin/ui/LoginScreen.kt";
+    assert.equal(hasUiChanges(cwd, [ui]), false);
+    writeFileSync(join(app, "build.gradle"), "plugins { id 'com.android.library' }");
+    assert.equal(hasUiChanges(cwd, [ui]), true);
+    assert.equal(hasUiChanges(cwd, ["app/src/main/res/layout/activity_login.xml"]), true);
+    assert.equal(hasUiChanges(cwd, ["app/src/main/kotlin/data/Repository.kt"]), false);
+    const text = formatDesignRulesForPrompt(cwd, 800, [ui]);
+    assert.ok(text.includes("reduced motion"));
+    assert.ok(!text.includes("Web:"));
+  });
   it("selects confirmed stack guidance and excludes unrelated stacks", () => {
     const cwd = temp();
     writeFileSync(join(cwd, "pubspec.yaml"), "dependencies:\n  flutter:\n    sdk: flutter\n");

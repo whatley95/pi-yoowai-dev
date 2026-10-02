@@ -31,6 +31,7 @@ const WAI_SKILLS = [
   "wai-api-contracts",
   "wai-delivery",
   "wai-flutter",
+  "wai-kotlin",
   "wai-spring",
   "wai-node",
 ];
