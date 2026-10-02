@@ -1,0 +1,3 @@
+- For changed boundaries, verify producer/consumer shapes, optional fields, defaults, units, and error mapping against the authoritative contract.
+- For auth or data changes, check relevant authorization/ownership, credential lifecycle, idempotency, migration compatibility, and sensitive logging.
+- Cite a concrete trigger and source evidence for findings; distinguish an unverified integration assumption from a demonstrated defect.

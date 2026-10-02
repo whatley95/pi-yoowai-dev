@@ -1,20 +1,11 @@
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
-import { logEvent } from "../logger.js";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getProjectConfigPath } from "../pi-paths.js";
+import { PACKAGED_SKILLS, getPackagedSkillsRoot, getSkillSelections, clearSkillSelections } from "../skill-guidance.js";
 
-/** Structural resources_discover event (not exported by host 0.82.1 types). */
-interface ResourcesDiscoverEventPayload {
-  type: "resources_discover";
-  cwd: string;
-  reason: "startup" | "reload";
-}
-
-/** The vendored design topics shipped with the package. MUST stay in sync
- *  with src/design-ref.ts (DESIGN_REF_TOPIC_DESCRIPTIONS keys) and
- *  scripts/setup.js (DESIGN_SKILL_TOPICS) — the parity test pins them. */
-export const DESIGN_SKILL_TOPICS = [
+export const LEGACY_DESIGN_SKILLS = [
   "animate",
   "animation-vocabulary",
   "apple-design",
@@ -25,89 +16,100 @@ export const DESIGN_SKILL_TOPICS = [
   "prototype",
   "review-animations",
 ] as const;
-
-/** Default vendored root: ../../design-refs relative to src/integration/. */
-function defaultDesignRefsRoot(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "design-refs");
+interface SkillRead {
+  skill: string;
+  document: string;
+  path: string;
 }
-
-export interface SkillDiscoveryOptions {
-  /** Design-refs root; defaults to the packaged layout (import.meta.url). */
-  designRefsRoot?: string;
-  /** Existence check seam for tests (default: directory + SKILL.md exist). */
-  isSkillDir?: (dir: string) => boolean;
-  /** Warning sink seam for tests. ALWAYS invoked for every warning; sink
-   *  failures are caught so they can never escape discovery. */
-  warn?: (message: string) => void;
+const reads = new Map<string, SkillRead[]>();
+export function recordSkillRead(cwd: string, path: string): void {
+  const absolute = resolve(cwd, path);
+  const rel = relative(getPackagedSkillsRoot(), absolute);
+  if (isAbsolute(rel) || rel === ".." || rel.startsWith(".." + sep)) return;
+  const [name, ...parts] = rel.split(sep);
+  if (!(PACKAGED_SKILLS as readonly string[]).includes(name) || !parts.length || !absolute.endsWith(".md")) return;
+  const previous = reads.get(cwd) ?? [];
+  reads.set(
+    cwd,
+    [
+      ...previous.filter((item) => item.path !== absolute),
+      {
+        skill: name,
+        document: parts.join("/"),
+        path: absolute,
+      },
+    ].slice(-24),
+  );
 }
-
-/** Records a warning through every available sink without ever throwing. */
-function emitWarnings(messages: string[], options: SkillDiscoveryOptions): void {
-  for (const message of messages) {
-    try {
-      options.warn?.(message);
-    } catch {
-      // A failing warning sink must never break discovery.
-    }
-  }
+export function getSkillDiagnostics(cwd: string) {
+  const directories = [
+    join(getAgentDir(), "skills"),
+    getProjectConfigPath(cwd, "skills"),
+    join(cwd, ".agents", "skills"),
+    join(homedir(), ".agents", "skills"),
+  ];
+  return {
+    packaged: PACKAGED_SKILLS.map((name) => ({
+      name,
+      path: join(getPackagedSkillsRoot(), name, "SKILL.md"),
+      available: existsSync(join(getPackagedSkillsRoot(), name, "SKILL.md")),
+    })),
+    // Pi resolves actual filters/collisions. Availability does not claim a
+    // skill is in the active catalog or that its instructions were followed.
+    observedReads: (reads.get(cwd) ?? []).map((item) => ({ ...item })),
+    evaluationSkills: getSkillSelections(cwd),
+    overrides: directories.flatMap((dir) =>
+      PACKAGED_SKILLS.map((name) => join(dir, name, "SKILL.md")).filter(existsSync),
+    ),
+    legacyCopies: directories.flatMap((dir) =>
+      LEGACY_DESIGN_SKILLS.map((name) => join(dir, name, "SKILL.md")).filter(existsSync),
+    ),
+  };
 }
-
-export interface SkillDiscoveryResult {
-  /** Absolute package directories (allowlist order, deduped). */
-  skillPaths: string[];
-  warnings: string[];
+export function formatSkillDiagnostics(cwd: string): string {
+  const info = getSkillDiagnostics(cwd);
+  return [
+    "Packaged skills: " +
+      info.packaged.filter((skill) => skill.available).length +
+      "/" +
+      PACKAGED_SKILLS.length +
+      " available (Pi settings control activation).",
+    "Observed successful reads: " +
+      (info.observedReads.length
+        ? info.observedReads.map((read) => read.skill + "/" + read.document).join(", ")
+        : "none this session") +
+      ". Reads do not prove compliance.",
+    ...Object.entries(info.evaluationSkills).map(
+      ([action, names]) => "Secondary " + action + " criteria: " + (names.join(", ") || "none within budget") + ".",
+    ),
+    ...info.overrides.map(
+      (path) => "Possible skill-name collision: " + path + ". Inspect Pi startup diagnostics; first discovered wins.",
+    ),
+    ...info.legacyCopies.map(
+      (path) =>
+        "Legacy design copy: " +
+        path +
+        ". It can expose the original workflow alongside wai-skill-design; inspect before removing.",
+    ),
+  ].join("\n");
 }
-
-/** Pure discovery over the fixed topic allowlist — never throws, never touches
- *  anything outside the packaged design-refs tree. Missing topics produce
- *  actionable warnings (and are skipped); an empty layout yields []. */
-export function buildDesignSkillPaths(options: SkillDiscoveryOptions = {}): SkillDiscoveryResult {
-  const root = resolve(options.designRefsRoot ?? defaultDesignRefsRoot());
-  const isSkillDir = options.isSkillDir ?? ((dir: string) => existsSync(join(dir, "SKILL.md")) && existsSync(dir));
-  const skillPaths: string[] = [];
-  const warnings: string[] = [];
-  const seen = new Set<string>();
-
-  for (const topic of DESIGN_SKILL_TOPICS) {
-    const dir = join(root, topic);
-    if (seen.has(dir)) continue;
-    seen.add(dir);
-    try {
-      if (!isSkillDir(dir)) {
-        warnings.push(
-          `Design skill "${topic}" not found under ${root} — skipped (vendored design-refs missing or partial)?`,
-        );
-        continue;
-      }
-    } catch (err) {
-      warnings.push(`Design skill check failed for ${topic}: ${err instanceof Error ? err.message : String(err)}`);
-      continue;
-    }
-    skillPaths.push(dir);
-  }
-  emitWarnings(warnings, options);
-  return { skillPaths, warnings };
-}
-
-export interface SkillDiscoveryRegistrationOptions {
-  /** Warning sink seam for tests (default: logEvent). Failures contained. */
-  warn?: (message: string) => void;
-  /** Design-refs root seam for tests (default: packaged layout). */
-  designRefsRoot?: string;
-}
-
-/** Registers Pi's resources_discover handler so the vendored design topics
- *  are exposed as native skills to the MAIN agent automatically (host
- *  >= 0.82: runner collects skillPaths from extensions at startup/reload).
- *  No user home writes; scripts/setup.js remains the legacy fallback for
- *  hosts without this hook. */
-export function registerDesignSkillDiscovery(pi: ExtensionAPI, options: SkillDiscoveryRegistrationOptions = {}): void {
-  pi.on("resources_discover", (_event: ResourcesDiscoverEventPayload, ctx) => {
-    const { skillPaths } = buildDesignSkillPaths({
-      designRefsRoot: options.designRefsRoot,
-      // Safe warning delivery: a failing logger must never break discovery.
-      warn: options.warn ?? ((message) => logEvent(ctx.cwd, "warn", message)),
-    });
-    return { skillPaths };
+/** Native pi.skills owns discovery/filtering. This hook observes reads only. */
+export function registerSkillReadTracking(pi: ExtensionAPI): void {
+  const clear = (cwd: string) => {
+    reads.delete(cwd);
+    clearSkillSelections(cwd);
+  };
+  pi.on("session_start", (_event, ctx) => clear(ctx.cwd));
+  pi.on("session_shutdown", (_event, ctx) => clear(ctx.cwd));
+  pi.on("tool_result", (event, ctx) => {
+    if (event.isError || !event.input || typeof event.input !== "object") return;
+    const input = event.input as Record<string, unknown>;
+    const path =
+      event.toolName === "read"
+        ? input.path
+        : event.toolName === "wai_design_ref" && input.topic === "wai-skill-design"
+          ? join(getPackagedSkillsRoot(), "wai-skill-design", typeof input.doc === "string" ? input.doc : "SKILL.md")
+          : undefined;
+    if (typeof path === "string") recordSkillRead(ctx.cwd, path);
   });
 }

@@ -21,19 +21,18 @@ const ENV_VAR_HINTS = {
   anthropic: "ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN (or Pi /login)",
 };
 
-// Vendored design reference topics (Emil Kowalski's skills, MIT) that can be
-// installed as native Pi skills. Only these directory names are ever touched
-// under ~/.pi/agent/skills/.
-const DESIGN_SKILL_TOPICS = [
-  "animate",
-  "animation-vocabulary",
-  "apple-design",
-  "emil-design-eng",
-  "find-animation-opportunities",
-  "improve-animations",
-  "pick-ui-library",
-  "prototype",
-  "review-animations",
+// Wai-owned skills for optional legacy/direct-file loading. Native pi.skills
+// loads them from the package without copying. Existing directories are preserved.
+const WAI_SKILLS = [
+  "wai-skill-design",
+  "wai-debug",
+  "wai-testing",
+  "wai-safe-refactor",
+  "wai-api-contracts",
+  "wai-delivery",
+  "wai-flutter",
+  "wai-spring",
+  "wai-node",
 ];
 
 function resolveSettingsPath() {
@@ -81,43 +80,40 @@ function question(rl, prompt) {
   return new Promise((resolve) => rl.question(prompt, (answer) => resolve(answer.trim())));
 }
 
-// Copy the vendored design reference topics into ~/.pi/agent/skills/ so Pi
-// can auto-trigger them as native skills. LEGACY FALLBACK: modern Pi hosts
-// (>= 0.82, resources_discover) load the packaged skills automatically via
-// the extension's startup discovery — this copy is only needed on hosts
-// without that hook. Refresh semantics: the known topic directories are
-// overwritten; nothing else under skills/ is touched; no deletion.
-function installDesignSkills() {
+// Optional copy for legacy/direct-file loading. Existing user copies are never
+// overwritten or deleted. Native package resource filters remain preferred.
+function installWaiSkills() {
   const { agentDir } = resolveSettingsPath();
   const skillsDir = join(agentDir, "skills");
-  const sourceRoot = fileURLToPath(new URL("../design-refs", import.meta.url));
+  const sourceRoot = fileURLToPath(new URL("../skills", import.meta.url));
   if (!existsSync(sourceRoot)) {
-    console.log("Design references not found in this package; skipping design skills install.");
+    console.log("Wai skills not found in this package; skipping the optional copy.");
     return;
   }
   if (!existsSync(skillsDir)) mkdirSync(skillsDir, { recursive: true });
-  for (const topic of DESIGN_SKILL_TOPICS) {
+  for (const topic of WAI_SKILLS) {
     const source = join(sourceRoot, topic);
     if (!existsSync(source)) continue;
-    cpSync(source, join(skillsDir, topic), { recursive: true });
+    const destination = join(skillsDir, topic);
+    if (existsSync(destination)) {
+      console.log("Preserved existing skill: " + destination);
+      continue;
+    }
+    cpSync(source, destination, { recursive: true });
   }
-  const license = join(sourceRoot, "LICENSE");
-  if (existsSync(license)) {
-    cpSync(license, join(skillsDir, "design-refs-LICENSE"));
-  }
-  console.log(`Installed/refreshed ${DESIGN_SKILL_TOPICS.length} design skills in ${skillsDir}`);
-  console.log("Note: Pi hosts with resources_discover (>= 0.82) load these skills from the package automatically;");
-  console.log("this copy is a legacy fallback — remove the copied dirs to let the packaged versions win. (setup does not delete.)");
-  console.log("Re-run `npx pi-yoowai setup` after upgrades to refresh them.");
+  console.log("Processed " + WAI_SKILLS.length + " Wai skills in " + skillsDir + " (existing directories preserved).");
+  console.log("Native Pi packages load these directly; copied skills can shadow package updates. Inspect /wai-status.");
 }
 
 async function maybeInstallDesignSkills(rl) {
-  const answer = await question(rl, "Install design reference skills into Pi? (y/n) ");
+  const answer = await question(rl, "Copy Wai skills for legacy/direct-file loading? (y/n) ");
   if (answer.toLowerCase() !== "y") {
-    console.log("Design skills skipped. To install them later, re-run `npx pi-yoowai setup` and answer y.");
+    console.log(
+      "Skill copy skipped. Native package skills remain available. For a legacy copy, re-run `npx pi-yoowai setup` and answer y.",
+    );
     return;
   }
-  installDesignSkills();
+  installWaiSkills();
 }
 
 async function main() {

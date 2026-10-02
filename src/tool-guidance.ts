@@ -106,9 +106,10 @@ export const WAI_TOOL_GUIDANCE = {
   wai_design_ref: [
     "Call wai_design_ref when building, reviewing, or improving UI/animation code to get detailed design guidance.",
     "Call without a topic to list the available topics and their docs.",
-    "Pass a topic (e.g. 'animate', 'review-animations', 'apple-design') to read its SKILL.md guidance.",
+    "Start with topic 'wai-skill-design' for the adapted skill, then read a relevant references/*.md doc. Original topic names remain available as upstream source material.",
     "Pass doc to read a specific document of a topic (e.g. topic 'improve-animations', doc 'AUDIT.md').",
     "The distilled baseline rules are already injected automatically for UI files; use this tool for depth.",
+    "When details.truncated is true, continue from details.nextOffset using offset; do not treat the first page as complete. maxTokens bounds each page.",
   ],
 };
 
@@ -126,6 +127,9 @@ export const CODEMODE_IMAGE_GUIDANCE =
   "that the implemented UI matches it.";
 
 WAI_TOOL_GUIDANCE.wai_index.push(CODEMODE_MEMORY_GUIDANCE);
+WAI_TOOL_GUIDANCE.wai_index.push(
+  "Use topic:'guidance' for packaged-skill diagnostics, observed successful reads, selected secondary criteria, and legacy-copy/collision paths. Availability/read observation does not prove activation or compliance.",
+);
 WAI_TOOL_GUIDANCE.wai_vision.push(CODEMODE_IMAGE_GUIDANCE);
 
 const COMPACT_CORE = [

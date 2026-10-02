@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { VERSION, HOMEPAGE } from "../version.js";
 import { dismissFinding, formatFindings, clearFindings } from "../finding-tracker.js";
 import { getAgentDir } from "../pi-paths.js";
+import { formatSkillDiagnostics } from "../integration/skills.js";
 import { formatResultText } from "../format.js";
 import { clearPromptCache } from "../prompts.js";
 import {
@@ -551,6 +552,7 @@ async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
     }
   }
 
+  lines.push("", "Skills:", formatSkillDiagnostics(ctx.cwd));
   lines.push("", "Version control:");
   if (vcs.type === "unknown") {
     lines.push("  No git or svn repository detected");

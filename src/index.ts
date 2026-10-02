@@ -44,7 +44,7 @@ import {
   type DeepVerifyModelCaller,
 } from "./wai-learn.js";
 import { runWaiScaffold, type WaiScaffoldParams } from "./wai-scaffold.js";
-import { listDesignRefDocs, readDesignRefDoc, DESIGN_REF_TOPIC_DESCRIPTIONS } from "./design-ref.js";
+import { listDesignRefDocs, readDesignRefPage, DESIGN_REF_TOPIC_DESCRIPTIONS } from "./design-ref.js";
 import { dropSessionState, resetEditsSinceDone, applyReviewOutcome, syncWorkspaceChanges } from "./session-state.js";
 import { secondaryModelLabel } from "./actions/shared.js";
 import { executeWaiPlan } from "./actions/plan.js";
@@ -74,7 +74,7 @@ import { setAuditExtensionAPI } from "./integration/audit.js";
 import { publishWaiResult } from "./integration/publish.js";
 import { registerWaiEntryRenderer } from "./integration/entry-renderer.js";
 import { registerWaiShortcuts } from "./integration/shortcuts.js";
-import { registerDesignSkillDiscovery } from "./integration/skills.js";
+import { registerSkillReadTracking } from "./integration/skills.js";
 import { updateWaiPlanWidget, hideWaiPlanWidget } from "./integration/widget.js";
 import { registerWaiProvider, unregisterWaiProvider } from "./integration/provider.js";
 import { isRegistryStreamCapable, setSdkSessionRegistry } from "./backends/sdk-backend.js";
@@ -1328,10 +1328,24 @@ export default async function (pi: ExtensionAPI) {
     }
 
     try {
-      const content = readDesignRefDoc(topic, doc);
+      if (
+        (r.offset !== undefined && typeof r.offset !== "number") ||
+        (r.maxTokens !== undefined && typeof r.maxTokens !== "number")
+      ) {
+        throw new Error("Design reference offset and maxTokens must be numbers.");
+      }
+      const page = readDesignRefPage(
+        topic,
+        doc,
+        typeof r.offset === "number" ? r.offset : 0,
+        typeof r.maxTokens === "number" ? r.maxTokens : 6000,
+      );
+      const content =
+        page.content +
+        (page.truncated ? "\n\nMore guidance is available; repeat with offset:" + page.nextOffset + "." : "");
       return {
         content: [{ type: "text", text: content }],
-        details: { topic, doc: doc ?? "SKILL.md", content },
+        details: { ...page },
         isError: false,
       };
     } catch (err) {
@@ -1348,7 +1362,7 @@ export default async function (pi: ExtensionAPI) {
     name: "wai_design_ref",
     label: "Wai Design Ref — UI Design Guidance",
     description:
-      "Read curated UI/animation design guidance (vendored from Emil Kowalski's skills, MIT). Call this when building, reviewing, or improving UI/animation code to get detailed design guidance.",
+      "Read Wai-adapted design guidance or preserved upstream references. Start with topic wai-skill-design; use nextOffset to continue a limited page.",
     promptSnippet: "wai_design_ref: read detailed UI/animation design guidance for a topic",
     promptGuidelines: WAI_TOOL_GUIDANCE.wai_design_ref,
     parameters: Type.Object({
@@ -1361,6 +1375,12 @@ export default async function (pi: ExtensionAPI) {
         Type.String({
           description: "Specific markdown doc within the topic (default: SKILL.md).",
         }),
+      ),
+      offset: Type.Optional(
+        Type.Integer({ minimum: 0, description: "Character offset; use the previous page's nextOffset to continue." }),
+      ),
+      maxTokens: Type.Optional(
+        Type.Integer({ minimum: 1, maximum: 6000, description: "Maximum approximate tokens per page (default 6000)." }),
       ),
     }),
     renderCall: (args, theme, context) => renderDesignRefCall(args as { topic?: string; doc?: string }, theme, context),
@@ -1375,5 +1395,5 @@ export default async function (pi: ExtensionAPI) {
   registerLifecycleHandlers(pi, loopStates);
   await registerWaiEntryRenderer(pi);
   registerWaiShortcuts(pi);
-  registerDesignSkillDiscovery(pi);
+  registerSkillReadTracking(pi);
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logEvent } from "./logger.js";
@@ -6,6 +6,8 @@ import { resolveProjectPath } from "./path-security.js";
 import { getProjectConfigPath } from "./pi-paths.js";
 import { estimateTokens } from "./token-budget.js";
 import { seedDefaultDesignRules } from "./design-ref-defaults.js";
+import { adaptDefaultDesignRule, DEFAULT_RULES_SOURCE } from "./design-ref-defaults.js";
+import { getPackagedSkillsRoot, isFlutterProject } from "./skill-guidance.js";
 
 export interface DesignRule {
   rule: string;
@@ -25,6 +27,21 @@ export const UI_FILE_PATTERN = /\.(tsx|jsx|css|scss|sass|less|svelte|vue|html)$/
 
 export function isUiFile(path: string): boolean {
   return UI_FILE_PATTERN.test(path);
+}
+
+export function hasUiChanges(cwd: string, files: readonly string[]): boolean {
+  if (files.some(isUiFile)) return true;
+  return (
+    isFlutterProject(cwd) &&
+    files.some((file) => {
+      const path = file.replace(/\\/g, "/");
+      return (
+        /^(?:lib\/(?:main|app)\.dart|lib\/.*(?:screens?|pages?|widgets?|views?|presentation|components?)\/.*\.dart)$/i.test(
+          path,
+        ) || /(?:_screen|_page|_widget|_view|_widget_test)\.dart$/i.test(path)
+      );
+    })
+  );
 }
 
 function getDesignRefPath(cwd: string): string {
@@ -135,12 +152,20 @@ export function formatDesignRules(rules: DesignRule[]): string {
   return rules.map((r) => `- ${r.rule}`).join("\n");
 }
 
-export function formatDesignRulesForPrompt(cwd: string, maxTokens: number): string {
+export function formatDesignRulesForPrompt(cwd: string, maxTokens: number, files: readonly string[] = []): string {
   try {
     if (maxTokens <= 0) return "";
     const rules = loadDesignRules(cwd);
     if (rules.length === 0) return "";
-    const text = rules.map((r) => `- ${r.rule}`).join("\n");
+    const web = files.length === 0 || files.some(isUiFile);
+    const text = rules
+      .map((rule) => ({
+        ...rule,
+        rule: rule.source === DEFAULT_RULES_SOURCE ? adaptDefaultDesignRule(rule.rule) : rule.rule,
+      }))
+      .filter((rule) => web || rule.source !== DEFAULT_RULES_SOURCE || !rule.rule.startsWith("Web:"))
+      .map((rule) => "- " + rule.rule)
+      .join("\n");
     if (estimateTokens(text) <= maxTokens) return text;
     // Truncate on whole-line boundaries so the bullet list stays parseable.
     const maxChars = maxTokens * 4;
@@ -245,6 +270,7 @@ function getDesignRefsDir(): string {
 
 /** One-line descriptions shown when listing topics. */
 export const DESIGN_REF_TOPIC_DESCRIPTIONS: Record<string, string> = {
+  "wai-skill-design": "Wai-adapted design guidance and focused references for web/Flutter work",
   animate: "build an animation from scratch with correct curve/duration/properties",
   "animation-vocabulary": "precise words to describe motion",
   "apple-design": "Apple's interface-design and fluid-motion principles for the web",
@@ -261,9 +287,8 @@ export const DESIGN_REF_TOPIC_DESCRIPTIONS: Record<string, string> = {
 export function listDesignRefDocs(): { topic: string; docs: string[] }[] {
   try {
     const root = getDesignRefsDir();
-    if (!existsSync(root)) return [];
     const topics: { topic: string; docs: string[] }[] = [];
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
+    for (const entry of existsSync(root) ? readdirSync(root, { withFileTypes: true }) : []) {
       if (!entry.isDirectory()) continue;
       const docs = readdirSync(join(root, entry.name))
         .filter((f) => f.toLowerCase().endsWith(".md"))
@@ -275,6 +300,19 @@ export function listDesignRefDocs(): { topic: string; docs: string[] }[] {
         });
       if (docs.length > 0) topics.push({ topic: entry.name, docs });
     }
+    const skillRoot = join(getPackagedSkillsRoot(), "wai-skill-design");
+    if (existsSync(join(skillRoot, "SKILL.md"))) {
+      topics.push({
+        topic: "wai-skill-design",
+        docs: [
+          "SKILL.md",
+          ...readdirSync(join(skillRoot, "references"))
+            .filter((file) => file.endsWith(".md"))
+            .sort()
+            .map((file) => "references/" + file),
+        ],
+      });
+    }
     return topics.sort((a, b) => a.topic.localeCompare(b.topic));
   } catch {
     return [];
@@ -285,7 +323,11 @@ export function listDesignRefDocs(): { topic: string; docs: string[] }[] {
  *  topic's SKILL.md. Throws on unknown topic/doc; doc names are restricted
  *  to the topic's listed .md files and the resolved path must stay inside
  *  design-refs. */
-export function readDesignRefDoc(topic: string, doc?: string, maxTokens = 6000): string {
+export function readDesignRefPage(topic: string, doc?: string, offset = 0, maxTokens = 6000) {
+  if (!Number.isInteger(offset) || offset < 0)
+    throw new Error("Design reference offset must be a non-negative character offset.");
+  if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 6000)
+    throw new Error("Design reference maxTokens must be between 1 and 6000.");
   const topics = listDesignRefDocs();
   const available = topics.map((t) => t.topic).join(", ") || "(none — design-refs directory missing)";
   const entry = topics.find((t) => t.topic === topic);
@@ -296,16 +338,41 @@ export function readDesignRefDoc(topic: string, doc?: string, maxTokens = 6000):
   if (!docName || !entry.docs.includes(docName)) {
     throw new Error(`Unknown doc "${doc ?? ""}" for topic "${topic}". Available docs: ${entry.docs.join(", ")}`);
   }
-  const root = getDesignRefsDir();
-  const resolved = resolve(root, topic, docName);
+  const root = topic === "wai-skill-design" ? join(getPackagedSkillsRoot(), topic) : getDesignRefsDir();
+  const resolved = topic === "wai-skill-design" ? resolve(root, docName) : resolve(root, topic, docName);
   const rootResolved = resolve(root);
   if (resolved !== rootResolved && !resolved.startsWith(rootResolved + sep)) {
     throw new Error(`Unsafe design reference path: ${topic}/${docName}`);
   }
-  let content = readFileSync(resolved, "utf-8");
-  if (maxTokens > 0 && estimateTokens(content) > maxTokens) {
-    const marker = `\n\n… (truncated to ${maxTokens} tokens; read a specific doc or section for more)`;
-    content = `${content.slice(0, Math.max(0, maxTokens * 4 - marker.length))}${marker}`;
+  const canonicalRoot = realpathSync(root);
+  const canonicalFile = realpathSync(resolved);
+  if (!canonicalFile.startsWith(canonicalRoot + sep))
+    throw new Error("Design reference resolves outside the packaged root.");
+  const text = readFileSync(resolved, "utf-8");
+  const content = text.slice(offset, offset + maxTokens * 4);
+  const nextOffset = offset + content.length < text.length ? offset + content.length : undefined;
+  return {
+    topic,
+    doc: docName,
+    content,
+    offset,
+    nextOffset,
+    totalChars: text.length,
+    truncated: nextOffset !== undefined,
+  };
+}
+
+export function readDesignRefDoc(topic: string, doc?: string, maxTokens = 6000): string {
+  let page = readDesignRefPage(topic, doc, 0, 6000);
+  let content = page.content;
+  while (page.nextOffset !== undefined && (maxTokens <= 0 || content.length < maxTokens * 4)) {
+    page = readDesignRefPage(topic, doc, page.nextOffset, 6000);
+    content += page.content;
   }
-  return content;
+  if (maxTokens <= 0 || (content.length <= maxTokens * 4 && !page.truncated)) return content;
+  const suffix = "\n\n… (truncated; continue with wai_design_ref offset:";
+  const budget = maxTokens * 4;
+  const markerReserve = suffix.length + String(content.length).length + 2;
+  const end = Math.max(0, budget - markerReserve);
+  return (content.slice(0, end) + suffix + end + ")").slice(0, budget);
 }

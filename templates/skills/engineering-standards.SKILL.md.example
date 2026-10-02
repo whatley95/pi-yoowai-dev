@@ -1,71 +1,46 @@
 ---
 name: engineering-standards
-description: When to apply — API/contract changes, server-side code, auth/data flows, tests, or reviews in this repository. Replace the placeholders with THIS repo's concrete rules, contracts, and links.
+description: Apply this repository's API, serialization, authorization, data, and test contracts when changing those boundaries. Replace placeholders with confirmed project rules and authoritative source links.
 ---
 
-# Engineering Standards (REPO-SPECIFIC — edit this file)
+# Repository engineering contracts
 
-The main agent loads this skill when it matches the description above. Keep it
-repo-specific and actionable; put always-true rules in AGENTS.md instead.
+Use this file for local exceptions and requirements. Put always-applicable project
+rules in AGENTS.md. Portable workflows come from the packaged Wai skills when Wai
+is installed: wai-api-contracts, wai-testing, wai-safe-refactor, wai-delivery, and the
+confirmed stack skill. Load only the workflows relevant to the task.
 
-## When to use
+## Verified stack and commands
 
-- Client ↔ server contract changes (endpoints, request/response shapes, error codes)
-- Auth & session boundaries, token handling, sensitive data
-- Data models, serialization/nullability, async lifecycle
-- Adding or changing tests; before asking wai to review
+- Stack: {{stack}}; language: {{language}}.
+- Tests: {{testCommand}}.
+- Static/type checks: {{analyzeCommand}}.
+- Required integration/device/database checks: <FILL ME — evidence: CI and existing tests>.
 
-## Stack & commands (REPLACE)
+## Authoritative contracts
 
-- Primary stack (repository-level): `{{stack}}` (language: `{{language}}`) — run `{{testCommand}}` before review
-- Server: `<FILL ME — evidence: server directory/manifest>` — run `<FILL ME — evidence: CI steps or package scripts>` before review
-- Contract source of truth: `<FILL ME — evidence: route/schema files>`
+- Contract/schema/route source: <FILL ME — evidence: actual producer and consumer files>.
+- Serialization/default/nullability requirements: <FILL ME — evidence: schemas and fixtures>.
+- Error mapping and retry/idempotency policy: <FILL ME — evidence: boundary handlers and callers>.
+- Authorization/ownership boundary: <FILL ME — evidence: effective middleware and service checks>.
+- Sensitive data handling and prohibited logging: <FILL ME — evidence: project configuration>.
+- Migration/compatibility requirements: <FILL ME — evidence: persisted shapes and supported clients>.
 
-## Contract workflow
+Inspect affected producers and consumers before selecting an implementation order.
+Do not assume every project contains a BFF, both client and server, or the same token
+storage policy. These placeholders are unconfirmed until replaced with source evidence.
 
-1. Change the authoritative contract FIRST: `<FILL ME — evidence: contract/schema files>`.
-2. Update client models/serializers in `<FILL ME — evidence: client model files>`.
-3. Update server handlers + validators in `<FILL ME — evidence: server handler files>`.
-4. Add negative-path tests for malformed payloads and expired tokens (list concrete cases: <FILL ME — evidence: existing test files>).
+## Preservation and completion
 
-## Error mapping
+- Preserve: <FILL ME — evidence: explicit developer requirements and existing behavior>.
+- Verify changed behavior with appropriate checks and meaningful negative-path tests.
+- A partial change or an unchanged preservation invariant does not make a plan stale.
+- Use one active plan. Check review-returned progress before done; a code pass can leave
+  the step incomplete.
+- Complete review must include intended new files and disclose missing evidence.
+- Before an authorized Git/SVN commit, inspect exact contents and include intended new
+  files without bulk-adding tool state, build output, or unrelated changes.
+- Report executed checks, skipped/unverified criteria, review coverage, remaining
+  findings, and commit status. Model approval is not execution evidence.
 
-- Client errors are thrown as `<FILL ME — evidence: service error classes>` from `<FILL ME — evidence: service layer files>`.
-- The BFF maps provider errors to `<FILL ME — evidence: error-map file>` in `<FILL ME — evidence: the relevant source file>`.
-- NEVER log: `<FILL ME — evidence: logging configuration>`.
-
-## Auth boundaries
-
-- Client holds the refresh/access token in `<FILL ME — evidence: client storage/service config>`; never in logs or caches.
-- Server validates `<FILL ME — evidence: middleware configuration>` in `<FILL ME — evidence: the relevant source file>`; authorization rules live in `<FILL ME — evidence: the relevant source file>`.
-- Cross-service calls use <FILL ME — evidence: service authentication configuration> — see `<FILL ME — evidence: docs/README or API reference>`.
-
-## Testing gates
-
-- Required before review: `<FILL ME — evidence: CI steps or package scripts>` (typecheck), `<FILL ME — evidence: CI steps or package scripts>` (tests), `<FILL ME — evidence: CI steps or package scripts>` (contract check).
-- Required negative tests: `<FILL ME — evidence: existing test files>`.
-
-## Review, progress, and completion
-
-- Inspect relevant source before planning. Give wai the requested outcome, confirmed constraints, existing work, and established decisions. Use a task-sized list of outcomes with a completion check for each step; keep unverified implementation details flexible and preservation requirements as acceptance criteria.
-- Before a new batch, check the current plan step. If a stale warning appears, compare the cited plan text and code with the developer's decisions. Partial diffs, unfinished steps, and unchanged preservation checks are not stale. Correct a tracker error with `done:<step number>`; update a genuinely superseded plan with the changed decision and remaining work. Keep explicit user requirements.
-- Use scoped reviews for focused feedback. Scoped or historical passes do not clear the done gate or advance the plan. Before certifying a step or finishing the task, run a complete whole-tree review with new files included and without `files`, `exclude`, `revision`, or `since`.
-- A passing whole-tree review can advance the plan. Inspect its returned progress/next step or `wai_index({ topic: "plan" })` before `done`; call it only if the same reviewed step remains current and its acceptance criteria are met. Do not advance an unfinished next step.
-- Code-review approval is separate from step completion. A pass with `stepComplete: false` or `completedSteps: 0` keeps the current step open. Plan updates retain progress only through the unchanged completed prefix; changed or reordered steps need verification again.
-- For inconclusive results, check the working directory, file scope, VCS range, missing inputs, input/output limits, and plan mismatch. Correct the cause before retrying. Report a persistent blocker instead of retrying unchanged inputs or lowering thinking depth blindly.
-- Commit when the user requests or has already authorized it. Inspect exact commit contents and preserve unrelated user changes. A review pass alone is not commit authorization.
-- In the completion report, distinguish executed checks and outcomes, skipped/failing checks, review/judge scope and coverage, unresolved findings, verified/unverified acceptance criteria, and commit status/hash. A model pass or generic test success does not prove every acceptance criterion.
-
-## Git working trees
-
-- Before final whole-tree review, inspect `git status` and stage only intended task files or hunks, using explicit paths for `git add`.
-- Before an authorized commit, inspect `git diff --cached`; verify intended new files are included and unrelated changes, `.pi/`, and generated outputs are not accidentally staged. If staging changes after review, run the whole-tree review again.
-
-## SVN working copies
-
-- Wai reviews unversioned files without `svn add`, but `svn commit` omits files marked `?`.
-- Directory scopes/exclusions accept either slash style on Windows. Whole-tree review uses local `BASE` automatically and excludes build output (`target/`, compiled artifacts) and tool metadata. For final certification, omit explicit `revision`, `files`, and `exclude`; passing `revision: "BASE"` does not certify the whole tree. Never assume truncation is harmless because source appears first.
-- Before the final whole-tree review, inspect `svn status` and run `svn add --parents -- <explicit file paths>` for intended new source, tests, and assets. Do not bulk-add `.`, `.pi/`, generated outputs, or unrelated files.
-- Before an authorized commit, verify intended new files show `A`. Adding files after a passing review changes the workspace fingerprint; run the whole-tree review again.
-
-> Authoritative docs: `<FILL ME — evidence: docs/README or API reference>` — do not duplicate full docs here.
+Authoritative project docs: <FILL ME — evidence: maintained repository documentation>.

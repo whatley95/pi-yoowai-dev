@@ -1,0 +1,3 @@
+- For Flutter UI, inspect mounted checks, controller/subscription disposal, async state, navigation, and loading/error/empty behavior affected by this change.
+- Verify semantics, text scaling, touch/focus behavior, and reduced-animation alternatives; web CSS rules do not apply literally to Dart.
+- Separate unit/widget evidence from integration/backend/device behavior that was not exercised.

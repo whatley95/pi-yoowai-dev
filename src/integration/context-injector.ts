@@ -5,7 +5,7 @@ import { formatLanguageDirective, loadYoowaiConfig } from "../config.js";
 import { loadConventions } from "../conventions.js";
 import { selectLearnedFacts, formatLearnedContext } from "../wai-learn.js";
 import type { YoowaiConfig } from "../types.js";
-import { isUiFile } from "../design-ref.js";
+import { hasUiChanges } from "../design-ref.js";
 import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
 import { getPastIssuesForFiles } from "../review-memory.js";
@@ -130,8 +130,8 @@ function buildContextBlock(cwd: string, config: YoowaiConfig, query: string): st
   }
   // Surface the load-bearing design rules when unreviewed edits touch UI
   // files so the main agent writes UI code against them before review.
-  if (editState.editedFiles.some(isUiFile)) {
-    const designRules = formatWriterDesignGuidance(cwd, 300);
+  if (hasUiChanges(cwd, editState.editedFiles)) {
+    const designRules = formatWriterDesignGuidance(cwd, 300, editState.editedFiles);
     if (designRules) parts.push(`<design_rules>\n${designRules}\n</design_rules>`);
   }
   // Advisor notes: state-derived heads-up (no model calls) so the main agent

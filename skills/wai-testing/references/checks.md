@@ -1,0 +1,3 @@
+- Assess observable behavior and the original failure trigger, not tests that mirror private implementation.
+- Check relevant negative paths, deterministic fixtures, and cancellation/disposal for changed asynchronous behavior.
+- Distinguish executed check evidence from proposed tests and unverified acceptance criteria; do not infer execution from a model verdict.

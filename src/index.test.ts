@@ -491,6 +491,43 @@ describe("wai extension registration", () => {
     assert.equal(getState(cwd).plan?.summary, "Keep original");
   });
 
+  it("exposes bounded design pages and continuation metadata through the registered tool", async (t) => {
+    const cwd = makeTempDir("wai-design-pages-");
+    t.after(() => rmSync(cwd, { recursive: true, force: true }));
+    const execute = await getToolExecutor("wai_design_ref");
+    const first = (await execute(
+      "design-first",
+      { topic: "wai-skill-design", doc: "references/motion.md", maxTokens: 25 },
+      undefined,
+      undefined,
+      mockCtx(cwd),
+    )) as { isError: boolean; structuredContent: { content: string; nextOffset: number; truncated: boolean } };
+    assert.equal(first.isError, false);
+    assert.equal(first.structuredContent.content.length, 100);
+    assert.equal(first.structuredContent.nextOffset, 100);
+    assert.equal(first.structuredContent.truncated, true);
+    const next = (await execute(
+      "design-next",
+      { topic: "wai-skill-design", doc: "references/motion.md", offset: 100, maxTokens: 25 },
+      undefined,
+      undefined,
+      mockCtx(cwd),
+    )) as { isError: boolean; structuredContent: { content: string; offset: number; nextOffset: number } };
+    assert.equal(next.isError, false);
+    assert.equal(next.structuredContent.offset, 100);
+    assert.equal(next.structuredContent.nextOffset, 200);
+    assert.notEqual(next.structuredContent.content, first.structuredContent.content);
+    const invalid = (await execute(
+      "design-invalid",
+      { topic: "wai-skill-design", offset: -1 },
+      undefined,
+      undefined,
+      mockCtx(cwd),
+    )) as { isError: boolean; structuredContent: { error: string } };
+    assert.equal(invalid.isError, true);
+    assert.match(invalid.structuredContent.error, /offset/);
+  });
+
   it("exposes design guidance and document listings through Pi's real codemode", async (t) => {
     const host = (await import("@earendil-works/pi-coding-agent")) as unknown as {
       createCodemodeExtension?: (options: { models: boolean }) => (pi: ExtensionAPI) => void;
@@ -971,12 +1008,12 @@ describe("wai extension registration", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("registers exactly one resources_discover handler during init (design skills auto-discovery)", async () => {
+  it("leaves skill discovery to the native package manifest without bypassing resource filters", async () => {
     const { pi, eventHandlers } = createMockPi();
     await initWai(pi);
     const registered = eventHandlers.get("resources_discover") ?? [];
-    assert.equal(registered.length, 1, "resources_discover must be registered once");
-    assert.ok(registered[0], "handler must exist");
+    assert.equal(registered.length, 0, "skill filters must not be bypassed by extension discovery");
+    assert.ok((eventHandlers.get("tool_result") ?? []).length > 0, "successful skill reads can be observed");
   });
 
   it("registers the wai_scaffold tool", async () => {

@@ -1,0 +1,3 @@
+- For Spring service changes, inspect DTO validation/serialization, exception mapping, effective authorization, and ownership boundaries.
+- Check transaction/rollback, persistence constraints, concurrency, and retry/idempotency only where the changed behavior depends on them.
+- Distinguish mocked unit evidence from framework/database integration behavior; preserve environment configuration and secret handling.

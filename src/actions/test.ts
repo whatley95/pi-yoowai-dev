@@ -169,7 +169,7 @@ export async function executeWaiTest(
   // (testOutput is NOT — flaky runs would poison the key; the command list is
   // deterministic given cwd). Session context is intentionally excluded.
   const testCommand = options.command ?? config.testCommand ?? detectTestCommand(cwd, conventions);
-  const instructionsText = capActionInstructions(cwd, "test", config.instructionsMaxTokens ?? 800);
+  const instructionsText = capActionInstructions(cwd, "test", config.instructionsMaxTokens ?? 800, changedFiles);
   const cacheKey = buildCacheKey("test", {
     diff,
     description,

@@ -14,6 +14,7 @@ import { getMemorySummary, getPastIssuesForFiles, getMemoryEntries } from "./rev
 import { findLearnedFacts, formatLearnedFactsWithFreshness, type LearnedFact } from "./wai-learn.js";
 import type { Conventions, YoowaiSessionState, PlanTodoItem, MemoryEntry } from "./types.js";
 import { WAI_NAMESPACE } from "./tool-guidance.js";
+import { formatSkillDiagnostics, getSkillDiagnostics } from "./integration/skills.js";
 
 export type IndexTopic = "all" | "plan" | "memory" | "conventions" | "cost" | "logs" | "index" | "learned" | "guidance";
 
@@ -71,6 +72,7 @@ export interface IndexResult {
   memory?: string;
   memoryEntries?: MemoryEntry[];
   guidance?: string;
+  skills?: ReturnType<typeof getSkillDiagnostics>;
   conventions?: Conventions;
   cost?: {
     calls: number;
@@ -126,7 +128,12 @@ export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResul
 
   const result: IndexResult = { topic };
   // Guidance stays on-demand; topic 'all' must not inject it into every context query.
-  if (topic === "guidance") return { topic, guidance: WAI_NAMESPACE.instructions };
+  if (topic === "guidance")
+    return {
+      topic,
+      guidance: WAI_NAMESPACE.instructions + "\n\n" + formatSkillDiagnostics(cwd),
+      skills: getSkillDiagnostics(cwd),
+    };
   const limit =
     typeof params.limit === "number" && Number.isInteger(params.limit) && params.limit > 0
       ? Math.min(params.limit, 100)

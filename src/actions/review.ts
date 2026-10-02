@@ -11,7 +11,7 @@ import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js"
 import { loadFileContentsForReview, isReviewableFile, type FileContentEntry } from "../file-loader.js";
 import { buildRelatedContext, buildFileOutlines } from "../context-retrieval.js";
 import { buildCodemap } from "../codemap.js";
-import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
+import { formatDesignRulesForPrompt, hasUiChanges } from "../design-ref.js";
 import { capActionInstructions } from "../instructions.js";
 import { buildAstContext } from "../ast-context.js";
 import { getPastIssuesForFiles, recordIssues } from "../review-memory.js";
@@ -257,10 +257,15 @@ async function executeReview(
     buildAstContext(cwd, changedFiles, { maxTokens: effectiveConfig.relatedContextMaxTokens ?? 1000 }) ||
     buildRelatedContext(cwd, changedFiles).context;
   const codemap = buildCodemap(cwd, changedFiles, effectiveConfig.codemapMaxTokens ?? 1500);
-  const designRefText = changedFiles.some(isUiFile)
-    ? formatDesignRulesForPrompt(cwd, effectiveConfig.designRefMaxTokens ?? 800)
+  const designRefText = hasUiChanges(cwd, changedFiles)
+    ? formatDesignRulesForPrompt(cwd, effectiveConfig.designRefMaxTokens ?? 800, changedFiles)
     : "";
-  const instructionsText = capActionInstructions(cwd, "review", effectiveConfig.instructionsMaxTokens ?? 800);
+  const instructionsText = capActionInstructions(
+    cwd,
+    "review",
+    effectiveConfig.instructionsMaxTokens ?? 800,
+    changedFiles,
+  );
   // Scoped reviews judge the requested change from its description and code.
   // The surrounding session can contain an unrelated active plan or prior
   // inconclusive verdicts that would make the reviewer repeat stale advice.

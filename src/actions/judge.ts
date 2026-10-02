@@ -5,7 +5,7 @@ import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { DEFAULT_MAX_DIFF_CHARS, getDiff, getVcsInfo, resolveGitCommit, resolveGitTree } from "../diff-grabber.js";
 import { buildCodemap } from "../codemap.js";
-import { formatDesignRulesForPrompt, isUiFile } from "../design-ref.js";
+import { formatDesignRulesForPrompt, hasUiChanges } from "../design-ref.js";
 import { capActionInstructions } from "../instructions.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
@@ -172,10 +172,10 @@ export async function executeWaiJudge(
   const conventionsText = conventions ? formatConventions(conventions) : "";
   const memoryContext = getPastIssuesForFiles(cwd, changedFiles);
   const codemap = buildCodemap(cwd, changedFiles, config.codemapMaxTokens ?? 1500);
-  const designRefText = changedFiles.some(isUiFile)
-    ? formatDesignRulesForPrompt(cwd, config.designRefMaxTokens ?? 800)
+  const designRefText = hasUiChanges(cwd, changedFiles)
+    ? formatDesignRulesForPrompt(cwd, config.designRefMaxTokens ?? 800, changedFiles)
     : "";
-  const instructionsText = capActionInstructions(cwd, "judge", config.instructionsMaxTokens ?? 800);
+  const instructionsText = capActionInstructions(cwd, "judge", config.instructionsMaxTokens ?? 800, changedFiles);
   const judgeEvidencePack = buildReviewEvidencePack(cwd, {
     budgetTokens: config.evidencePackMaxTokens ?? 1200,
     changedFiles,

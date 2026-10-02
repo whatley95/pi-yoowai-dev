@@ -158,7 +158,7 @@ export async function executeWaiSecurity(
   // Cache key: every stable prompt input (diff for diff mode, the project-scan
   // flag + sample list for fullProject mode). Session context is intentionally
   // excluded (changes every turn).
-  const instructionsText = capActionInstructions(cwd, "security", config.instructionsMaxTokens ?? 800);
+  const instructionsText = capActionInstructions(cwd, "security", config.instructionsMaxTokens ?? 800, changedFiles);
   const cacheKey = buildCacheKey("security", {
     diff: options.fullProject ? `project-scan:${changedFiles.join(",")}` : diff,
     description,

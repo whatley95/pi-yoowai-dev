@@ -94,9 +94,9 @@ describe("resetDesignRulesToDefaults", () => {
 });
 
 describe("listDesignRefDocs", () => {
-  it("finds all 9 vendored topics with SKILL.md present", () => {
+  it("finds the adapted design skill and all 9 preserved upstream topics", () => {
     const topics = listDesignRefDocs();
-    assert.equal(topics.length, 9);
+    assert.equal(topics.length, 10);
     for (const t of topics) {
       assert.ok(t.docs.includes("SKILL.md"), `${t.topic} should have SKILL.md`);
       assert.equal(t.docs[0], "SKILL.md", "SKILL.md should be listed first");

@@ -16,12 +16,16 @@
     "src",
     "scripts",
     "design-refs",
+    "skills",
     "templates",
     "README.md"
   ],
   "pi": {
     "extensions": [
       "./src/index.ts"
+    ],
+    "skills": [
+      "./skills/*/SKILL.md"
     ]
   },
   "keywords": [

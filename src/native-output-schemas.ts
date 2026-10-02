@@ -104,6 +104,15 @@ const index = object({
   topic: optional(Type.String()),
   error: optional(Type.String()),
   guidance: optional(Type.String()),
+  skills: optional(
+    object({
+      packaged: Type.Array(object({ name: Type.String(), path: Type.String(), available: Type.Boolean() })),
+      observedReads: Type.Array(object({ skill: Type.String(), document: Type.String(), path: Type.String() })),
+      evaluationSkills: Type.Record(Type.String(), strings()),
+      overrides: strings(),
+      legacyCopies: strings(),
+    }),
+  ),
   plan: optional(
     object({
       summary: optional(Type.String()),
@@ -217,6 +226,10 @@ const outputs: Record<string, TObject> = {
     topic: optional(Type.String()),
     doc: optional(Type.String()),
     content: optional(Type.String()),
+    offset: optional(Type.Integer()),
+    nextOffset: optional(Type.Integer()),
+    totalChars: optional(Type.Integer()),
+    truncated: optional(Type.Boolean()),
     topics: optional(strings()),
     documents: optional(
       Type.Array(object({ topic: Type.String(), docs: strings(), description: optional(Type.String()) })),

@@ -18,7 +18,7 @@ npx pi-yoowai@latest setup --preset=openai
 
 Then make sure credentials for the chosen provider are available (`~/.pi/agent/auth.json`, an environment variable such as `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, or Pi's `/login`), restart Pi, and run `/wai-test` to verify connectivity. From a local clone, `npm run setup` runs the same installer (exposed as the `pi-yoowai` bin entry).
 
-After configuring the model, the interactive installer optionally asks "Install design reference skills into Pi? (y/n)". Answering `y` copies the 9 vendored design-reference topics (Emil Kowalski's skills, MIT) from the package's `design-refs/` into `~/.pi/agent/skills/` — only those topic directories are touched, and re-running setup after an upgrade refreshes them. Installed this way, Pi can auto-trigger them as **native Pi skills** during relevant UI work; independently, the built-in `wai_design_ref` tool always lets the main agent read the same guidance on demand (and distilled rules are injected automatically), so skipping this step loses nothing essential.
+Pi loads the nine Wai-owned skills directly from the package manifest: design, debugging, testing, refactoring, API contracts, delivery, Flutter, Spring, and Node. Full guidance is read only when relevant. The installer offers an optional copy for legacy/direct-file loading; existing skill directories are preserved, and /wai-status reports potential overrides and older design copies.
 
 ## Install
 
@@ -509,7 +509,7 @@ Use `wai({ scan: true, scanRefresh: true })` or `/wai scan --refresh` to explici
 
 ### `wai_design_ref` tool
 
-Read curated UI/animation design guidance vendored from [Emil Kowalski's skills](https://github.com/emilkowalski/skills) (MIT licensed — attribution in `design-refs/README.md`, license in `design-refs/LICENSE`). No model call; it reads local markdown.
+Read curated UI/animation design guidance vendored from [Emil Kowalski's skills](https://github.com/emilkowalski/skills) (MIT licensed — attribution in `design-refs/README.md`, license in `design-refs/LICENSE`). No model call; it reads local markdown. Start with topic wai-skill-design. Limited pages disclose truncated, nextOffset, and totalChars; continue with offset:nextOffset to read the rest. maxTokens bounds each page to at most 6000 approximate tokens.
 
 | Call                                                               | What it does                                                                                                                                                                       |
 | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -519,15 +519,37 @@ Read curated UI/animation design guidance vendored from [Emil Kowalski's skills]
 
 Call this when building, reviewing, or improving UI/animation code to get detailed design guidance beyond the distilled baseline rules that are injected automatically.
 
-#### Design skills auto-discovery
+#### Native design and development skills
 
-The vendored design topics (Emil Kowalski's skills, MIT) are **auto-registered as native Pi skills** at extension startup: on hosts with `resources_discover` (Pi >= 0.82), the main agent's system prompt lists them, so Pi self-triggers the design guidance during UI work — no setup needed. The shipped `scripts/setup.js` skill-copy remains a **legacy fallback** for hosts without that hook (copied topics take precedence over the packaged ones — remove the copies to let the packaged versions win; setup never deletes).
+Package discovery uses native pi.skills; no resources_discover hook re-adds filtered skills. Pi advertises each skill's name, description, and path, and instructs the main agent to read SKILL.md when the task matches. These nine skills permit automatic selection:
 
-> Verified smoke (Pi 0.82.1 CLI, extension loaded from `./src/index.ts`, no setup copy): the session reports exactly the nine skills — `animate, animation-vocabulary, apple-design, emil-design-eng, find-animation-opportunities, improve-animations, pick-ui-library, prototype, review-animations`.
+| Skill | When it helps |
+| --- | --- |
+| wai-skill-design | UI implementation/review, accessibility, motion, and requested design alternatives |
+| wai-debug | Reproduce failures, distinguish causes, verify a targeted fix |
+| wai-testing | Meaningful test selection and truthful execution evidence |
+| wai-safe-refactor | Preserve contracts while changing responsibilities/callers |
+| wai-api-contracts | Producer/consumer compatibility, data/auth boundaries and migrations |
+| wai-delivery | Wai plans, stale-plan diagnosis, review recovery, Git/SVN preparation |
+| wai-flutter | Confirmed Flutter widget/navigation/lifecycle work |
+| wai-spring | Confirmed Java/Spring service/persistence work |
+| wai-node | Confirmed TypeScript/JavaScript Node module/service work |
+
+Force a skill with /skill:wai-skill-design (or another name). Use Pi package resource filters or pi config to control activation. If loading src/index.ts directly instead of the package, supply the skills through Pi's additional skill paths, or use the optional setup copy; the extension does not bypass disabled skill filters.
+
+wai-skill-design loads focused references for foundations, motion, recipes, fluid interfaces, review, audits/opportunities, prototypes, library choice, and vocabulary. They adapt all nine original topics, preserving their source material and MIT attribution in design-refs/ and the adapted skill's LICENSE. Generic greetings, fixed report formats, forced subagents/worktrees, and extra approval steps are not part of the adapted workflow. The original names still work through wai_design_ref as source references.
+
+The secondary model does not inherit skill bodies read by the main agent. Review/judge/test/security select short evaluation criteria shared with relevant development skill references, within instructionsMaxTokens (up to 400 tokens of the existing allowance). Project instructions consume the budget first and explicit requirements take precedence. No added provider call or source-coverage bypass is involved. The exact selected text participates in existing prompt/cache keys.
+
+Flutter UI detection requires Flutter SDK evidence plus UI paths; Dart services do not trigger web design rules. Flutter prompts keep platform-neutral defaults and custom project rules, omitting web-only default rules. Source-owned legacy default text is adapted in prompts without rewriting the user's stored rules.
+
+/wai-status and wai_index({topic:'guidance'}) show packaged availability, observed successful skill reads, selected secondary criteria, and detected override/legacy-copy paths. Availability is not proof of activation, and an observed read is not proof that guidance was followed. Pi's actual collision diagnostics identify which same-name skill wins. No user copy is automatically removed.
+
+Reload Pi after package updates. Nine original design skills are no longer registered by the extension; six had automatic selection and three were explicit-only. Old global copies can still expose their original behavior alongside the new skill.
 
 ### Fullstack / engineering guidance (per-repo)
 
-Design topics are vendored and generic; **fullstack rules are repo-specific**. pi-yoowai ships templates in `templates/` that you copy to the two per-repo channels (nothing is auto-injected from templates):
+The packaged skills supply portable workflows; **project contracts and exceptions remain repo-specific**. pi-yoowai ships templates in `templates/` that you copy to the two per-repo channels (nothing is auto-injected from templates):
 
 1. **Main agent** — `templates/skills/engineering-standards.SKILL.md.example` → copy to `.pi/skills/engineering-standards/SKILL.md`. Pi auto-discovers it (no setup); it guides the main agent during API/auth/data/tests work with YOUR contracts, commands, and links.
 2. **Wai (secondary model)** — `templates/instructions/{review,security,test}.md.example` → copy to `.pi/yoowai/instructions/<action>.md`. Each is injected into that action's prompt only (isolation is enforced and tested); keep them short checklists of evaluation criteria.
@@ -887,7 +909,7 @@ Content fingerprints apply to Git and SVN projects. Projects without a recognize
 
 ## Design references
 
-Design references are UI/design rules stored per project in `.pi/yoowai/design-ref.json` (up to 100 rules, deduplicated case-insensitively). On first use the store is seeded with 22 rules distilled from [Emil Kowalski's design-engineering skills](https://github.com/emilkowalski/skills) — the skills are vendored under `design-refs/` (MIT licensed; attribution in `design-refs/README.md`, license in `design-refs/LICENSE`) — so UI reviews have a sane baseline out of the box. Seeding never touches a store that already has your own rules.
+Design references are UI/design rules stored per project in `.pi/yoowai/design-ref.json` (up to 100 rules, deduplicated case-insensitively). On first use the store is seeded with 22 platform-aware rules adapted from [Emil Kowalski's design-engineering skills](https://github.com/emilkowalski/skills) — the skills are vendored under `design-refs/` (MIT licensed; attribution in `design-refs/README.md`, license in `design-refs/LICENSE`) — so UI reviews have a sane baseline out of the box. Seeding never touches a store that already has your own rules.
 
 When a review or judge run touches UI files (`.tsx`, `.jsx`, `.css`, `.scss`, `.sass`, `.less`, `.svelte`, `.vue`, `.html`), the rules are injected into the secondary-model prompt as a `<design_rules>` block, so UI code is judged against your design rules instead of generic taste. On the writer side, when the main agent has unreviewed edits touching UI files, the ~10 most load-bearing rules plus a pointer to the `wai_design_ref` tool are injected into its context. For depth beyond the distilled rules, the main agent can call the `wai_design_ref` tool to read the full vendored guidance per topic (see [the `wai_design_ref` tool](#wai_design_ref-tool)).
 

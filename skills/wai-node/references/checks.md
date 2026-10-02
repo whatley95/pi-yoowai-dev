@@ -1,0 +1,3 @@
+- For Node modules, preserve runtime/module/export compatibility and validate untrusted runtime inputs beyond static types.
+- Inspect rejection, cancellation, timeout, listener/resource cleanup, concurrency, and cache invalidation relevant to the changed behavior.
+- Verify actual project scripts/runtime; mocked provider tests do not establish live provider behavior.

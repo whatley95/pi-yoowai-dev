@@ -1,12 +1,12 @@
 import { estimateTokens } from "./token-budget.js";
-import { addDesignRule, clearDesignRules, peekDesignRules } from "./design-ref.js";
+import { addDesignRule, clearDesignRules, peekDesignRules, isUiFile } from "./design-ref.js";
 
 export const DEFAULT_RULES_SOURCE = "emilkowalski/skills (MIT)";
 
 /** Reviewer rules distilled from Emil Kowalski's design-engineering skills
  *  (vendored under design-refs/, MIT licensed). Seeded into the per-project
  *  design-rule store so UI reviews have a sane baseline out of the box. */
-export const DEFAULT_DESIGN_RULES: string[] = [
+const LEGACY_DESIGN_RULES: string[] = [
   "Never use ease-in on UI; entering/exiting elements use ease-out, on-screen movement ease-in-out, hover/color ease, constant motion linear.",
   "UI animations stay under 300ms (buttons 100-160ms, tooltips 125-200ms, dropdowns 150-250ms, modals/drawers 200-500ms).",
   "Only animate transform and opacity; animating width/height/margin/padding/top/left triggers layout and paint.",
@@ -31,6 +31,36 @@ export const DEFAULT_DESIGN_RULES: string[] = [
   "Semi-transparent shadows over solid 1px borders for elevation.",
 ];
 
+export const DEFAULT_DESIGN_RULES: string[] = [
+  "Prefer responsive motion following product/platform curves; ease-out often fits entrances, ease-in-out movement, and linear constant motion.",
+  "Keep small interactions short (often under 300ms); modals/drawers can take 200-500ms and springs/explanatory motion can legitimately take longer.",
+  "Web: prefer transform and opacity; evaluate layout/filter/clip-path costs in the actual browser instead of treating all other properties as defects.",
+  "Use an entrance appropriate to the product: small scale plus opacity, pure fades, or static updates are all valid; avoid abrupt scale-from-zero unless deliberate.",
+  "Anchor scaling popovers/menus to their trigger; centered modals do not need a trigger origin.",
+  "Pressable controls give immediate platform-appropriate feedback without delaying activation; scaling is optional.",
+  "Keep frequently repeated and keyboard interactions immediate; decorative motion must not block input.",
+  "Honor reduced motion with less movement, gentle opacity changes, or static updates; no transform or fade is universally required.",
+  "Web: gate hover-only motion to suitable pointers and keep keyboard/touch behavior available.",
+  "Make rapidly repeated transitions interruptible and retarget from their current presentation where needed.",
+  "Springs can support gesture velocity and interruption; tune damping/bounce to the established platform and product.",
+  "Use short stagger delays (often 30-80ms) only when grouping benefits; never block interaction.",
+  "Web: verify the installed motion library and measured performance before replacing shorthand transforms for acceleration.",
+  "Web: CSS/WAAPI can use compositing for supported properties; off-thread execution is not guaranteed for every animation.",
+  "Web: avoid broad style recalculation when driving a child animation; verify impact before prescribing a rewrite.",
+  "Web: percentages can make translation adapt to element size; use the project's layout and motion tokens.",
+  "Gesture dismissal uses platform-appropriate velocity/distance intent with validated units and cancellation behavior.",
+  "Use progressive resistance at gesture boundaries when the product needs direct manipulation.",
+  "Motion should aid feedback, continuity, state, or explanation; optional delight belongs where it helps the requested product.",
+  "Match motion to the product's existing personality and explicit design decisions.",
+  "Web: subtle blur may improve a difficult crossfade when it performs adequately; it is an optional stylistic tool.",
+  "Choose shadows, borders, or materials according to existing design tokens, contrast, and product requirements.",
+];
+
+export function adaptDefaultDesignRule(rule: string): string {
+  const index = LEGACY_DESIGN_RULES.indexOf(rule);
+  return index >= 0 ? DEFAULT_DESIGN_RULES[index] : rule;
+}
+
 /** 1-based indexes into DEFAULT_DESIGN_RULES of the most load-bearing rules
  *  surfaced to the main (writer) agent. */
 const WRITER_RULE_INDEXES = [1, 2, 3, 4, 5, 7, 8, 9, 13, 19];
@@ -39,11 +69,12 @@ const WRITER_GUIDANCE_HINT = "Call the wai_design_ref tool for full design guida
 
 /** Compact design guidance for the main agent writing UI code: the most
  *  load-bearing rules plus a pointer to the wai_design_ref tool. */
-export function formatWriterDesignGuidance(cwd: string, maxTokens: number): string {
+export function formatWriterDesignGuidance(cwd: string, maxTokens: number, files: readonly string[] = []): string {
   try {
     if (maxTokens <= 0) return "";
+    const web = files.length === 0 || files.some(isUiFile);
     const rules = WRITER_RULE_INDEXES.map((i) => DEFAULT_DESIGN_RULES[i - 1]).filter(
-      (r): r is string => typeof r === "string",
+      (r): r is string => typeof r === "string" && (web || !r.startsWith("Web:")),
     );
     if (rules.length === 0) return "";
     const lines: string[] = [];

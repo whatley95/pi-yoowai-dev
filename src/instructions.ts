@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { getProjectConfigPath } from "./pi-paths.js";
 import { logEvent } from "./logger.js";
 import { estimateTokens } from "./token-budget.js";
+import { formatEvaluationGuidance } from "./skill-guidance.js";
 
 /** Actions that support per-action instruction files (`.pi/yoowai/instructions/<action>.md`).
  *  Closed set — the action name is validated against this list before it touches a path,
@@ -84,9 +85,19 @@ export function loadActionInstructions(cwd: string, action: string): string {
 /** Load and token-cap an action's instruction file. `maxTokens <= 0` disables
  *  injection entirely. Truncation happens on whole-line boundaries so the
  *  markdown stays parseable. */
-export function capActionInstructions(cwd: string, action: string, maxTokens: number): string {
-  if (maxTokens <= 0) return "";
+export function capActionInstructions(cwd: string, action: string, maxTokens: number, files?: string[]): string {
+  if (maxTokens <= 0) {
+    if (files) formatEvaluationGuidance(cwd, action, files, 0);
+    return "";
+  }
   const text = loadActionInstructions(cwd, action);
+  if (files) {
+    // Project instructions consume the budget first.
+    const project = capActionInstructions(cwd, action, maxTokens);
+    const remaining = maxTokens - estimateTokens(project) - (project ? 1 : 0);
+    const guidance = formatEvaluationGuidance(cwd, action, files, Math.min(400, remaining));
+    return [project, guidance].filter(Boolean).join("\n");
+  }
   if (!text) return "";
   if (estimateTokens(text) <= maxTokens) return text;
   const maxChars = maxTokens * 4;

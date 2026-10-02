@@ -16,7 +16,7 @@ Injected into the wai test-analysis prompt for the "test" action only.
 
 - [ ] Required command: `{{testCommand}}`.
 - [ ] Required fixtures: <FILL ME> (paths; evidence: existing test files/directories, package scripts, or CI configuration).
-- [ ] Tests must be added alongside behavior changes (no behavior change without a test).
+- [ ] Meaningful tests cover changed behavior where warranted; reversible cosmetic edits do not require tests that merely mirror the implementation.
 
 ## Contract precedence
 
