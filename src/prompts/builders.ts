@@ -1,4 +1,4 @@
-import type { JudgeResult, PlanResult, PlanTodoItem } from "../types.js";
+import type { JudgeResult, PlanResult, PlanTodoItem, ReviewAssignment } from "../types.js";
 import { planStepDescription } from "../types.js";
 
 const PAIR_PROGRAMMER_PERSONA = `You are a senior pair programmer sitting next to the developer. You are collaborative, direct, and focused on shipping correct, maintainable code. You explain your reasoning briefly but stay actionable.`;
@@ -184,6 +184,18 @@ export interface FileContentContext {
   mode: "full" | "outline";
 }
 
+export function formatReviewAssignment(assignment?: ReviewAssignment): string {
+  if (!assignment) return "";
+  const scope = assignment.hunk
+    ? `Assigned hunk ${assignment.hunk.index} of ${assignment.hunk.count} in ${JSON.stringify(assignment.files)}.`
+    : `Assigned files: ${JSON.stringify(assignment.files)}.`;
+  const coverage =
+    assignment.batchCount > 1
+      ? "This call reviews only its assigned changes; other batches review the remaining files or hunks, and Wai combines their results. Their absence from this prompt is expected and is not a coverage gap in this batch."
+      : "This is the only batch; assess all assigned changes.";
+  return `\n\n<review_assignment>\nBatch ${assignment.batchIndex} of ${assignment.batchCount}. ${scope}\nThe developer's description describes the overall task. ${coverage} Use the supplied diff as the authoritative captured change; do not re-fetch the entire working-tree diff merely to cover other batches. Inspect related code only for concrete impact of the assigned changes. Assess code quality separately from completion of the overall plan step.\n</review_assignment>`;
+}
+
 export function buildReviewUserContext(args: {
   description: string;
   diff: string;
@@ -203,8 +215,10 @@ export function buildReviewUserContext(args: {
   designRefText?: string;
   truncated?: boolean;
   droppedFiles?: string[];
+  omittedFileContents?: string[];
   budgetNote?: string;
   focusFiles?: string[];
+  assignmentText?: string;
 }): string {
   const {
     description,
@@ -225,8 +239,10 @@ export function buildReviewUserContext(args: {
     designRefText,
     truncated,
     droppedFiles,
+    omittedFileContents,
     budgetNote,
     focusFiles,
+    assignmentText,
   } = args;
 
   const criteriaBlock = criteria ? `\n\n<acceptance_criteria>\n${criteria}\n</acceptance_criteria>` : "";
@@ -259,6 +275,9 @@ export function buildReviewUserContext(args: {
     droppedFiles && droppedFiles.length > 0
       ? `\n\n⚠️ Some changed files were omitted due to token budget: ${droppedFiles.join(", ")}`
       : "";
+  const omittedContentsBlock = omittedFileContents?.length
+    ? `\n\nSupplemental full file contents were not included for: ${omittedFileContents.join(", ")}. Their captured patches are still in scope. Use the supplied patch and available context; request precise additional ranges only when necessary. If required evidence remains unavailable, report contextLimited and coverageGaps.`
+    : "";
 
   const truncationNotice = truncated
     ? "\n\n⚠️ NOTE: The diff was truncated because it was too large. Review only what's visible."
@@ -271,7 +290,7 @@ export function buildReviewUserContext(args: {
       ? `\n\n<focus_files>\nFiles edited as part of the current plan step (primary review target, but the full diff still matters for cross-file impact): ${focusFiles.join(", ")}\n</focus_files>`
       : "";
 
-  return `Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${decisionsBlock}${priorRoundBlock}${relatedBlock}${codemapBlock}${evidencePackBlock}${designRefBlock}${truncationNotice}${droppedBlock}${budgetBlock}${focusBlock}`;
+  return `${assignmentText ? `${assignmentText}\n\n` : ""}Review this code change. The developer says:\n\n${description}${vcsLine}${currentStepBlock}\n\n<diff>\n${diff}\n</diff>${fileContentsBlock}${criteriaBlock}${sessionBlock}${conventionsBlock}${preReviewBlock}${memoryBlock}${decisionsBlock}${priorRoundBlock}${relatedBlock}${codemapBlock}${evidencePackBlock}${designRefBlock}${truncationNotice}${droppedBlock}${omittedContentsBlock}${budgetBlock}${focusBlock}`;
 }
 
 function buildAdaptiveReviewPromptImpl(
@@ -294,11 +313,13 @@ function buildAdaptiveReviewPromptImpl(
     designRefText?: string;
     truncated?: boolean;
     droppedFiles?: string[];
+    omittedFileContents?: string[];
     budgetNote?: string;
     nativeJson?: boolean;
     focusFiles?: string[];
     levelInstructions?: string;
     instructionsText?: string;
+    assignment?: ReviewAssignment;
   } = {},
 ): { system: string; user: string } {
   const {
@@ -317,11 +338,13 @@ function buildAdaptiveReviewPromptImpl(
     designRefText,
     truncated,
     droppedFiles,
+    omittedFileContents,
     budgetNote,
     nativeJson,
     focusFiles,
     levelInstructions,
     instructionsText,
+    assignment,
   } = options;
 
   // Plan-related rules only make sense when a plan step is actually shown;
@@ -345,6 +368,8 @@ ${levelInstructions ? `${levelInstructions}\n\n` : ""}${REVIEW_RUBRIC}
 
 You are provided with a diff and, when available, the full contents of changed files. Use the full file contents to verify context outside the diff; do not flag something as missing if you can see it in the full file.
 
+${assignment ? "The review_assignment defines this call's scope. Other assigned batches are reviewed separately; judge this batch without demanding their diffs. A complete assigned diff plus relevant context can be sufficient even when unchanged file contents are outlined or large. Lockfiles and generated metadata do not require every unchanged record to be read; still verify changed dependencies, constraints and related source contracts. Request precise missing ranges when necessary, including relevant dependency metadata for lockfile changes.\n" : ""}
+
 ${finalJsonBlock(
   `{
   "verdict": "needs-work",
@@ -353,6 +378,8 @@ ${finalJsonBlock(
   ],
   "suggestions": ["improvement 1", "improvement 2"],
   "consensus": false,
+  "contextLimited": false,
+  "coverageGaps": [],
   "planStale": false,
   "stepComplete": false,
   "completedSteps": 0
@@ -367,6 +394,7 @@ Rules:
 - "verdict" is "blocked" if the code is fundamentally broken or cannot work as described
 - "verdict" is "needs-work" for anything in between
 - "consensus" is true when verdict is "pass" AND issues is empty
+- If evidence necessary to assess the assigned change is unavailable, set "contextLimited": true, list the concrete missing files or ranges in "coverageGaps", and use "needs-work" with consensus false. Missing evidence is not a code defect; do not invent actionable issues. Other batches and unrelated unchanged code are not coverage gaps.
 ${planRules}
 - Each issue must include a specific, actionable suggestion
 - "file" and "line" are optional but strongly preferred when you can identify the exact location
@@ -404,8 +432,10 @@ ${EVIDENCE_RULES}`,
       designRefText,
       truncated,
       droppedFiles,
+      omittedFileContents,
       budgetNote,
       focusFiles,
+      assignmentText: formatReviewAssignment(assignment),
     }),
   };
 }

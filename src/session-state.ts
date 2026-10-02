@@ -279,8 +279,13 @@ export function applyReviewOutcome(
     !result.error &&
     review?.verdict === "pass" &&
     !review.inconclusive &&
+    !review.contextLimited &&
+    !review.inputIncomplete &&
+    !review.checksFailed &&
+    !review.scopeLimited &&
     !review.truncated &&
     !review.droppedFiles?.length &&
+    !review.coverageGaps?.length &&
     result.continuation?.status !== "truncated-after-cap";
   const state = getState(cwd);
   state.reviewBlocked = !passed;

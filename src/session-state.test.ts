@@ -55,6 +55,11 @@ test("only a complete current whole-tree pass certifies edits", () => {
     { ...pass, review: { ...pass.review!, inconclusive: true } },
     { ...pass, review: { ...pass.review!, truncated: true } },
     { ...pass, review: { ...pass.review!, droppedFiles: ["b.ts"] } },
+    { ...pass, review: { ...pass.review!, contextLimited: true } },
+    { ...pass, review: { ...pass.review!, coverageGaps: ["b.ts lines 40-90"] } },
+    { ...pass, review: { ...pass.review!, inputIncomplete: true } },
+    { ...pass, review: { ...pass.review!, checksFailed: true } },
+    { ...pass, review: { ...pass.review!, scopeLimited: true } },
     { ...pass, continuation: { rounds: 1, status: "truncated-after-cap" as const } },
   ]) {
     assert.equal(applyReviewOutcome(cwd, result), false);

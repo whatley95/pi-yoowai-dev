@@ -84,12 +84,32 @@ export const REVIEW_NO_MODEL_ERROR =
 export function planAdvanceFromReview(
   review: Pick<
     ReviewResult,
-    "verdict" | "consensus" | "stepComplete" | "completedSteps" | "planStale" | "inconclusive"
+    | "verdict"
+    | "consensus"
+    | "stepComplete"
+    | "completedSteps"
+    | "planStale"
+    | "inconclusive"
+    | "contextLimited"
+    | "coverageGaps"
+    | "truncated"
+    | "droppedFiles"
+    | "inputIncomplete"
+    | "checksFailed"
   >,
   planActive: boolean,
   planComplete: boolean,
 ): { count: number } | null {
   if (!planActive || review.verdict !== "pass" || review.planStale || review.inconclusive) return null;
+  if (
+    review.contextLimited ||
+    review.coverageGaps?.length ||
+    review.truncated ||
+    review.droppedFiles?.length ||
+    review.inputIncomplete ||
+    review.checksFailed
+  )
+    return null;
   if (planComplete) return review.consensus || review.stepComplete === true ? { count: 0 } : null;
   if (review.stepComplete === false || review.completedSteps === 0) return null;
   const completedSteps = review.completedSteps;
@@ -617,7 +637,6 @@ async function executeReview(
         strategy,
         fullFileThresholdLines,
       });
-      const droppedForBudget = fileResult.dropped.filter((f) => isReviewableFile(f));
 
       const sharedContextEstimate = [
         sessionContext,
@@ -656,7 +675,7 @@ async function executeReview(
         }
       }
 
-      const hunkTasks = hunks.map((hunk) => async () => {
+      const hunkTasks = hunks.map((hunk, hunkIndex) => async () => {
         const result = await runReviewBatch({
           cwd,
           description,
@@ -676,12 +695,20 @@ async function executeReview(
           designRefText,
           instructionsText,
           truncated,
-          droppedFiles: droppedForBudget,
+          droppedFiles: [],
+          omittedFileContents: fileResult.dropped,
           budget: fileBudget,
           modelConfig,
           signal,
           sessionManager: ctx.sessionManager,
           relevantPaths: [file],
+          assignment: {
+            files: [file],
+            batchIndex: hunkIndex + 1,
+            batchCount: hunks.length,
+            hunk: { index: hunkIndex + 1, count: hunks.length },
+          },
+          allowAdaptiveToolContext: config.toolUseLoop === undefined || config.toolUseLoop === true,
           nativeJson,
           focusFiles: stepFocusFiles,
           evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
@@ -720,7 +747,7 @@ async function executeReview(
       );
       if (cost) cost = recordCostWithBudget(cwd, cost);
       finalDiffTruncated = truncated || successes.some((s) => s.review.truncated);
-      finalDroppedFiles = [...fileResult.dropped, ...skippedDueToTruncation];
+      finalDroppedFiles = [...skippedDueToTruncation];
       continuationRounds = successes.reduce((sum, s) => sum + (s.rounds ?? 0), 0);
       continuationTruncated = successes.some((s) => s.truncated);
 
@@ -892,7 +919,7 @@ async function executeReview(
       }
     }
 
-    const tasks = batches.map((p) => async () => {
+    const tasks = batches.map((p, batchIndex) => async () => {
       const started = Date.now();
       logEvent(cwd, "info", "Review batch started", {
         files: p.files,
@@ -923,12 +950,15 @@ async function executeReview(
           // own per-file cap should mark it truncated, not the original
           // combined-diff cap.
           truncated: shouldRebuildPerFileDiffs ? p.files.some((file) => perFileTruncated.has(file)) : truncated,
-          droppedFiles: p.droppedForBudget,
+          droppedFiles: [],
+          omittedFileContents: p.fileResult.dropped,
           budget: p.fileBudget,
           modelConfig,
           signal,
           sessionManager: ctx.sessionManager,
           relevantPaths: p.files,
+          assignment: { files: p.files, batchIndex: batchIndex + 1, batchCount: batches.length },
+          allowAdaptiveToolContext: config.toolUseLoop === undefined || config.toolUseLoop === true,
           nativeJson,
           focusFiles: stepFocusFiles,
           evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
@@ -945,7 +975,7 @@ async function executeReview(
           files: p.files,
           review: result.review,
           usage: result.usage,
-          dropped: p.fileResult.dropped,
+          dropped: [],
           rounds: result.rounds,
           truncated: result.truncated,
         };
@@ -1001,7 +1031,8 @@ async function executeReview(
       cost = cost ? mergeUsageCost(cost, recorded) : recorded;
     }
     finalDroppedFiles = Array.from(new Set(successes.flatMap((s) => s.dropped).concat(skippedDueToTruncation)));
-    if (finalDroppedFiles.length > 0) review.droppedFiles = finalDroppedFiles;
+    if (finalDroppedFiles.length > 0)
+      review.droppedFiles = Array.from(new Set([...(review.droppedFiles ?? []), ...finalDroppedFiles]));
     // Coverage completeness: a capped COMBINED diff no longer means
     // incomplete coverage when the rebuild covered every file individually
     // (perFileDiffsRebuilt && nothing skipped && no per-file cap); a
@@ -1027,7 +1058,14 @@ async function executeReview(
         recordReviewedFiles(
           cwd,
           s.files,
-          s.review.truncated === true || s.truncated === true ? "needs-work" : s.review.verdict,
+          s.review.truncated === true ||
+            s.truncated === true ||
+            s.review.contextLimited ||
+            s.review.coverageGaps?.length ||
+            s.review.inputIncomplete ||
+            s.review.inconclusive
+            ? "needs-work"
+            : s.review.verdict,
         );
       }
     }
@@ -1062,7 +1100,9 @@ async function executeReview(
     const finalDiff =
       diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
     finalDiffTruncated = truncated || finalDiff !== diff;
-    finalDroppedFiles = [...fileResult.dropped, ...skippedDueToTruncation];
+    // Supplemental contents omitted by policy/budget do not remove their
+    // patches. Missing necessary context is reported through coverageGaps.
+    finalDroppedFiles = [...skippedDueToTruncation];
 
     progress(7, STAGES.review, "Building review prompt…");
     let result: Awaited<ReturnType<typeof runReviewBatch>>;
@@ -1087,11 +1127,14 @@ async function executeReview(
         instructionsText,
         truncated: finalDiffTruncated,
         droppedFiles: finalDroppedFiles,
+        omittedFileContents: fileResult.dropped,
         budget: budgetWithPreReview,
         modelConfig,
         signal,
         sessionManager: ctx.sessionManager,
         relevantPaths: Array.from(new Set([...(options.files ?? []), ...changedFiles])),
+        assignment: { files: changedFiles, batchIndex: 1, batchCount: 1 },
+        allowAdaptiveToolContext: config.toolUseLoop === undefined || config.toolUseLoop === true,
         progress,
         nativeJson,
         focusFiles: stepFocusFiles,
@@ -1115,7 +1158,7 @@ async function executeReview(
     continuationRounds = result.rounds ?? 0;
     continuationTruncated = result.truncated ?? false;
 
-    if (effectiveConfig.selfVerify) {
+    if (effectiveConfig.selfVerify && !review.contextLimited && !review.coverageGaps?.length) {
       progress(8, STAGES.review, "Self-verifying review result…");
       try {
         const verified = await verifyResult(cwd, modelConfig, {
@@ -1130,7 +1173,14 @@ async function executeReview(
           validationErrors: getReviewValidationErrors,
           salvage: salvageReviewFromMarkdown,
         });
+        // Local evidence metadata remains authoritative even if the verifier
+        // returns only the core verdict fields.
+        const omittedFileContents = review.omittedFileContents;
         review = verified.result;
+        if (omittedFileContents?.length)
+          review.omittedFileContents = Array.from(
+            new Set([...omittedFileContents, ...(review.omittedFileContents ?? [])]),
+          );
         cost = mergeVerifiedCost(cost, recordCostWithBudget(cwd, verified.usage));
       } catch (err) {
         logEvent(cwd, "warn", "Self-verification failed; keeping original review", {
@@ -1207,6 +1257,8 @@ async function executeReview(
   // suggestion must not claim the round was inconclusive).
   if (
     !reviewIncomplete &&
+    !review.contextLimited &&
+    !review.coverageGaps?.length &&
     !checks.some((check) => check.exitCode !== 0) &&
     (review.verdict === "needs-work" || review.verdict === "blocked") &&
     review.issues.length === 0
@@ -1234,6 +1286,7 @@ async function executeReview(
   }
 
   if (finalDiffTruncated) review.truncated = true;
+  finalDroppedFiles = Array.from(new Set([...finalDroppedFiles, ...(review.droppedFiles ?? [])]));
   if (finalDroppedFiles.length > 0) review.droppedFiles = finalDroppedFiles;
   if (finalDiffTruncated || finalDroppedFiles.length > 0) {
     review.contextLimited = true;
@@ -1255,13 +1308,25 @@ async function executeReview(
   // skip unreviewed content. Downgrade to an inconclusive needs-work (no
   // baseline advance, no plan advance, no caching) and tell the user to
   // re-run scoped.
-  if (review.verdict === "pass" && finalDiffTruncated) {
+  if (finalDiffTruncated) {
     review.verdict = "needs-work";
     review.consensus = false;
     review.stepComplete = false;
     review.inconclusive = true;
     review.suggestions.push(
       "The diff was truncated, so the pass verdict cannot be trusted — re-run the review scoped with files:[...] (or with a larger budget) to cover the omitted part of the change.",
+    );
+  }
+
+  if (review.contextLimited || review.coverageGaps?.length || review.inputIncomplete) {
+    review.contextLimited = true;
+    review.consensus = false;
+    review.stepComplete = false;
+    review.completedSteps = 0;
+    review.inconclusive = true;
+    if (review.verdict === "pass") review.verdict = "needs-work";
+    review.suggestions.push(
+      "Required review evidence is incomplete. Obtain the listed missing evidence before certification; this is a coverage gap, not an actionable code finding.",
     );
   }
 

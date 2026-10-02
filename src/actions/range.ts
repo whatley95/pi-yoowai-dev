@@ -184,7 +184,17 @@ export function updateRangeState(
   cwd: string,
   vcsInfo: VcsInfo,
   diffOptions: RangeScope & { files?: string[]; exclude?: string[] },
-  review: Pick<ReviewResult, "verdict" | "inconclusive">,
+  review: Pick<
+    ReviewResult,
+    | "verdict"
+    | "inconclusive"
+    | "contextLimited"
+    | "coverageGaps"
+    | "truncated"
+    | "droppedFiles"
+    | "inputIncomplete"
+    | "checksFailed"
+  >,
   opts?: { pinOnInconclusive?: boolean },
 ): void {
   if (vcsInfo.type !== "git" || !vcsInfo.revision) return;
@@ -192,8 +202,15 @@ export function updateRangeState(
   // review: never touch git range state for it.
   if (diffOptions.vcs && diffOptions.vcs !== "git") return;
   if (diffOptions.files?.length || diffOptions.exclude?.length) return;
-  if (review.inconclusive === true && !opts?.pinOnInconclusive) return;
-  if (review.verdict === "pass") {
+  const incomplete =
+    review.contextLimited ||
+    review.coverageGaps?.length ||
+    review.truncated ||
+    review.droppedFiles?.length ||
+    review.inputIncomplete ||
+    review.checksFailed;
+  if (review.inconclusive === true && !opts?.pinOnInconclusive && !incomplete) return;
+  if (review.verdict === "pass" && !incomplete) {
     setLastReviewedCommit(cwd, vcsInfo.revision);
     setPendingReviewCommit(cwd, undefined);
     return;

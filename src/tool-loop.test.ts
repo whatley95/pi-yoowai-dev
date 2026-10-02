@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executeToolLoop } from "./tool-loop.js";
+import { executeToolLoop, ToolLoopCoverageError } from "./tool-loop.js";
+import { getSessionCost, recordCost } from "./cost-tracker.js";
 import type { UsageCost } from "./types.js";
 import { BENCHMARK_CASES } from "./review-benchmark.js";
 import { readRecentLogs } from "./logger.js";
@@ -302,11 +303,15 @@ describe("executeToolLoop", () => {
   });
 
   it("defaults to 5 tool iterations when maxToolIterations is omitted", async () => {
+    for (let i = 1; i <= 5; i++) writeFileSync(join(cwd, `src/default-${i}.ts`), `EVIDENCE_${i}`);
     const calls: string[] = [];
     const callModel = async (_system: string, user: string) => {
       calls.push(user);
       return {
-        content: calls.length <= 5 ? '{"tool": "read_file", "path": "src/foo.ts"}' : '{"verdict":"pass"}',
+        content:
+          calls.length <= 5
+            ? JSON.stringify({ tool: "read_file", path: `src/default-${calls.length}.ts` })
+            : '{"verdict":"pass"}',
         usage: zeroUsage(),
       };
     };
@@ -335,6 +340,77 @@ describe("executeToolLoop", () => {
       /allowance exhausted/,
     );
     assert.equal(calls, 2);
+  });
+
+  it("reuses an identical read without consuming the last new-evidence request", async () => {
+    writeFileSync(join(cwd, "src", "fresh.ts"), "FRESH_EVIDENCE");
+    let calls = 0;
+    await executeToolLoop(
+      cwd,
+      "system",
+      "diff supplied",
+      {},
+      async (_system, user) => {
+        calls++;
+        if (calls === 3) assert.match(user, /Remaining context requests: 1/);
+        if (calls === 4) {
+          assert.match(user, /FRESH_EVIDENCE/);
+          assert.match(user, /Remaining context requests: 0/);
+        }
+        return {
+          content:
+            calls < 4
+              ? JSON.stringify({ tool: "read_file", path: calls === 3 ? "src/fresh.ts" : "src/foo.ts" })
+              : '{"verdict":"pass"}',
+          usage: zeroUsage(),
+        };
+      },
+      2,
+    );
+    assert.equal(calls, 4);
+  });
+
+  it("bounds endless identical read requests even with a large allowance", async () => {
+    let calls = 0;
+    await assert.rejects(
+      executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        {},
+        async () => {
+          calls++;
+          return { content: '{"tool":"read_file","path":"src/foo.ts"}', usage: zeroUsage() };
+        },
+        20,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ToolLoopCoverageError);
+        assert.deepEqual(error.coverageGaps, ["src/foo.ts"]);
+        return true;
+      },
+    );
+    assert.equal(calls, 4);
+  });
+
+  it("fails before a provider call when input is full, without recording phantom usage", async () => {
+    const priorCalls = getSessionCost(cwd).calls;
+    let calls = 0;
+    await assert.rejects(
+      executeToolLoop(cwd, "system", "user", { maxInputTokens: 1, relevantPaths: ["src/foo.ts"] }, async () => {
+        calls++;
+        return { content: "{}", usage: zeroUsage() };
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ToolLoopCoverageError);
+        assert.match(error.message, /Context input allowance exhausted/);
+        recordCost(cwd, error.usage);
+        assert.deepEqual(error.coverageGaps, ["src/foo.ts"]);
+        return true;
+      },
+    );
+    assert.equal(calls, 0);
+    assert.equal(getSessionCost(cwd).calls, priorCalls);
   });
 
   it("batches file reads without losing any seeded-bug or clean-control evidence", async () => {
@@ -415,8 +491,9 @@ describe("executeToolLoop", () => {
 
   it("corrects an oversized batch with one request remaining without discarding or executing its reads", async () => {
     writeFileSync(join(cwd, "src", "last-read.ts"), "LAST_MISSING_EVIDENCE");
+    writeFileSync(join(cwd, "src", "prior-read.ts"), "PRIOR_EVIDENCE");
     const responses = [
-      '{"tools":[{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/foo.ts"}]}',
+      '{"tools":[{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/prior-read.ts"}]}',
       '{"tools":[{"tool":"read_file","path":"src/foo.ts"},{"tool":"read_file","path":"src/last-read.ts"}]}',
       '{"tool":"read_file","path":"src/last-read.ts"}',
       '{"verdict":"pass"}',
@@ -626,7 +703,12 @@ describe("executeToolLoop", () => {
     const loopId = JSON.parse(completed.split(" | ")[1]).loopId;
     const entries = logs.filter((line) => line.includes(loopId)).map((line) => JSON.parse(line.split(" | ")[1]));
     assert.ok(entries.some((entry) => entry.startLine === 1 && entry.endLine === 1 && entry.reused === true));
-    assert.ok(entries.some((entry) => entry.modelCall === 3 && entry.finalOnly === true));
+    assert.ok(
+      entries.some((entry) => entry.modelCall === 3 && entry.finalOnly === false && entry.remainingRequests === 1),
+    );
+    assert.ok(
+      entries.some((entry) => entry.toolRequests === 2 && entry.evidenceRequests === 1 && entry.reusedReads === 1),
+    );
     assert.ok(entries.some((entry) => typeof entry.elapsedMs === "number" && entry.files?.includes("src/foo.ts")));
   });
 

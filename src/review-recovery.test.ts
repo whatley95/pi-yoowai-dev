@@ -91,3 +91,20 @@ it("reports actual post-review tracker progress without clearing pending edits",
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+it("surfaces concrete coverage gaps and distinguishes token capacity from request count", () => {
+  const result = withReviewRecovery(
+    review({ contextLimited: true, coverageGaps: ["pubspec.lock lines 400-800", "README.md"], inconclusive: true }),
+  );
+  assert.equal(result.recovery?.reason, "input-coverage");
+  assert.deepEqual(result.recovery?.affectedFiles, ["pubspec.lock lines 400-800", "README.md"]);
+  const text = formatResultText(result);
+  assert.match(text, /Coverage gaps/);
+  assert.match(text, /pubspec.lock lines 400-800/);
+  const input = getReviewRecovery({
+    action: "review",
+    error: "Context input allowance exhausted: more evidence cannot fit.",
+  });
+  assert.equal(input?.reason, "input-coverage");
+  assert.match(input!.nextAction, /Increasing toolUseLoop alone cannot add token capacity/);
+});

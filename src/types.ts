@@ -177,6 +177,13 @@ export interface ReviewIssue {
 
 export type ReviewVerdict = "pass" | "needs-work" | "blocked";
 
+export interface ReviewAssignment {
+  files: string[];
+  batchIndex: number;
+  batchCount: number;
+  hunk?: { index: number; count: number };
+}
+
 export interface ReviewResult {
   verdict: ReviewVerdict;
   issues: ReviewIssue[];
@@ -196,7 +203,11 @@ export interface ReviewResult {
   autoJudged?: boolean;
   truncated?: boolean;
   droppedFiles?: string[];
+  /** Supplemental full file contents omitted by policy/budget; their captured patches remain in scope. */
+  omittedFileContents?: string[];
   contextLimited?: boolean;
+  /** Required evidence that was not obtained; prevents certification even if the model reports pass. */
+  coverageGaps?: string[];
   planStale?: boolean;
   /** True only when the review explicitly confirms the CURRENT plan step's work is finished and fully reviewed. Drives guarded auto-completion. */
   stepComplete?: boolean;
@@ -473,8 +484,12 @@ export interface CallSecondaryModelOptions {
   onStreamProgress?: (text: string) => void;
   /** Enable a bounded tool-use loop so the model can request file reads or allowlisted commands before answering. */
   enableToolLoop?: boolean;
-  /** Maximum tool-use iterations when enableToolLoop is true. Defaults to 3. */
+  /** Maximum new-evidence requests when enableToolLoop is true. Review level defaults are 3/5; the standalone loop defaults to 5. */
   maxToolIterations?: number;
+  /** Internal review context limits; never bypass native tool permissions. */
+  readPageChars?: number;
+  maxToolContextChars?: number;
+  maxInputTokens?: number;
   /** Images to attach to the user message (base64). SDK backend only; the model
    *  must declare image input support in Pi's catalog. */
   images?: VisionImage[];

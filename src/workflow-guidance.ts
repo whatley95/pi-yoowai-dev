@@ -32,6 +32,8 @@ export const SVN_CAPTURE_GUIDANCE =
 export const INCONCLUSIVE_REVIEW_GUIDANCE =
   "An inconclusive review does not certify completion. Check diagnostics, the working directory, requested files/VCS range, " +
   "input/output truncation, and whether the active plan matches the code. Resolve the cause, then re-run `wai.review`. " +
+  "Use contextLimited/coverageGaps to identify required missing files or ranges; these are coverage blockers, not code findings. " +
+  "omittedFileContents lists supplemental contents omitted while their patches remain in scope; it alone is not a coverage failure. " +
   "Scoped reviews can help diagnose a large diff, but final certification still requires complete whole-tree coverage. " +
   "Truncation is incomplete coverage even if the intended source appears first. Do not delete build output, change ignore properties, " +
   "or raise caps merely to bypass missing coverage; inspect capture diagnostics and the loaded extension version. " +

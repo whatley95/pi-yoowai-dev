@@ -1,6 +1,7 @@
 export {
   clearPromptCache,
   buildReviewUserContext,
+  formatReviewAssignment,
   buildPlanPrompt,
   buildAdvisorPrompt,
   buildExplainPrompt,

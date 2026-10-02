@@ -95,6 +95,18 @@ export function getSessionCost(cwd: string): CostLog {
   return loadCost(cwd);
 }
 
+/** A local coverage refusal makes no provider call and must not increment calls. */
+export function emptyRecordedUsage(cwd: string): UsageCost {
+  const usage = {
+    estimatedInputTokens: 0,
+    estimatedOutputTokens: 0,
+    estimatedCostUsd: 0,
+    sessionCostUsd: loadCost(cwd).costUsd,
+  };
+  recordedUsage.set(usage, cwd);
+  return usage;
+}
+
 export function resetCost(cwd: string): void {
   reservedUsd.delete(cwd);
   reservationEpochs.delete(cwd);

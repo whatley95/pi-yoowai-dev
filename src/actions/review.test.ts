@@ -19,6 +19,9 @@ import {
   setPlan,
   getState,
   dropSessionState,
+  recordFileEdit,
+  applyReviewOutcome,
+  getEditTracker,
 } from "../session-state.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import { recordLearnedFact } from "../wai-learn.js";
@@ -192,6 +195,16 @@ describe("planAdvanceFromReview (guarded auto-completion)", () => {
   it("a stale or inconclusive pass cannot advance even with completion evidence", () => {
     assert.equal(planAdvanceFromReview(review({ stepComplete: true, planStale: true }), true, false), null);
     assert.equal(planAdvanceFromReview(review({ completedSteps: 2, inconclusive: true }), true, false), null);
+    for (const flags of [
+      { contextLimited: true },
+      { coverageGaps: ["b.ts"] },
+      { inputIncomplete: true },
+      { checksFailed: true },
+      { truncated: true },
+      { droppedFiles: ["b.ts"] },
+    ]) {
+      assert.equal(planAdvanceFromReview(review({ stepComplete: true, ...flags }), true, false), null);
+    }
   });
 
   it("stepComplete advances exactly one step on a pass, even with minor issues", () => {
@@ -244,6 +257,41 @@ describe("mergeReviewResults plan-tracker signals", () => {
     const merged = mergeReviewResults([]);
     assert.equal(merged.stepComplete, false);
     assert.equal(merged.planStale, false);
+    assert.equal(merged.verdict, "needs-work");
+    assert.equal(merged.contextLimited, true);
+  });
+
+  it("reports supplemental omissions separately from incomplete patch coverage", () => {
+    const merged = mergeReviewResults([
+      review({ omittedFileContents: ["pubspec.lock"], stepComplete: true }),
+      review({ omittedFileContents: ["pubspec.lock", "README.md"], stepComplete: true }),
+    ]);
+    assert.equal(merged.verdict, "pass");
+    assert.equal(merged.contextLimited, false);
+    assert.equal(merged.stepComplete, true);
+    assert.deepEqual(merged.omittedFileContents, ["pubspec.lock", "README.md"]);
+    assert.deepEqual(merged.coverageGaps, []);
+  });
+
+  it("preserves missing-evidence signals and prevents false consensus or step completion", () => {
+    for (const flags of [
+      { contextLimited: true },
+      { coverageGaps: ["b.ts lines 1-40"] },
+      { inputIncomplete: true },
+      { inconclusive: true },
+      { truncated: true },
+      { droppedFiles: ["b.ts"] },
+      { checksFailed: true },
+    ]) {
+      const merged = mergeReviewResults([review({ stepComplete: true }), review({ stepComplete: true, ...flags })]);
+      assert.equal(merged.verdict, "needs-work");
+      assert.equal(merged.consensus, false);
+      assert.equal(merged.stepComplete, false);
+      assert.equal(merged.contextLimited, true);
+      assert.equal(planAdvanceFromReview(merged, true, false), null);
+    }
+    const merged = mergeReviewResults([review({ coverageGaps: ["b.ts"] }), review({ coverageGaps: ["b.ts", "c.ts"] })]);
+    assert.deepEqual(merged.coverageGaps, ["b.ts", "c.ts"]);
   });
 });
 
@@ -467,6 +515,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     planStale?: boolean;
     failOnMarker?: string;
     stepComplete?: boolean;
+    reviewOverrides?: Partial<ReviewResult>;
   }): Promise<{ url: string; bodies: string[]; authorizations: Array<string | undefined>; peakActive: () => number }> {
     const bodies: string[] = [];
     const authorizations: Array<string | undefined> = [];
@@ -515,7 +564,11 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
           choices: [
             {
               message: {
-                content: JSON.stringify({ ...reviewPayload, planStale: options?.planStale ?? false }),
+                content: JSON.stringify({
+                  ...reviewPayload,
+                  planStale: options?.planStale ?? false,
+                  ...options?.reviewOverrides,
+                }),
               },
             },
           ],
@@ -569,6 +622,86 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
   }
+
+  it("does not record a context-limited worker as passing when another worker fails", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithMultiFileChange({
+      "a.ts": "export const a = 2;\n",
+      "b.ts": "export const b = 2; // FAILURE_MARKER\n",
+    });
+    const { url } = await startStubServer({
+      failOnMarker: "FAILURE_MARKER",
+      reviewOverrides: { contextLimited: true, coverageGaps: ["dependency.ts"] },
+    });
+    writeSettings(cwd, {
+      parallelReview: true,
+      reviewLevel: "min",
+      secondary: {
+        provider: "openai",
+        id: "gpt-4o-mini",
+        thinking: "off",
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test-key",
+        maxRetries: 0,
+      },
+    });
+    const result = await executeWaiReview(
+      cwd,
+      "Review both files",
+      { cwd } as unknown as ExtensionContext,
+      {},
+      undefined,
+      () => {},
+    );
+    assert.equal(result.review?.verdict, "needs-work");
+    assert.equal(getReviewedFiles(cwd)["a.ts"]?.verdict, "needs-work");
+    assert.equal(getLastReviewedCommit(cwd), undefined);
+  });
+
+  it(
+    "merged model coverage gaps cannot pass, cache, certify edits, or advance the plan or baseline",
+    { skip: !hasGit },
+    async () => {
+      const cwd = makeRepoWithMultiFileChange({ "a.ts": "export const a = 2;\n", "b.ts": "export const b = 2;\n" });
+      const { url, bodies } = await startStubServer({
+        stepComplete: true,
+        reviewOverrides: { contextLimited: true, coverageGaps: ["dependency.ts lines 20-40"] },
+      });
+      writeSettings(cwd, {
+        parallelReview: true,
+        reviewLevel: "min",
+        secondary: {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          backend: "http",
+          baseUrl: url,
+          apiKey: "test-key",
+          maxRetries: 0,
+        },
+      });
+      setPlan(cwd, { summary: "finish", todo: ["update sources"], acceptanceCriteria: [] });
+      recordFileEdit(cwd, "a.ts");
+      const ctx = { cwd } as unknown as ExtensionContext;
+      const result = await executeWaiReview(cwd, "Review both changed files", ctx, {}, undefined, () => {});
+      assert.equal(result.error, undefined);
+      assert.equal(result.review?.verdict, "needs-work");
+      assert.equal(result.review?.inconclusive, true);
+      assert.equal(result.review?.contextLimited, true);
+      assert.deepEqual(result.review?.coverageGaps, ["dependency.ts lines 20-40"]);
+      assert.equal(result.review?.stepComplete, false);
+      assert.equal(applyReviewOutcome(cwd, result), false);
+      assert.equal(getEditTracker(cwd).editsSinceLastReview, 1);
+      assert.equal(getState(cwd).completedSteps, 0);
+      assert.equal(getLastReviewedCommit(cwd), undefined);
+      assert.ok(getPendingReviewCommit(cwd), "unreviewed changes remain in the next range");
+      assert.equal(bodies.length, 2);
+      for (const body of bodies) assert.match(body, /review_assignment/);
+      const again = await executeWaiReview(cwd, "Review both changed files", ctx, {}, undefined, () => {});
+      assert.equal(again.review?.verdict, "needs-work");
+      assert.equal(bodies.length, 4, "incomplete evidence must not replay a cached pass");
+    },
+  );
 
   for (const scenario of [
     { maxFiles: 1, expectedCalls: 3, cap: undefined, fail: false },
@@ -1436,8 +1569,8 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     const oldContent = `hello\n\n${block(0)}\n${gap}${block(100)}\n${gap}${block(200)}\n`;
     writeFileSync(join(cwd, "big.txt"), oldContent);
     commitAll(cwd);
-    // Replace each block's lines (v2 content) → three hunks; ~11k tokens of
-    // diff over the 8k model budget → hunk split.
+    // Three replacement hunks: the combined patch exceeds a 16k window,
+    // while each complete hunk plus actual review instructions fits it.
     const newContent = `hello\n\n${block(10000)}\n${gap}${block(10100)}\n${gap}${block(10200)}\n`;
     writeFileSync(join(cwd, "big.txt"), newContent);
 
@@ -1448,7 +1581,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
         provider: "openai",
         id: "gpt-4o-mini",
         thinking: "off",
-        contextWindow: 8000,
+        contextWindow: 16000,
         maxOutputTokens: 1024,
         backend: "http",
         baseUrl: url,
@@ -2184,6 +2317,9 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     const { url, bodies } = await startStubServer();
     writeSettings(cwd, {
       reviewLevel: "med",
+      // Exercise a returned pass on partial capture independently of the
+      // tool loop's pre-provider input-capacity refusal.
+      toolUseLoop: false,
       secondary: {
         provider: "openai",
         id: "gpt-4o-mini",
@@ -2212,13 +2348,54 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     assert.equal(bodies.length, 2, "an inconclusive result must not be cached");
   });
 
+  for (const parallel of [false, true]) {
+    it(
+      `reviews complete lockfile patches without treating policy-omitted unchanged contents as gaps (parallel ${parallel})`,
+      { skip: !hasGit },
+      async () => {
+        const cwd = makeRepoWithMultiFileChange({
+          "package-lock.json": '{"lockfileVersion":3,"name":"after"}\n',
+          "app.ts": "export const a = 2;\n",
+        });
+        const { url, bodies } = await startStubServer();
+        writeSettings(cwd, {
+          parallelReview: parallel,
+          reviewLevel: "med",
+          toolUseLoop: false,
+          secondary: {
+            provider: "openai",
+            id: "gpt-4o-mini",
+            thinking: "off",
+            backend: "http",
+            baseUrl: url,
+            apiKey: "test-key",
+          },
+        });
+        const ctx = { cwd } as unknown as ExtensionContext;
+        const result = await executeWaiReview(
+          cwd,
+          "Review source and dependency changes",
+          ctx,
+          {},
+          undefined,
+          () => {},
+        );
+        assert.equal(result.review?.verdict, "pass");
+        assert.equal(result.review?.contextLimited ?? false, false);
+        assert.deepEqual(result.review?.droppedFiles ?? [], []);
+        assert.ok(bodies.some((body) => body.includes("lockfileVersion")));
+        assert.equal(applyReviewOutcome(cwd, result), true);
+      },
+    );
+  }
+
   it(
-    "a pass with budget-dropped file CONTENTS stays a pass (the diff still covers the change)",
+    "optional budget-omitted contents do not fabricate a coverage gap when the full patch is reviewed",
     { skip: !hasGit },
     async () => {
       // The file is huge (contents exceed the model budget → dropped), but the
-      // DIFF is tiny: the change was fully reviewed, so the pass stands and is
-      // only marked contextLimited with a hint.
+      // DIFF is tiny and complete. Supplemental contents do not imply a
+      // necessary-evidence gap; a model-reported context limitation still does.
       const cwd = mkdtempSync(join(tmpdir(), "review-drop-contract-repo-"));
       tmpDirs.push(cwd);
       initGitRepo(cwd);
@@ -2249,16 +2426,15 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
       });
       const ctx = { cwd } as unknown as ExtensionContext;
       const result = await executeWaiReview(cwd, "dropped contents probe", ctx, {}, undefined, () => {});
-      assert.equal(result.review?.verdict, "pass", "a fully-diffed change with dropped contents is still a pass");
-      assert.equal(result.review?.contextLimited, true);
+      assert.equal(result.review?.verdict, "pass");
+      assert.equal(result.review?.contextLimited ?? false, false);
+      assert.equal(result.review?.inconclusive ?? false, false);
       assert.ok(
-        (result.review?.droppedFiles ?? []).includes("big.txt"),
-        "the dropped file must be reported for transparency",
+        (result.review?.omittedFileContents ?? []).includes("big.txt"),
+        "omitted supplemental contents must be reported for transparency",
       );
-      assert.ok(
-        result.review?.suggestions.some((s) => s.includes("omitted")),
-        "the context-limited hint must reach the user",
-      );
+      assert.deepEqual(result.review?.droppedFiles ?? [], []);
+      assert.equal(applyReviewOutcome(cwd, result), true);
     },
   );
 

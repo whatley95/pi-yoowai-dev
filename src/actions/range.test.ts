@@ -178,6 +178,22 @@ describe("resolveRangeBase", () => {
   });
 });
 
+it("pins incomplete review ranges without accepting a model pass", { skip: !hasGit }, () => {
+  const repo = makeRepo();
+  tmpDirs.push(repo.cwd);
+  repo.commit({ "a.txt": "v1\n" });
+  const base = repo.revParse("HEAD");
+  repo.commit({ "a.txt": "v2\n" });
+  const vcs = getVcsInfo(repo.cwd);
+  for (const flags of [{ contextLimited: true }, { coverageGaps: ["a.txt lines 50-90"] }]) {
+    setLastReviewedCommit(repo.cwd, base);
+    setPendingReviewCommit(repo.cwd, undefined);
+    updateRangeState(repo.cwd, vcs, { since: base }, { verdict: "pass", inconclusive: true, ...flags });
+    assert.equal(getLastReviewedCommit(repo.cwd), base);
+    assert.equal(getPendingReviewCommit(repo.cwd), base);
+  }
+});
+
 describe("rebuiltDiff", () => {
   it("does not refetch or mark Pi state as omitted", { skip: !hasGit }, () => {
     const repo = makeRepo();

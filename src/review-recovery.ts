@@ -35,6 +35,12 @@ export function getReviewRecovery(result: WaiToolResult): ReviewRecovery | undef
         message,
         "Finish pending edits and checks, then review the current working tree again.",
       );
+    if (/context input allowance exhausted/i.test(message))
+      return recovery(
+        "input-coverage",
+        message,
+        "Inspect reviewMaxInputTokens and the model input budget, along with missing files/ranges. Increasing toolUseLoop alone cannot add token capacity; obtain complete evidence before certification.",
+      );
     if (/context batch exceeds|context-request allowance exhausted/i.test(message))
       return recovery(
         "input-coverage",
@@ -85,12 +91,12 @@ export function getReviewRecovery(result: WaiToolResult): ReviewRecovery | undef
       "The model output remained truncated after continuation.",
       "Inspect the output limit and continuation diagnostics; obtain a complete result before advancing. Keep the requested thinking depth.",
     );
-  if (review.contextLimited || review.truncated || review.droppedFiles?.length)
+  if (review.contextLimited || review.truncated || review.droppedFiles?.length || review.coverageGaps?.length)
     return recovery(
       "input-coverage",
       "Some review evidence or file coverage was incomplete.",
       "Inspect omitted files and capture/context diagnostics. Obtain complete whole-tree coverage before certification.",
-      review.droppedFiles,
+      Array.from(new Set([...(review.droppedFiles ?? []), ...(review.coverageGaps ?? [])])),
     );
   if (review.planStale)
     return recovery(

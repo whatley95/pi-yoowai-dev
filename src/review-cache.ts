@@ -27,7 +27,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours — the key covers every s
 const MAX_ENTRIES = 200;
 // Bump when fixed prompt/assessment contracts change so older verdicts cannot
 // replay under new workflow rules, even when the reviewed code is unchanged.
-const CACHE_CONTRACT_VERSION = 3;
+const CACHE_CONTRACT_VERSION = 4;
 
 function getCachePath(cwd: string): string {
   const dir = join(cwd, ".pi", "yoowai");

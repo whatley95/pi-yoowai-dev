@@ -7,6 +7,8 @@ import { runPreReviewCommands } from "./pre-review.js";
 import { isSafeRelativePath, resolveProjectPath } from "./path-security.js";
 import { listTrackedFiles } from "./conventions.js";
 import { mergeUsageCost } from "./actions/shared.js";
+import { estimateTokens } from "./token-budget.js";
+import { emptyRecordedUsage } from "./cost-tracker.js";
 import {
   dispatchNativeReadTool,
   getNativeReadToolNames,
@@ -39,6 +41,8 @@ const DEFAULT_MAX_ITERATIONS = 5;
 const MAX_TOOL_FILE_BYTES = 100 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 4000;
 const MAX_BATCH_READS = 4;
+const MAX_REUSED_READS = 2;
+const MAX_READ_PAGE_CHARS = 16_000;
 const MAX_SEARCH_MATCHES = 50;
 const MAX_NATIVE_SEARCH_FILES = 32;
 const MAX_NATIVE_SEARCH_GLOB_CHARS = 2000;
@@ -57,6 +61,17 @@ const MAX_SEARCH_PATTERN_CHARS = 200;
 const MAX_SEARCH_LINE_CHARS = 10_000;
 const NESTED_QUANTIFIER_RE = /\([^)]*[+*{][^)]*\)\s*[+*{]/;
 
+export class ToolLoopCoverageError extends Error {
+  constructor(
+    message: string,
+    public readonly usage: UsageCost,
+    public readonly coverageGaps: string[],
+  ) {
+    super(message);
+    this.name = "ToolLoopCoverageError";
+  }
+}
+
 function buildToolInstruction(maxIterations: number): string {
   const nativeTools = getNativeReadToolNames();
   const reads = nativeTools === undefined || nativeTools.includes("read");
@@ -72,11 +87,11 @@ function buildToolInstruction(maxIterations: number): string {
 ${reads ? `{"tool": "read_file", "path": "relative/path/to/file.ts"}\n{"tool": "read_file", "path": "relative/path/to/file.ts", "startLine": 100, "endLine": 200}\n${batchExample}\n` : ""}${searches ? '{"tool": "search_code", "pattern": "functionName\\\\(", "path": "src", "contextLines": 2}\n' : ""}
 {"tool": "run_command", "command": "npm run typecheck"}
 
-read_file accepts optional startLine/endLine (1-based, inclusive) and offset (zero-based characters within that range) to page through large files. Follow the exact next-page request in a truncated result; it preserves absolute line numbers and does not repeat the first page. Batch up to ${Math.min(MAX_BATCH_READS, maxIterations)} read_file requests in a tools array when you already know which files you need, but never exceed the latest remaining context-request allowance. Each read counts against that same allowance; with one request remaining, request only one tool. Use the diff, file contents, and previous tool results already provided before requesting more context; repeated identical reads add no evidence unless the file changes. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match). run_command accepts ONE allowlisted command without shell operators: no semicolons, pipes, &&, substitutions, grep, or ls. Use search_code/read_file for source inspection. It blocks destructive subcommands (push/reset/publish/…); for git, use "<command> -h" for terminal usage — full help ("--help" or "git help …") is rejected because it can open an external viewer (a browser on Windows).
+read_file accepts optional startLine/endLine (1-based, inclusive) and offset (zero-based characters within that range) to page through large files. Follow the exact next-page request in a truncated result; it preserves absolute line numbers and does not repeat the first page. Batch up to ${Math.min(MAX_BATCH_READS, maxIterations)} read_file requests in a tools array when you already know which files you need, but never exceed the latest remaining context-request allowance. New evidence and failed reads count against that allowance; with one request remaining, request only one tool. Use the diff, file contents, and previous tool results already provided before requesting more context; repeated identical reads add no evidence unless the file changes. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match). run_command accepts ONE allowlisted command without shell operators: no semicolons, pipes, &&, substitutions, grep, or ls. Use search_code/read_file for source inspection. It blocks destructive subcommands (push/reset/publish/…); for git, use "<command> -h" for terminal usage — full help ("--help" or "git help …") is rejected because it can open an external viewer (a browser on Windows).
 
 ${reads ? "" : "read_file is unavailable: Pi has no callable read tool in this session. Do not request it.\n"}${searches ? "" : "search_code is unavailable: Pi has no callable grep tool in this session. Do not request it.\n"}${nativeTools === undefined ? "" : "Pi controls the availability of reads and searches. Never bypass an unavailable or blocked operation with commands or another reader. Use the evidence already supplied, request permitted missing context, or report that required evidence is unavailable.\n"}
 
-You may make up to ${maxIterations} such request(s). After each request, the tool result will be appended to this conversation. Once you have enough context, produce the final structured JSON result requested below. Do not output explanatory text with a tool request. If no additional context is needed, produce the final JSON result immediately.`;
+You may make up to ${maxIterations} new-evidence request(s). Identical approved read results can reuse earlier evidence at most ${MAX_REUSED_READS} times without spending another evidence request; commands and unsuccessful reads always count. Do not deliberately repeat reads: model rounds and repeat handling remain bounded. After each request, the tool result will be appended to this conversation. Once you have enough context, produce the final structured JSON result requested below. Do not output explanatory text with a tool request. If no additional context is needed, produce the final JSON result immediately.`;
 }
 
 function parseToolRequest(text: string): ToolRequest | null {
@@ -130,10 +145,17 @@ function remainingRequestInstruction(remaining: number): string {
 
 /** Bound each page, preserve full lines where possible, and give a request
  *  that advances even when a single line exceeds the output cap. */
-function pageFileOutput(lines: string[], path: string, start: number, end: number, offset = 0): string {
+function pageFileOutput(
+  lines: string[],
+  path: string,
+  start: number,
+  end: number,
+  offset = 0,
+  maxChars = MAX_TOOL_OUTPUT_CHARS,
+): string {
   const selected = lines.slice(start - 1, end).join("\n");
   offset = Math.min(offset, selected.length);
-  let page = selected.slice(offset, offset + MAX_TOOL_OUTPUT_CHARS);
+  let page = selected.slice(offset, offset + maxChars);
   if (offset + page.length < selected.length) {
     const newline = page.lastIndexOf("\n");
     if (newline >= 0) page = page.slice(0, newline + 1);
@@ -165,14 +187,14 @@ function truncateCommandOutput(text: string): string {
   return `${text.slice(0, headChars)}\n… (${elided} chars elided) …\n${text.slice(-tailChars)}`;
 }
 
-function pageNativeRead(result: NativeReadResult, request: ToolRequest): ToolResult {
+function pageNativeRead(result: NativeReadResult, request: ToolRequest, maxChars = MAX_TOOL_OUTPUT_CHARS): ToolResult {
   if (result.error) return { output: "", error: truncateCommandOutput(result.error) };
   const truncation = result.details?.truncation as
     { truncated?: boolean; outputLines?: number; firstLineExceedsLimit?: boolean } | undefined;
   if (truncation?.firstLineExceedsLimit)
     return { output: "", error: "Pi read could not return this oversized line. Required context is incomplete." };
   const offset = Math.min(request.offset ?? 0, result.output.length);
-  let output = result.output.slice(offset, offset + MAX_TOOL_OUTPUT_CHARS);
+  let output = result.output.slice(offset, offset + maxChars);
   // Native output may include host annotations. Page by characters in that
   // exact response, rather than treating annotations as source line numbers.
   if (/[\uD800-\uDBFF]$/.test(output)) output = output.slice(0, -1);
@@ -191,7 +213,12 @@ function pageNativeRead(result: NativeReadResult, request: ToolRequest): ToolRes
   };
 }
 
-async function readFileTool(cwd: string, request: ToolRequest, signal?: AbortSignal): Promise<ToolResult> {
+async function readFileTool(
+  cwd: string,
+  request: ToolRequest,
+  signal?: AbortSignal,
+  maxChars = MAX_TOOL_OUTPUT_CHARS,
+): Promise<ToolResult> {
   const { path, startLine, endLine, offset } = request;
   if (!path) return { output: "", error: "read_file requires a path" };
   const safePath = resolveProjectPath(cwd, path);
@@ -212,7 +239,7 @@ async function readFileTool(cwd: string, request: ToolRequest, signal?: AbortSig
       },
       signal,
     );
-    if (native) return pageNativeRead(native, { ...request, startLine: nativeStart, endLine: nativeEnd });
+    if (native) return pageNativeRead(native, { ...request, startLine: nativeStart, endLine: nativeEnd }, maxChars);
     const content = readFileSync(safePath, "utf-8");
     const lines = content.split(/\r?\n/);
     // Clamp to file bounds; swap when inverted. Non-finite values were
@@ -220,7 +247,7 @@ async function readFileTool(cwd: string, request: ToolRequest, signal?: AbortSig
     let start = Math.max(1, Math.floor(startLine ?? 1));
     let end = Math.min(lines.length, Math.floor(endLine ?? lines.length));
     if (start > end) [start, end] = [Math.max(1, Math.min(end, lines.length)), Math.min(lines.length, start)];
-    return { output: pageFileOutput(lines, path, start, end, offset) };
+    return { output: pageFileOutput(lines, path, start, end, offset, maxChars) };
   } catch (err) {
     return { output: "", error: err instanceof Error ? err.message : String(err) };
   }
@@ -427,9 +454,14 @@ async function searchCodeTool(cwd: string, request: ToolRequest, signal?: AbortS
   };
 }
 
-async function executeTool(cwd: string, request: ToolRequest, signal?: AbortSignal): Promise<ToolResult> {
+async function executeTool(
+  cwd: string,
+  request: ToolRequest,
+  signal?: AbortSignal,
+  readPageChars = MAX_TOOL_OUTPUT_CHARS,
+): Promise<ToolResult> {
   if (request.tool === "read_file") {
-    return readFileTool(cwd, request, signal);
+    return readFileTool(cwd, request, signal, readPageChars);
   }
   if (request.tool === "search_code") {
     return searchCodeTool(cwd, request, signal);
@@ -493,17 +525,39 @@ export async function executeToolLoop(
   let used = 0;
   let modelCalls = 0;
   let batchCorrectionUsed = false;
+  let attempts = 0;
+  let reusedReads = 0;
+  let toolContextChars = 0;
+  const readPageChars = Number.isFinite(options.readPageChars)
+    ? Math.max(1, Math.min(MAX_READ_PAGE_CHARS, Math.floor(options.readPageChars!)))
+    : MAX_TOOL_OUTPUT_CHARS;
+  const contextChars = Number.isFinite(options.maxToolContextChars)
+    ? Math.max(0, options.maxToolContextChars!)
+    : Infinity;
+  const inputLimit = Number.isFinite(options.maxInputTokens) ? Math.max(0, options.maxInputTokens!) : Infinity;
+  const coverageError = (message: string, requests: ToolRequest[] = []) =>
+    new ToolLoopCoverageError(message, totalUsage ?? emptyRecordedUsage(cwd), [
+      ...new Set(
+        requests.some((r) => r.path)
+          ? requests.map((r) => r.path).filter((p): p is string => !!p)
+          : (options.relevantPaths ?? []),
+      ),
+    ]);
   const reads = new Map<string, { stamp: string; result: ToolResult; iteration: number }>();
   const nativeReads = new Map<string, { output: string; iteration: number }>();
 
   while (used <= maxToolIterations) {
-    const finalOnly = used >= maxToolIterations;
+    const finalOnly = used >= maxToolIterations || reusedReads >= MAX_REUSED_READS;
     // Keep the system/prompt prefix stable for provider prompt caching.
     const system = augmentedSystem;
     const user = finalOnly
       ? currentUser +
-        "\n\nYou have reached the maximum number of tool requests. Produce the final structured JSON result now without additional tools. If necessary evidence is missing, state that limitation; do not claim complete coverage."
+        "\n\nYou have reached the maximum number of tool requests or repeated unchanged reads. Produce the final structured JSON result now without additional tools. If necessary evidence is missing, set contextLimited and list coverageGaps; do not claim complete coverage."
       : currentUser;
+    if (estimateTokens(system + user) > inputLimit)
+      throw coverageError(
+        "Context input allowance exhausted: the review conversation cannot fit more evidence in the model input budget.",
+      );
     modelCalls++;
     const modelStarted = Date.now();
     logEvent(cwd, "info", "Tool loop model started", {
@@ -541,6 +595,10 @@ export async function executeToolLoop(
         user,
         options,
         async (s, u, o) => {
+          if (estimateTokens(s + u) > inputLimit)
+            throw coverageError(
+              "Context input allowance exhausted: the review continuation cannot fit in the model input budget.",
+            );
           const resumeStarted = Date.now();
           modelCalls++;
           logEvent(cwd, "info", "Tool loop model started", {
@@ -578,7 +636,9 @@ export async function executeToolLoop(
       logEvent(cwd, "info", "Tool loop completed", {
         ...metadata,
         modelCalls,
-        toolRequests: used,
+        toolRequests: attempts,
+        evidenceRequests: used,
+        reusedReads,
         elapsedMs: Date.now() - started,
         truncated: result.truncated,
       });
@@ -586,8 +646,9 @@ export async function executeToolLoop(
     }
 
     if (finalOnly)
-      throw new Error(
+      throw coverageError(
         "Context-request allowance exhausted: the reviewer requested more evidence instead of producing a final result.",
+        requests,
       );
     if (requests.length > maxToolIterations - used) {
       const remaining = maxToolIterations - used;
@@ -609,14 +670,21 @@ export async function executeToolLoop(
         currentUser += remainingRequestInstruction(remaining);
         continue;
       }
-      throw new Error(
+      throw coverageError(
         `Context batch exceeds the ${remaining} remaining request(s) after one correction; coverage is incomplete. Inspect the context-request logs and toolUseLoop allowance before retrying.`,
+        requests,
       );
     }
     for (const request of requests) {
       options.signal?.throwIfAborted();
-      used++;
-      const detail = { ...metadata, iteration: used, modelCall: modelCalls, batchSize: requests.length, ...request };
+      attempts++;
+      const detail = {
+        ...metadata,
+        iteration: attempts,
+        modelCall: modelCalls,
+        batchSize: requests.length,
+        ...request,
+      };
       logEvent(cwd, "info", "Tool loop request", detail);
       const toolStarted = Date.now();
       const key = JSON.stringify(request);
@@ -626,11 +694,18 @@ export async function executeToolLoop(
       const previous = stamp ? reads.get(key) : undefined;
       const cached = previous && previous.stamp === stamp ? previous : undefined;
       let reused = !!cached;
+      const remainingChars =
+        Math.min(contextChars - toolContextChars, (inputLimit - estimateTokens(system + currentUser)) * 4) - 1200;
+      if (!cached && remainingChars < 512)
+        throw coverageError(
+          "Context input allowance exhausted: required tool evidence cannot fit in the remaining review input budget.",
+          [request],
+        );
       let result = cached
         ? {
             output: `The unchanged file/range was already returned in context request ${cached.iteration}. Use that result above; request a different range if you need missing lines.`,
           }
-        : await executeTool(cwd, request, options.signal);
+        : await executeTool(cwd, request, options.signal, Math.min(readPageChars, Math.floor(remainingChars)));
       options.signal?.throwIfAborted();
       // Native reads must execute again for host policy and source freshness.
       // After approval, identical bounded output can refer to its earlier
@@ -642,10 +717,12 @@ export async function executeToolLoop(
           result = {
             output: `The same approved Pi read output was already returned in context request ${earlier.iteration}. Use that result above; request a different range for missing evidence.`,
           };
-        } else nativeReads.set(key, { output: result.output, iteration: used });
+        } else nativeReads.set(key, { output: result.output, iteration: attempts });
       }
       if (stamp && !reused && !result.error && fileStamp(cwd, request.path) === stamp)
-        reads.set(key, { stamp, result, iteration: used });
+        reads.set(key, { stamp, result, iteration: attempts });
+      if (reused && reusedReads < MAX_REUSED_READS) reusedReads++;
+      else used++;
       logEvent(cwd, "info", "Tool loop result", {
         ...detail,
         elapsedMs: Date.now() - toolStarted,
@@ -654,7 +731,17 @@ export async function executeToolLoop(
         error: result.error,
         outputLength: result.output.length,
       });
-      currentUser += formatToolResult(request, result);
+      const formatted = formatToolResult(request, result);
+      if (
+        toolContextChars + formatted.length > contextChars ||
+        estimateTokens(system + currentUser + formatted) > inputLimit
+      )
+        throw coverageError(
+          "Context input allowance exhausted: required tool evidence exceeds the remaining review input budget.",
+          [request],
+        );
+      toolContextChars += formatted.length;
+      currentUser += formatted;
     }
     currentUser += remainingRequestInstruction(maxToolIterations - used);
   }

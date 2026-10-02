@@ -11,6 +11,7 @@ import {
   getSessionCost,
   recordCost,
   resetCost,
+  emptyRecordedUsage,
 } from "./cost-tracker.js";
 import { mergeUsageCost } from "./actions/shared.js";
 
@@ -69,4 +70,10 @@ describe("formatCost", () => {
   it("handles zero", () => {
     assert.equal(formatCost(0), "0.00¢");
   });
+});
+
+it("local evidence refusal records no phantom provider call or spend", () => {
+  const before = getSessionCost(cwd);
+  recordCost(cwd, emptyRecordedUsage(cwd));
+  assert.deepEqual(getSessionCost(cwd), before);
 });

@@ -233,6 +233,44 @@ describe("Pi read tool dispatch", () => {
     assert.doesNotMatch(first, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 
+  it("keeps evidence capacity after an identical native read and still dispatches every permission check", async () => {
+    let nativeCalls = 0;
+    let modelCalls = 0;
+    const native = context(async (_name, args) => {
+      nativeCalls++;
+      return outcome(String(args.path).endsWith("one.ts") ? "APPROVED_FIRST" : "APPROVED_SECOND");
+    });
+    await withNativeReadTools(native, () =>
+      executeToolLoop(
+        cwd,
+        "system",
+        "user",
+        {},
+        async (_system, user) => {
+          modelCalls++;
+          if (modelCalls === 3) {
+            assert.equal(nativeCalls, 2);
+            assert.match(user, /Remaining context requests: 1/);
+          }
+          if (modelCalls === 4) {
+            assert.equal(nativeCalls, 3);
+            assert.match(user, /APPROVED_SECOND/);
+            assert.equal(user.match(/APPROVED_FIRST/g)?.length, 1);
+          }
+          return {
+            content:
+              modelCalls < 4
+                ? JSON.stringify({ tool: "read_file", path: modelCalls === 3 ? "src/two.ts" : "src/one.ts" })
+                : '{"verdict":"pass"}',
+            usage,
+          };
+        },
+        2,
+      ),
+    );
+    assert.equal(nativeCalls, 3);
+  });
+
   it("maps native source truncation to a wai line request and rejects unreadable giant lines", async () => {
     const prompt = await withNativeReadTools(
       context(async () => outcome("two\nlines", false, { truncation: { truncated: true, outputLines: 2 } })),

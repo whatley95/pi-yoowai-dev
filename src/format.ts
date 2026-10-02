@@ -121,6 +121,18 @@ export function formatResultText(result: WaiToolResult): string {
       lines.push("");
     }
 
+    if (result.review.coverageGaps?.length) {
+      lines.push("⚠️ **Coverage gaps:** Required evidence was not obtained; this review cannot certify completion.");
+      for (const gap of result.review.coverageGaps) lines.push(`- ${gap}`);
+      lines.push("");
+    }
+    if (result.review.omittedFileContents?.length) {
+      lines.push(
+        `**Supplemental contents omitted:** ${result.review.omittedFileContents.join(", ")}. Review used the captured patches and available context; required missing evidence is reported separately as coverage gaps.`,
+      );
+      lines.push("");
+    }
+
     if (
       result.review.contextLimited ||
       result.review.truncated ||

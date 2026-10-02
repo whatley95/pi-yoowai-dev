@@ -95,6 +95,54 @@ This is the reasoning.
   });
 });
 
+describe("assigned review coverage", () => {
+  it("distinguishes a worker's assignment from the overall task and retains dependency checks", () => {
+    const prompt = buildAdaptiveReviewPrompt("Review six files", "+lock change", [], {
+      assignment: { files: ["pubspec.lock"], batchIndex: 2, batchCount: 6 },
+    });
+    assert.match(prompt.user, /Batch 2 of 6/);
+    assert.match(prompt.user, /Assigned files: \["pubspec.lock"\]/);
+    assert.match(prompt.user, /absence.*is not a coverage gap/);
+    assert.match(prompt.user, /do not re-fetch the entire working-tree diff/);
+    assert.match(prompt.system, /relevant dependency metadata for lockfile changes/);
+    assert.match(prompt.system, /Missing evidence is not a code defect/);
+    assert.match(prompt.system, /"coverageGaps"/);
+  });
+
+  it("identifies the assigned hunk and does not invent workers for a single batch", () => {
+    const hunk = buildAdaptiveReviewPrompt("large file", "+change", [], {
+      assignment: { files: ["large.ts"], batchIndex: 3, batchCount: 5, hunk: { index: 3, count: 5 } },
+    });
+    assert.match(hunk.user, /Assigned hunk 3 of 5/);
+    const single = buildAdaptiveReviewPrompt("one file", "+change", [], {
+      assignment: { files: ["one.ts"], batchIndex: 1, batchCount: 1 },
+    });
+    assert.match(single.user, /only batch; assess all assigned changes/);
+    assert.doesNotMatch(single.user, /other batches review the remaining/);
+  });
+
+  it("retains structured missing-evidence fields during validation", () => {
+    const result = validateReviewResult({
+      verdict: "needs-work",
+      issues: [],
+      suggestions: [],
+      consensus: false,
+      contextLimited: true,
+      coverageGaps: ["a.ts lines 20-40"],
+    });
+    assert.equal(result?.contextLimited, true);
+    assert.deepEqual(result?.coverageGaps, ["a.ts lines 20-40"]);
+  });
+
+  it("distinguishes omitted supplemental contents from missing changed patches", () => {
+    const prompt = buildAdaptiveReviewPrompt("one small change", "+change", [], { omittedFileContents: ["large.ts"] });
+    assert.match(prompt.user, /Supplemental full file contents were not included for: large.ts/);
+    assert.match(prompt.user, /captured patches are still in scope/);
+    assert.match(prompt.user, /If required evidence remains unavailable, report contextLimited and coverageGaps/);
+    assert.doesNotMatch(prompt.user, /Some changed files were omitted/);
+  });
+});
+
 describe("salvageReviewFromMarkdown", () => {
   it("extracts pass verdict and suggestions from markdown", () => {
     const text = `# Review

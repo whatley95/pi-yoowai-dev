@@ -3,7 +3,7 @@ import { formatLanguageDirective, loadYoowaiConfig, resolveTaskModel } from "./c
 import { formatCost, getSessionCost, reserveCost, recordCost } from "./cost-tracker.js";
 import { logEvent } from "./logger.js";
 import { resolveModelInfo } from "./model-registry.js";
-import { executeToolLoop } from "./tool-loop.js";
+import { executeToolLoop, ToolLoopCoverageError } from "./tool-loop.js";
 import { mergeUsageCost } from "./actions/shared.js";
 import {
   callHttpBackend,
@@ -123,6 +123,9 @@ export async function callSecondaryModel(
       return result;
     } catch (err) {
       options.signal?.throwIfAborted();
+      // A local evidence limit is a coverage result, not a provider outage.
+      // Replaying the entire review through fallback models hides the cause.
+      if (err instanceof ToolLoopCoverageError) throw err;
       const msg = err instanceof Error ? err.message : String(err);
       lastErrors.push(`${attempt.provider}:${attempt.model} -> ${msg}`);
       if (cwd) {

@@ -1,8 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildReviewEvidencePack } from "./evidence-pack.js";
 import { callSecondaryModel } from "../secondary-model.js";
+import { ToolLoopCoverageError } from "../tool-loop.js";
+import { resolveReviewToolContext } from "./review-tool-context.js";
+import { logEvent } from "../logger.js";
 import {
   buildAdaptiveReviewPrompt,
+  formatReviewAssignment,
   validateReviewResult,
   getReviewValidationErrors,
   salvageReviewFromMarkdown,
@@ -10,7 +14,14 @@ import {
 import { estimateTokens, type ReviewBudget } from "../token-budget.js";
 import { type FileContentEntry } from "../file-loader.js";
 import type { ProgressReporter } from "../progress.js";
-import type { ReviewIssue, ReviewResult, ReviewVerdict, SecondaryModelConfig, UsageCost } from "../types.js";
+import type {
+  ReviewAssignment,
+  ReviewIssue,
+  ReviewResult,
+  ReviewVerdict,
+  SecondaryModelConfig,
+  UsageCost,
+} from "../types.js";
 import { STAGES, secondaryModelLabel, parseStructuredResult, createStreamProgressCallback } from "./shared.js";
 
 const MAX_SESSION_CONTEXT_CHARS = 4000;
@@ -140,18 +151,31 @@ export function mergeReviewResults(results: ReviewResult[]): ReviewResult {
   const issues = dedupeIssues(results.flatMap((r) => r.issues));
   const suggestions = Array.from(new Set(results.flatMap((r) => r.suggestions)));
   const droppedFiles = Array.from(new Set(results.flatMap((r) => r.droppedFiles ?? [])));
+  const omittedFileContents = Array.from(new Set(results.flatMap((r) => r.omittedFileContents ?? [])));
   const truncated = results.some((r) => r.truncated);
+  const coverageGaps = Array.from(new Set(results.flatMap((r) => r.coverageGaps ?? [])));
+  const contextLimited = results.some((r) => r.contextLimited || r.inputIncomplete || r.inconclusive || r.checksFailed);
+  const incomplete =
+    results.length === 0 || truncated || contextLimited || droppedFiles.length > 0 || coverageGaps.length > 0;
+  if (incomplete && verdict === "pass") verdict = "needs-work";
   return {
     verdict,
     issues,
     suggestions,
-    consensus: verdict === "pass" && issues.length === 0,
+    consensus: !incomplete && verdict === "pass" && issues.length === 0,
     truncated,
     droppedFiles,
+    omittedFileContents,
+    contextLimited: incomplete,
+    coverageGaps,
+    ...(results.some((r) => r.inputIncomplete) ? { inputIncomplete: true } : {}),
+    ...(results.some((r) => r.inconclusive) ? { inconclusive: true } : {}),
+    ...(results.some((r) => r.checksFailed) ? { checksFailed: true } : {}),
+    ...(results.some((r) => r.scopeLimited) ? { scopeLimited: true } : {}),
     // Conservative merges for the plan-tracker signals: a step is only
     // complete when EVERY per-file sub-review confirms it; a plan is stale
     // when ANY sub-review flags it.
-    stepComplete: results.length > 0 && results.every((r) => r.stepComplete === true),
+    stepComplete: !incomplete && results.length > 0 && results.every((r) => r.stepComplete === true),
     planStale: results.some((r) => r.planStale === true),
   };
 }
@@ -176,6 +200,7 @@ export interface ReviewBatchInput {
   instructionsText?: string;
   truncated: boolean;
   droppedFiles: string[];
+  omittedFileContents?: string[];
   budget: ReviewBudget;
   modelConfig: SecondaryModelConfig;
   signal?: AbortSignal;
@@ -188,6 +213,8 @@ export interface ReviewBatchInput {
   focusFiles?: string[];
   levelInstructions?: string;
   evidencePackMaxTokens?: number;
+  assignment?: ReviewAssignment;
+  allowAdaptiveToolContext?: boolean;
 }
 
 export async function runReviewBatch(input: ReviewBatchInput): Promise<{
@@ -243,7 +270,9 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
     estimateTokens(instructionsText ?? "") +
     estimateTokens(priorRoundContext ?? "") +
     estimateTokens(decisionsContext ?? "") +
-    estimateTokens(relatedContext ?? "");
+    estimateTokens(relatedContext ?? "") +
+    estimateTokens(formatReviewAssignment(input.assignment)) +
+    estimateTokens((input.omittedFileContents ?? []).join(", "));
   const maxPackTokens = evidencePackMaxTokens ?? 1200;
   const packBudget = Math.max(
     0,
@@ -296,36 +325,82 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       instructionsText,
       truncated: diffTruncated,
       droppedFiles,
+      omittedFileContents: input.omittedFileContents,
       budgetNote: `Context window: ${budget.contextWindow.toLocaleString()} tokens. Reserved output: ${budget.reservedOutputTokens.toLocaleString()}. Available for context: ${budget.availableInputTokens.toLocaleString()}.`,
       nativeJson,
       focusFiles,
       levelInstructions: input.levelInstructions,
+      assignment: input.assignment,
     },
   );
 
   progress?.(8, STAGES.review, `Calling ${secondaryModelLabel(modelConfig)}…`);
-  const {
-    content: raw,
-    usage,
-    rounds,
-    truncated: modelTruncated,
-  } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
-    signal,
-    thinking: modelConfig.thinking,
-    cwd,
-    sessionManager,
-    relevantPaths,
-    task: "review",
-    // The model was already resolved in executeWaiReview with the correct
-    // fallback chain (level override → review override → base). Without this
-    // override, task-based resolution would clobber a per-level model with
-    // the generic review task model.
-    secondaryOverride: modelConfig,
-    structuredOutput: true,
-    onStreamProgress: progress ? createStreamProgressCallback(progress, 8, STAGES.review) : undefined,
-    enableToolLoop,
-    maxToolIterations,
-  });
+  const toolContext = enableToolLoop
+    ? resolveReviewToolContext({
+        cwd,
+        paths: relevantPaths,
+        files,
+        budget,
+        system,
+        user,
+        evidenceTokens: fileTokens + otherUsed + estimateTokens(evidenceText) + estimateTokens(finalDiff),
+        maxRequests: maxToolIterations,
+        adaptive: input.allowAdaptiveToolContext,
+      })
+    : {};
+  if (enableToolLoop)
+    logEvent(cwd, "info", "Review context allowance prepared", {
+      files: relevantPaths,
+      ...toolContext,
+      adaptive: input.allowAdaptiveToolContext === true,
+    });
+  let response: Awaited<ReturnType<typeof callSecondaryModel>>;
+  try {
+    response = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
+      signal,
+      thinking: modelConfig.thinking,
+      cwd,
+      sessionManager,
+      relevantPaths,
+      task: "review",
+      // The model was already resolved in executeWaiReview with the correct
+      // fallback chain (level override → review override → base). Without this
+      // override, task-based resolution would clobber a per-level model with
+      // the generic review task model.
+      secondaryOverride: modelConfig,
+      structuredOutput: true,
+      onStreamProgress: progress ? createStreamProgressCallback(progress, 8, STAGES.review) : undefined,
+      enableToolLoop,
+      maxToolIterations,
+      ...toolContext,
+    });
+  } catch (error) {
+    if (!(error instanceof ToolLoopCoverageError)) throw error;
+    logEvent(cwd, "warn", "Review context coverage incomplete", {
+      files: relevantPaths,
+      coverageGaps: error.coverageGaps,
+      error: error.message,
+    });
+    return {
+      review: {
+        verdict: "needs-work",
+        issues: [],
+        suggestions: [error.message],
+        consensus: false,
+        contextLimited: true,
+        coverageGaps: error.coverageGaps.length ? error.coverageGaps : relevantPaths,
+        stepComplete: false,
+        completedSteps: 0,
+        omittedFileContents: input.omittedFileContents,
+      },
+      usage: error.usage,
+      system,
+      user,
+      rounds: 0,
+      truncated: false,
+    };
+  }
+  const { content: raw, usage, rounds, truncated: modelTruncated } = response;
 
   const review = parseStructuredResult(cwd, raw, {
     label: "Review",
@@ -341,6 +416,8 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
   if (!review) {
     throw new Error("Failed to parse review from secondary model response.");
   }
+  const omissions = Array.from(new Set([...(input.omittedFileContents ?? []), ...(review.omittedFileContents ?? [])]));
+  if (omissions.length) review.omittedFileContents = omissions;
 
   return { review, usage, system, user, rounds, truncated: modelTruncated ?? false };
 }
