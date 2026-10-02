@@ -413,6 +413,108 @@ describe("context-injector", () => {
     assert.ok(Math.ceil(block.length / 4) <= 800);
   });
 
+  it("shrinks optional knowledge under context pressure while retaining the current step, decisions and reminders", () => {
+    setPlan(cwd, { summary: "Preserve authentication", todo: ["Keep refresh behaviour"], acceptanceCriteria: [] });
+    for (let i = 0; i < 12; i++) recordLearnedFact(cwd, `Optional auth fact ${i}: ${"x".repeat(45)}`);
+    recordLearnedFact(cwd, "Do not replace the shared refresh lock", { kind: "decision" });
+    recordFileEdit(cwd, "src/auth.ts");
+    recordFileEdit(cwd, "src/auth.ts");
+    recordFileEdit(cwd, "src/auth.ts");
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const render = (tokens: number): string => {
+      const ctx = makeContext(cwd);
+      ctx.getContextUsage = () => ({ tokens, contextWindow: 20000, percent: tokens / 200 });
+      const event = makeMessages();
+      emitContext(event, ctx);
+      return (event.messages[0] as { content: string }).content;
+    };
+    const roomy = render(15000);
+    const pressured = render(17000);
+    const critical = render(19200);
+    const facts = (content: string) => (content.match(/Optional auth fact/g) ?? []).length;
+    assert.ok(facts(roomy) > facts(pressured), "85% context should retain fewer optional facts than 75%");
+    assert.ok(facts(pressured) > 0, "moderate pressure should still retain relevant whole facts");
+    assert.equal(facts(critical), 0, "95%+ context leaves only mandatory guidance");
+    for (const content of [pressured, critical]) {
+      assert.match(content, /Preserve authentication/);
+      assert.match(content, /Keep refresh behaviour/);
+      assert.match(content, /WORKFLOW REMINDER/);
+      assert.match(content, /\[decision\] Do not replace the shared refresh lock/);
+      assert.match(content, /<\/wai_context>/);
+      assert.ok(Math.ceil(content.slice(content.indexOf("<wai_context>")).length / 4) <= 800);
+      assert.equal(
+        (content.match(/<project_knowledge>/g) ?? []).length,
+        (content.match(/<\/project_knowledge>/g) ?? []).length,
+      );
+    }
+  });
+
+  it("retains language and Git/SVN commit instructions even when optional context is suppressed", () => {
+    mkdirSync(join(cwd, ".svn"));
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { language: "Malay", contextInjectMaxTokens: 2000 } }),
+    );
+    recordLearnedFact(cwd, "OPTIONAL_MEMORY_MARKER");
+    const ctx = makeContext(cwd);
+    ctx.getContextUsage = () => ({ tokens: 9999, contextWindow: 10000, percent: 99.99 });
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, ctx);
+    const content = (event.messages[0] as { content: string }).content;
+    assert.match(content, /Malay/);
+    assert.match(content, /SVN WORKFLOW/);
+    assert.match(content, /svn add --parents/);
+    assert.doesNotMatch(content, /OPTIONAL_MEMORY_MARKER/);
+  });
+
+  it("preserves configured injection when the context estimate is missing, malformed or throws", () => {
+    recordLearnedFact(cwd, "KEEP_MEMORY_WITH_UNKNOWN_USAGE");
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    let expected: string | undefined;
+    const estimates: unknown[] = [
+      undefined,
+      { tokens: null, contextWindow: 10000, percent: null },
+      { tokens: NaN, contextWindow: 10000 },
+      { tokens: -1, contextWindow: 10000 },
+      { tokens: 9999, contextWindow: 0 },
+      { tokens: 2000, contextWindow: 10000 },
+    ];
+    for (const estimate of [...estimates, "throws"]) {
+      const ctx = makeContext(cwd);
+      ctx.getContextUsage = () => {
+        if (estimate === "throws") throw new Error("host estimate unavailable");
+        return estimate as ReturnType<ExtensionContext["getContextUsage"]>;
+      };
+      const event = makeMessages();
+      emitContext(event, ctx);
+      const content = (event.messages[0] as { content: string }).content;
+      assert.match(content, /KEEP_MEMORY_WITH_UNKNOWN_USAGE/);
+      expected ??= content;
+      assert.equal(content, expected);
+    }
+  });
+
+  it("respects the configured hard cap under pressure and never forces compaction", () => {
+    setPlan(cwd, { summary: "Retain current task", todo: ["Keep required checks"], acceptanceCriteria: [] });
+    recordLearnedFact(cwd, "Optional context ".repeat(20));
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { contextInjectMaxTokens: 400 } }));
+    const ctx = makeContext(cwd);
+    ctx.getContextUsage = () => ({ tokens: 900, contextWindow: 1000, percent: 90 });
+    ctx.compact = () => assert.fail("wai must not trigger compaction for adaptive injection");
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, ctx);
+    const content = (event.messages[0] as { content: string }).content;
+    assert.match(content, /Retain current task/);
+    assert.match(content, /Keep required checks/);
+    assert.ok(Math.ceil(content.slice(content.indexOf("<wai_context>")).length / 4) <= 400);
+  });
+
   it("does nothing when autoInjectContext is false", () => {
     setPlan(cwd, {
       summary: "Refactor auth",

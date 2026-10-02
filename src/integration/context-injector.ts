@@ -253,6 +253,65 @@ function truncateBlock(block: string, maxTokens: number): string {
   return truncateToTokenBudget(block, maxTokens);
 }
 
+/** Context estimates can be absent immediately after compaction. In that case,
+ * keep the configured budget. Only optional sections shrink under pressure. */
+function adaptOptionalContext(block: string, maxTokens: number, usage: unknown): string {
+  const estimate = usage as { tokens?: unknown; contextWindow?: unknown } | undefined;
+  if (
+    typeof estimate?.tokens !== "number" ||
+    !Number.isFinite(estimate.tokens) ||
+    estimate.tokens < 0 ||
+    typeof estimate.contextWindow !== "number" ||
+    !Number.isFinite(estimate.contextWindow) ||
+    estimate.contextWindow <= 0 ||
+    estimate.tokens / estimate.contextWindow <= 0.75
+  )
+    return block;
+
+  const sections = new Map<string, string>();
+  let mandatory = block.replace(
+    /<(project_knowledge|advisor_notes|design_rules|project_conventions)>[\s\S]*?<\/\1>/g,
+    (section, tag: string) => {
+      sections.set(tag, section.slice(tag.length + 2, -(tag.length + 3)).trim());
+      return "";
+    },
+  );
+  const knowledge = sections.get("project_knowledge")?.split("\n") ?? [];
+  const decisions = knowledge.filter((line) => line.startsWith("- [decision] "));
+  if (decisions.length)
+    mandatory = mandatory.replace(
+      "</wai_context>",
+      `<project_knowledge>\n${decisions.join("\n")}\n</project_knowledge>\n</wai_context>`,
+    );
+  sections.set("project_knowledge", knowledge.filter((line) => !line.startsWith("- [decision] ")).join("\n"));
+  mandatory = mandatory.replace(/\n\n+/g, "\n\n");
+
+  // Full optional allowance at 75%, none at 95%. The headroom cap also
+  // protects small context windows. This does not trigger compaction or
+  // change the source payload/budget of the secondary review.
+  const scale = Math.max(0, (0.95 - estimate.tokens / estimate.contextWindow) / 0.2);
+  let remaining = Math.floor(
+    Math.min(
+      Math.max(0, maxTokens - estimateTokens(mandatory)) * scale,
+      Math.max(0, estimate.contextWindow - estimate.tokens) * 0.05,
+    ),
+  );
+  const selected: string[] = [];
+  for (const tag of ["project_knowledge", "advisor_notes", "design_rules", "project_conventions"]) {
+    let content = sections.get(tag);
+    if (!content) continue;
+    const wrapperTokens = estimateTokens(`<${tag}>\n\n</${tag}>\n\n`);
+    if (tag === "project_knowledge") content = truncateFacts(content, Math.max(0, remaining - wrapperTokens));
+    if (!content) continue;
+    const section = `<${tag}>\n${content}\n</${tag}>\n\n`;
+    const tokens = estimateTokens(section);
+    if (tokens > remaining) continue;
+    selected.push(section);
+    remaining -= tokens;
+  }
+  return mandatory.replace("</wai_context>", `${selected.join("")}</wai_context>`);
+}
+
 export function registerContextInjector(pi: ExtensionAPI): void {
   pi.on("context", (event: ContextEvent, ctx) => {
     const config = loadYoowaiConfig(ctx.cwd);
@@ -269,6 +328,13 @@ export function registerContextInjector(pi: ExtensionAPI): void {
     if (!block) return;
 
     const maxTokens = config.contextInjectMaxTokens ?? 800;
+    let usage: unknown;
+    try {
+      usage = ctx.getContextUsage?.();
+    } catch {
+      // A host UI/context estimate failure must not remove workflow guidance.
+    }
+    block = adaptOptionalContext(block, maxTokens, usage);
     block = truncateBlock(block, maxTokens);
 
     // Prefer the last user message with string content.

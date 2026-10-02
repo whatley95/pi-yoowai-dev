@@ -1,11 +1,18 @@
 import { readFileSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { relative, sep } from "node:path";
 import { logEvent } from "./logger.js";
 import { parseJsonResponse } from "./prompts.js";
 import { runPreReviewCommands } from "./pre-review.js";
-import { resolveProjectPath } from "./path-security.js";
+import { isSafeRelativePath, resolveProjectPath } from "./path-security.js";
 import { listTrackedFiles } from "./conventions.js";
 import { mergeUsageCost } from "./actions/shared.js";
+import {
+  dispatchNativeReadTool,
+  getNativeReadToolNames,
+  hasNativeReadTools,
+  type NativeReadResult,
+} from "./integration/read-tools.js";
 import type { CallSecondaryModelOptions, UsageCost } from "./types.js";
 
 export interface ToolRequest {
@@ -33,6 +40,8 @@ const MAX_TOOL_FILE_BYTES = 100 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 4000;
 const MAX_BATCH_READS = 4;
 const MAX_SEARCH_MATCHES = 50;
+const MAX_NATIVE_SEARCH_FILES = 32;
+const MAX_NATIVE_SEARCH_GLOB_CHARS = 2000;
 // Guardrails for the model-generated search pattern: length cap, and a
 // nested-quantifier heuristic for catastrophic-backtracking shapes like
 // (a+)+ or (\w+\s?)+ — a group that contains a quantifier and is itself
@@ -49,6 +58,9 @@ const MAX_SEARCH_LINE_CHARS = 10_000;
 const NESTED_QUANTIFIER_RE = /\([^)]*[+*{][^)]*\)\s*[+*{]/;
 
 function buildToolInstruction(maxIterations: number): string {
+  const nativeTools = getNativeReadToolNames();
+  const reads = nativeTools === undefined || nativeTools.includes("read");
+  const searches = nativeTools === undefined || nativeTools.includes("grep");
   const batchExample = JSON.stringify({
     tools: [
       { tool: "read_file", path: "src/component.ts" },
@@ -57,13 +69,12 @@ function buildToolInstruction(maxIterations: number): string {
   });
   return `You may request additional context before producing your final structured JSON result. To request context, output a single JSON block exactly like one of these examples and nothing else:
 
-{"tool": "read_file", "path": "relative/path/to/file.ts"}
-{"tool": "read_file", "path": "relative/path/to/file.ts", "startLine": 100, "endLine": 200}
-${batchExample}
-{"tool": "search_code", "pattern": "functionName\\\\(", "path": "src", "contextLines": 2}
+${reads ? `{"tool": "read_file", "path": "relative/path/to/file.ts"}\n{"tool": "read_file", "path": "relative/path/to/file.ts", "startLine": 100, "endLine": 200}\n${batchExample}\n` : ""}${searches ? '{"tool": "search_code", "pattern": "functionName\\\\(", "path": "src", "contextLines": 2}\n' : ""}
 {"tool": "run_command", "command": "npm run typecheck"}
 
 read_file accepts optional startLine/endLine (1-based, inclusive) and offset (zero-based characters within that range) to page through large files. Follow the exact next-page request in a truncated result; it preserves absolute line numbers and does not repeat the first page. Batch up to ${Math.min(MAX_BATCH_READS, maxIterations)} read_file requests in a tools array when you already know which files you need. Each read counts against the same request allowance. Use the diff, file contents, and previous tool results already provided before requesting more context; repeated identical reads add no evidence unless the file changes. search_code finds regex matches across project files (path is an optional file/directory scope, contextLines is 0-5 of surrounding lines per match). run_command accepts ONE allowlisted command without shell operators: no semicolons, pipes, &&, substitutions, grep, or ls. Use search_code/read_file for source inspection. It blocks destructive subcommands (push/reset/publish/…); for git, use "<command> -h" for terminal usage — full help ("--help" or "git help …") is rejected because it can open an external viewer (a browser on Windows).
+
+${reads ? "" : "read_file is unavailable: Pi has no callable read tool in this session. Do not request it.\n"}${searches ? "" : "search_code is unavailable: Pi has no callable grep tool in this session. Do not request it.\n"}${nativeTools === undefined ? "" : "Pi controls the availability of reads and searches. Never bypass an unavailable or blocked operation with commands or another reader. Use the evidence already supplied, request permitted missing context, or report that required evidence is unavailable.\n"}
 
 You may make up to ${maxIterations} such request(s). After each request, the tool result will be appended to this conversation. Once you have enough context, produce the final structured JSON result requested below. Do not output explanatory text with a tool request. If no additional context is needed, produce the final JSON result immediately.`;
 }
@@ -144,12 +155,54 @@ function truncateCommandOutput(text: string): string {
   return `${text.slice(0, headChars)}\n… (${elided} chars elided) …\n${text.slice(-tailChars)}`;
 }
 
-function readFileTool(cwd: string, path: string, startLine?: number, endLine?: number, offset?: number): ToolResult {
+function pageNativeRead(result: NativeReadResult, request: ToolRequest): ToolResult {
+  if (result.error) return { output: "", error: truncateCommandOutput(result.error) };
+  const truncation = result.details?.truncation as
+    { truncated?: boolean; outputLines?: number; firstLineExceedsLimit?: boolean } | undefined;
+  if (truncation?.firstLineExceedsLimit)
+    return { output: "", error: "Pi read could not return this oversized line. Required context is incomplete." };
+  const offset = Math.min(request.offset ?? 0, result.output.length);
+  let output = result.output.slice(offset, offset + MAX_TOOL_OUTPUT_CHARS);
+  // Native output may include host annotations. Page by characters in that
+  // exact response, rather than treating annotations as source line numbers.
+  if (/[\uD800-\uDBFF]$/.test(output)) output = output.slice(0, -1);
+  if (offset + output.length < result.output.length) {
+    const next = { ...request, offset: offset + output.length };
+    output += `\n… (Pi read output truncated; next page: ${JSON.stringify(next)})`;
+  } else if (truncation?.truncated) {
+    if (!Number.isSafeInteger(truncation.outputLines) || (truncation.outputLines ?? 0) <= 0)
+      return { output, error: "Pi read returned incomplete context. Narrow the requested line range." };
+    const next = { ...request, startLine: (request.startLine ?? 1) + truncation.outputLines! };
+    delete next.offset;
+    output += `\n… (Pi read source truncated; next page: ${JSON.stringify(next)})`;
+  }
+  return {
+    output: `[${request.path}: Pi read from line ${request.startLine ?? 1}; output offset ${offset}]\n${output}`,
+  };
+}
+
+async function readFileTool(cwd: string, request: ToolRequest, signal?: AbortSignal): Promise<ToolResult> {
+  const { path, startLine, endLine, offset } = request;
+  if (!path) return { output: "", error: "read_file requires a path" };
   const safePath = resolveProjectPath(cwd, path);
   if (!safePath) {
     return { output: "", error: `Path is not allowed: ${path}` };
   }
   try {
+    let nativeStart = Math.max(1, Math.floor(startLine ?? 1));
+    let nativeEnd = endLine === undefined ? undefined : Math.max(1, Math.floor(endLine));
+    if (nativeEnd !== undefined && nativeStart > nativeEnd) [nativeStart, nativeEnd] = [nativeEnd, nativeStart];
+    const native = await dispatchNativeReadTool(
+      cwd,
+      "read",
+      {
+        path: safePath,
+        offset: nativeStart,
+        ...(nativeEnd === undefined ? {} : { limit: nativeEnd - nativeStart + 1 }),
+      },
+      signal,
+    );
+    if (native) return pageNativeRead(native, { ...request, startLine: nativeStart, endLine: nativeEnd });
     const content = readFileSync(safePath, "utf-8");
     const lines = content.split(/\r?\n/);
     // Clamp to file bounds; swap when inverted. Non-finite values were
@@ -177,10 +230,98 @@ async function runCommandTool(cwd: string, command: string, signal?: AbortSignal
   }
 }
 
+/** Exact approved paths share a bounded glob, so broad searches do not spawn
+ * one host grep per file. Resolve every candidate first, including junctions;
+ * glob escaping prevents a filename from broadening the allowlist. */
+async function searchNativeFiles(
+  cwd: string,
+  files: string[],
+  request: ToolRequest,
+  signal?: AbortSignal,
+): Promise<ToolResult> {
+  const batches: { paths: string[]; globs: string[] }[] = [];
+  try {
+    for (const file of files) {
+      signal?.throwIfAborted();
+      const path = resolveProjectPath(cwd, file);
+      if (!path) continue;
+      const stat = statSync(path);
+      if (!stat.isFile() || stat.size > MAX_TOOL_FILE_BYTES) continue;
+      // Pi's local grep inherits process.cwd(); replacement tools can use
+      // the session root. Include their exact spellings without wildcards.
+      const fromProcess = relative(process.cwd(), path);
+      const spellings = new Set([relative(cwd, path), isSafeRelativePath(fromProcess) ? fromProcess : path]);
+      if (path.startsWith("/")) spellings.add(path.slice(1));
+      const glob = [...spellings]
+        .map((spelling) =>
+          spelling
+            .split(sep)
+            .join("/")
+            .replace(/[\\*?[\]{},]/g, "\\$&"),
+        )
+        .join(",");
+      let batch = batches.at(-1);
+      if (
+        !batch ||
+        batch.paths.length >= MAX_NATIVE_SEARCH_FILES ||
+        batch.globs.join(",").length + glob.length >= MAX_NATIVE_SEARCH_GLOB_CHARS
+      ) {
+        batch = { paths: [], globs: [] };
+        batches.push(batch);
+      }
+      batch.paths.push(path);
+      batch.globs.push(glob);
+    }
+  } catch (error) {
+    signal?.throwIfAborted();
+    return { output: "", error: error instanceof Error ? error.message : String(error) };
+  }
+  let output = "";
+  let matches = 0;
+  for (const batch of batches) {
+    signal?.throwIfAborted();
+    const native = await dispatchNativeReadTool(
+      cwd,
+      "grep",
+      {
+        pattern: request.pattern,
+        path: batch.paths.length === 1 ? batch.paths[0] : resolveProjectPath(cwd, "."),
+        ...(batch.paths.length === 1 ? {} : { glob: `/{${batch.globs.join(",")}}` }),
+        context: request.contextLines ?? 1,
+        limit: MAX_SEARCH_MATCHES - matches,
+      },
+      signal,
+    );
+    if (!native || native.error)
+      return { output, error: truncateCommandOutput(native?.error ?? "Pi grep context unavailable.") };
+    if (native.output.trim() === "No matches found") continue;
+    const label = batch.paths.length === 1 ? relative(cwd, batch.paths[0]) : `${batch.paths.length} approved files`;
+    output += `[Pi grep: ${label}]\n${native.output}\n`;
+    matches += Math.max(1, (native.output.match(/^.+:\d+: /gm) ?? []).length);
+    if (
+      matches >= MAX_SEARCH_MATCHES ||
+      native.details?.matchLimitReached ||
+      (native.details?.truncation as { truncated?: boolean } | undefined)?.truncated ||
+      output.length >= MAX_TOOL_OUTPUT_CHARS
+    ) {
+      output = "… (search incomplete; match/output limit reached — narrow the pattern or path)\n" + output;
+      break;
+    }
+  }
+  if (!output) return { output: `No matches for /${request.pattern}/ in ${files.length} file(s).` };
+  return {
+    output:
+      output.length > MAX_TOOL_OUTPUT_CHARS
+        ? output.slice(0, MAX_TOOL_OUTPUT_CHARS) +
+          "\n… (search results truncated; narrow the pattern or path to inspect more matches)"
+        : output,
+  };
+}
+
 /** Regex search across project files (git-tracked or the portable fallback scan).
  *  Returns file:line hits with ±contextLines of surrounding content, capped at
  *  MAX_SEARCH_MATCHES matches and MAX_TOOL_OUTPUT_CHARS total output. */
-function searchCodeTool(cwd: string, request: ToolRequest): ToolResult {
+async function searchCodeTool(cwd: string, request: ToolRequest, signal?: AbortSignal): Promise<ToolResult> {
   const pattern = request.pattern;
   if (!pattern) return { output: "", error: "search_code requires a pattern" };
   if (pattern.length > MAX_SEARCH_PATTERN_CHARS) {
@@ -222,11 +363,13 @@ function searchCodeTool(cwd: string, request: ToolRequest): ToolResult {
   } else {
     files = listTrackedFiles(cwd);
   }
+  if (hasNativeReadTools()) return searchNativeFiles(cwd, files, request, signal);
 
   const out: string[] = [];
   let matches = 0;
   let stoppedEarly = false;
   for (const file of files) {
+    signal?.throwIfAborted();
     if (matches >= MAX_SEARCH_MATCHES) {
       stoppedEarly = true;
       break;
@@ -257,6 +400,7 @@ function searchCodeTool(cwd: string, request: ToolRequest): ToolResult {
         }
       }
     } catch {
+      signal?.throwIfAborted();
       // Unreadable file — skip it.
     }
   }
@@ -275,11 +419,10 @@ function searchCodeTool(cwd: string, request: ToolRequest): ToolResult {
 
 async function executeTool(cwd: string, request: ToolRequest, signal?: AbortSignal): Promise<ToolResult> {
   if (request.tool === "read_file") {
-    if (!request.path) return { output: "", error: "read_file requires a path" };
-    return readFileTool(cwd, request.path, request.startLine, request.endLine, request.offset);
+    return readFileTool(cwd, request, signal);
   }
   if (request.tool === "search_code") {
-    return searchCodeTool(cwd, request);
+    return searchCodeTool(cwd, request, signal);
   }
   if (request.tool === "run_command") {
     if (!request.command) return { output: "", error: "run_command requires a command" };
@@ -340,6 +483,7 @@ export async function executeToolLoop(
   let used = 0;
   let modelCalls = 0;
   const reads = new Map<string, { stamp: string; result: ToolResult; iteration: number }>();
+  const nativeReads = new Map<string, { output: string; iteration: number }>();
 
   while (used <= maxToolIterations) {
     const finalOnly = used >= maxToolIterations;
@@ -445,21 +589,37 @@ export async function executeToolLoop(
       logEvent(cwd, "info", "Tool loop request", detail);
       const toolStarted = Date.now();
       const key = JSON.stringify(request);
-      const stamp = request.tool === "read_file" ? fileStamp(cwd, request.path) : undefined;
-      const previous = stamp && reads.get(key);
-      const reused = previous && previous.stamp === stamp;
-      const result = reused
+      // Local metadata cannot prove freshness for a host-overridden reader.
+      const nativeRead = request.tool === "read_file" && hasNativeReadTools();
+      const stamp = request.tool === "read_file" && !nativeRead ? fileStamp(cwd, request.path) : undefined;
+      const previous = stamp ? reads.get(key) : undefined;
+      const cached = previous && previous.stamp === stamp ? previous : undefined;
+      let reused = !!cached;
+      let result = cached
         ? {
-            output: `The unchanged file/range was already returned in context request ${previous.iteration}. Use that result above; request a different range if you need missing lines.`,
+            output: `The unchanged file/range was already returned in context request ${cached.iteration}. Use that result above; request a different range if you need missing lines.`,
           }
         : await executeTool(cwd, request, options.signal);
       options.signal?.throwIfAborted();
+      // Native reads must execute again for host policy and source freshness.
+      // After approval, identical bounded output can refer to its earlier
+      // prompt entry without repeating the source payload or model tokens.
+      if (nativeRead && !result.error) {
+        const earlier = nativeReads.get(key);
+        if (earlier?.output === result.output) {
+          reused = true;
+          result = {
+            output: `The same approved Pi read output was already returned in context request ${earlier.iteration}. Use that result above; request a different range for missing evidence.`,
+          };
+        } else nativeReads.set(key, { output: result.output, iteration: used });
+      }
       if (stamp && !reused && !result.error && fileStamp(cwd, request.path) === stamp)
         reads.set(key, { stamp, result, iteration: used });
       logEvent(cwd, "info", "Tool loop result", {
         ...detail,
         elapsedMs: Date.now() - toolStarted,
         reused: !!reused,
+        nativeRead,
         error: result.error,
         outputLength: result.output.length,
       });

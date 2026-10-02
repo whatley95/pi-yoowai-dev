@@ -90,3 +90,27 @@ the implemented UI; inspect or capture the real UI separately.
 
 The new contracts and workflows have deterministic compatibility tests. They do
 not establish live-model accuracy equivalence or a measured review speedup.
+
+## Native review context and memory pressure
+
+When a wai tool runs on a host with `ctx.executeTool()`, its secondary context
+requests use Pi's callable `read` and `grep` tools. Pi can apply its tool hooks,
+permissions, cancellation, and nested-call tracing to those operations. Wai
+validates project paths and search candidates, bounds exact-path search batches
+and outputs, and supplies JSON paging requests. The reviewer prompt advertises
+only callable reads/searches; Pi's default active tool set may omit `grep`.
+A host denial or disabled tool
+requires correcting the host configuration; it never triggers a local-reader
+fallback. Slash commands, automatic actions, and older hosts use the local
+reader. Repeated native reads still execute Pi's policy hooks; when their
+approved bounded output is identical, the model prompt references the earlier
+entry instead of repeating the source. Model-generated commands keep wai's
+existing allowlist.
+
+Main-agent memory injection uses Pi's estimated context usage when available.
+Optional facts, advisor notes, design rules, and conventions shrink above 75%
+utilization and are omitted at 95%. Plan/workflow/language/VCS guidance and
+selected fresh decisions keep priority within `contextInjectMaxTokens`. Unknown
+usage after compaction retains the configured behavior. This changes optional
+main-agent context only; it does not reduce review evidence, advance the plan,
+or trigger compaction.

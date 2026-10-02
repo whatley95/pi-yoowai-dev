@@ -5,6 +5,7 @@ import { beginSessionWork } from "./session-work.js";
 import { getNativeOutputSchema } from "../native-output-schemas.js";
 import { compactToolMetadata } from "../tool-guidance.js";
 import { supportsCompactToolGuidance } from "./host-capabilities.js";
+import { withNativeReadTools } from "./read-tools.js";
 
 const usageScopes = new AsyncLocalStorage<{ usage?: Usage }>();
 const mutableTools = new Set([
@@ -73,7 +74,9 @@ export function createNativeToolRegistrar(
         const run = () =>
           usageScopes.run({}, async () => {
             work.signal.throwIfAborted();
-            const result = await definition.execute(id, params, work.signal, update, ctx);
+            const result = await withNativeReadTools(ctx, () =>
+              definition.execute(id, params, work.signal, update, ctx),
+            );
             work.signal.throwIfAborted();
             const usage = usageScopes.getStore()?.usage;
             // Normalize optional undefined fields to JSON before crossing Pi's

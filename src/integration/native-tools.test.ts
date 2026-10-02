@@ -8,6 +8,7 @@ import { Type } from "@sinclair/typebox";
 import { createNativeToolRegistrar, reportNativeUsage } from "./native-tools.js";
 import { cancelSessionWork } from "./session-work.js";
 import { executeWaiIndex } from "../wai-index.js";
+import { dispatchNativeReadTool } from "./read-tools.js";
 
 function fixture(cwd: string, compactGuidance = false) {
   const definitions: ToolDefinition[] = [];
@@ -36,6 +37,35 @@ const usage = (): Usage => ({
   cacheWrite: 4,
   totalTokens: 19,
   cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 },
+});
+
+it("scopes native reviewer reads to the registered wai invocation and releases the context afterward", async () => {
+  const f = fixture("native-read-scope");
+  const ctx = {
+    ...f.ctx,
+    tools: [{ name: "read" }],
+    executeTool: async (name: string) => {
+      assert.equal(name, "read");
+      return { isError: false, result: { content: [{ type: "text", text: "host context" }] } };
+    },
+  } as unknown as typeof f.ctx;
+  f.register({
+    name: "wai",
+    label: "wai",
+    description: "read scope",
+    parameters: Type.Object({}),
+    execute: async () => {
+      const result = await dispatchNativeReadTool(f.ctx.cwd, "read", { path: "src/file.ts" });
+      assert.equal(result?.output, "host context");
+      return { content: [], details: { action: "review" } };
+    },
+  });
+  try {
+    await f.definitions[0].execute("scope", {}, undefined, undefined, ctx);
+    assert.equal(await dispatchNativeReadTool(f.ctx.cwd, "read", {}), undefined);
+  } finally {
+    cancelSessionWork(f.ctx.cwd);
+  }
 });
 
 it("reads verdicts and errors through Pi's real codemode sandbox", { timeout: 30000 }, async (t) => {
