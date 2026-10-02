@@ -3,10 +3,12 @@ import { buildReviewEvidencePack } from "./evidence-pack.js";
 import { callSecondaryModel } from "../secondary-model.js";
 import { ToolLoopCoverageError } from "../tool-loop.js";
 import { resolveReviewToolContext } from "./review-tool-context.js";
+import { additionContainsSource } from "./review-chunks.js";
 import { logEvent } from "../logger.js";
+import { emptyRecordedUsage } from "../cost-tracker.js";
+import { splitDiffByFile } from "../diff-grabber.js";
 import {
   buildAdaptiveReviewPrompt,
-  formatReviewAssignment,
   validateReviewResult,
   getReviewValidationErrors,
   salvageReviewFromMarkdown,
@@ -21,6 +23,7 @@ import type {
   ReviewVerdict,
   SecondaryModelConfig,
   UsageCost,
+  ReviewExecution,
 } from "../types.js";
 import { STAGES, secondaryModelLabel, parseStructuredResult, createStreamProgressCallback } from "./shared.js";
 
@@ -217,6 +220,59 @@ export interface ReviewBatchInput {
   allowAdaptiveToolContext?: boolean;
 }
 
+function batchPrompt(
+  input: ReviewBatchInput,
+  diff: string,
+  files = input.files,
+  evidencePack = "",
+  omitted = input.omittedFileContents,
+) {
+  return buildAdaptiveReviewPrompt(input.description, diff, files, {
+    vcs: input.vcs,
+    criteria: input.criteria,
+    currentStep: input.currentStep,
+    sessionContext: input.sessionContext,
+    conventionsText: input.conventionsText,
+    preReviewOutput: input.preReviewOutput,
+    memoryContext: input.memoryContext,
+    decisionsText: input.decisionsContext,
+    priorRoundContext: input.priorRoundContext,
+    relatedContext: input.relatedContext,
+    codemap: input.codemap,
+    evidencePack,
+    designRefText: input.designRefText,
+    instructionsText: input.instructionsText,
+    truncated: input.truncated,
+    droppedFiles: input.droppedFiles,
+    omittedFileContents: omitted,
+    budgetNote: `Context window: ${input.budget.contextWindow.toLocaleString()} tokens. Reserved output: ${input.budget.reservedOutputTokens.toLocaleString()}.`,
+    nativeJson: input.nativeJson,
+    focusFiles: input.focusFiles,
+    levelInstructions: input.levelInstructions,
+    assignment: input.assignment,
+  });
+}
+
+export function reviewPromptLimit(input: ReviewBatchInput): number {
+  return Math.max(
+    0,
+    Math.min(
+      input.budget.hardInputCap ?? Infinity,
+      input.budget.contextWindow - input.budget.reservedOutputTokens - input.budget.safetyMarginTokens,
+    ),
+  );
+}
+
+/** Measure the actual fixed prompt, including optional guidance and tool
+ * instructions, before assigning any diff. File contents yield to patches. */
+export function reviewDiffAllowance(input: ReviewBatchInput): number {
+  const base = batchPrompt(input, "", [], "", []);
+  return Math.max(
+    0,
+    reviewPromptLimit(input) - estimateTokens(base.system + base.user) - (input.enableToolLoop ? 1200 : 0) - 256,
+  );
+}
+
 export async function runReviewBatch(input: ReviewBatchInput): Promise<{
   review: ReviewResult;
   usage: UsageCost;
@@ -224,116 +280,115 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
   user: string;
   rounds?: number;
   truncated: boolean;
+  execution?: ReviewExecution;
 }> {
   const {
     cwd,
-    description,
-    files,
     diff,
-    vcs,
-    criteria,
-    currentStep,
-    sessionContext,
-    conventionsText,
-    preReviewOutput,
-    memoryContext,
-    decisionsContext,
-    priorRoundContext,
-    relatedContext,
-    codemap,
-    designRefText,
-    instructionsText,
-    truncated,
-    droppedFiles,
     budget,
     modelConfig,
     signal,
     sessionManager,
     relevantPaths,
     progress,
-    nativeJson,
     enableToolLoop,
     maxToolIterations,
-    focusFiles,
     evidencePackMaxTokens,
   } = input;
 
-  const systemPromptEstimate = 1000;
-  // The codemap, design rules, and evidence pack are counted within the input
-  // budget but yield to file contents: each is deducted from what remains for
-  // the diff, after files. The evidence pack also yields to codemap/design
-  // rules (its budget is capped by what those leave over).
-  const fileTokens = files.reduce((sum, f) => sum + f.tokenEstimate, 0);
-  const otherUsed =
-    estimateTokens(codemap ?? "") +
-    estimateTokens(designRefText ?? "") +
-    estimateTokens(instructionsText ?? "") +
-    estimateTokens(priorRoundContext ?? "") +
-    estimateTokens(decisionsContext ?? "") +
-    estimateTokens(relatedContext ?? "") +
-    estimateTokens(formatReviewAssignment(input.assignment)) +
-    estimateTokens((input.omittedFileContents ?? []).join(", "));
-  const maxPackTokens = evidencePackMaxTokens ?? 1200;
+  const byFile = splitDiffByFile(diff, input.vcs as "git" | "svn" | undefined);
+  let files = input.files.filter(
+    (file) => input.truncated || !additionContainsSource(byFile[file.file] ?? diff, file.content),
+  );
+  const duplicateSourceFiles = input.files.length - files.length;
+  const omitted = new Set(input.omittedFileContents ?? []);
+  if (input.truncated) {
+    return {
+      review: {
+        verdict: "needs-work",
+        issues: [],
+        suggestions: [
+          "The captured diff is truncated. Obtain its complete patch before spending another model review request.",
+        ],
+        consensus: false,
+        contextLimited: true,
+        inputIncomplete: true,
+        coverageGaps: relevantPaths,
+        stepComplete: false,
+        completedSteps: 0,
+      },
+      usage: emptyRecordedUsage(cwd),
+      system: "",
+      user: "",
+      rounds: 0,
+      truncated: true,
+    };
+  }
+  const limit = reviewPromptLimit(input) - (enableToolLoop ? 1200 : 0);
+  let prompt = batchPrompt(input, diff, files, "", [...omitted]);
+  while (estimateTokens(prompt.system + prompt.user) > limit && files.length) {
+    const largest = files.reduce(
+      (best, file, index) => (file.tokenEstimate > files[best].tokenEstimate ? index : best),
+      0,
+    );
+    omitted.add(files[largest].file);
+    files = files.filter((_, index) => index !== largest);
+    prompt = batchPrompt(input, diff, files, "", [...omitted]);
+  }
+  // Never spend a provider request on a locally known partial patch.
+  if (estimateTokens(prompt.system + prompt.user) > limit) {
+    return {
+      review: {
+        verdict: "needs-work",
+        issues: [],
+        suggestions: [
+          "Complete review evidence cannot fit this batch. Split the diff or use a larger-context model before retrying.",
+        ],
+        consensus: false,
+        contextLimited: true,
+        inputIncomplete: true,
+        coverageGaps: relevantPaths,
+        stepComplete: false,
+        completedSteps: 0,
+      },
+      usage: emptyRecordedUsage(cwd),
+      system: prompt.system,
+      user: prompt.user,
+      rounds: 0,
+      truncated: input.truncated,
+    };
+  }
   const packBudget = Math.max(
     0,
-    Math.min(maxPackTokens, budget.availableInputTokens - systemPromptEstimate - fileTokens - otherUsed),
+    Math.min(evidencePackMaxTokens ?? 1200, limit - estimateTokens(prompt.system + prompt.user) - 256),
   );
-  const evidencePack = buildReviewEvidencePack(cwd, {
+  const evidenceText = buildReviewEvidencePack(cwd, {
     budgetTokens: packBudget,
-    changedFiles: [...new Set(relevantPaths ?? files.map((f) => f.file))],
+    changedFiles: [...new Set(relevantPaths)],
+  }).text;
+  const withPack = batchPrompt(input, diff, files, evidenceText, [...omitted]);
+  if (estimateTokens(withPack.system + withPack.user) <= limit) prompt = withPack;
+  const { system, user } = prompt;
+  const finalDiff = diff;
+  const fileTokens = files.reduce((sum, file) => sum + file.tokenEstimate, 0);
+  const otherUsed = [
+    input.codemap,
+    input.designRefText,
+    input.instructionsText,
+    input.priorRoundContext,
+    input.decisionsContext,
+    input.relatedContext,
+  ].reduce((sum, text) => sum + estimateTokens(text ?? ""), 0);
+  logEvent(cwd, "info", "Review prompt prepared", {
+    files: relevantPaths,
+    promptTokens: estimateTokens(system + user),
+    inputLimit: limit,
+    diffTokens: estimateTokens(diff),
+    suppliedFileTokens: fileTokens,
+    omittedFileContents: [...omitted],
+    duplicateSourceFiles,
+    reservedOutputTokens: budget.reservedOutputTokens,
   });
-  const evidenceText = evidencePack.text;
-  const remainingForDiff = Math.max(
-    0,
-    budget.availableInputTokens - fileTokens - systemPromptEstimate - otherUsed - estimateTokens(evidenceText),
-  );
-  const diffTokens = estimateTokens(diff);
-  const diffTruncationNote = "\n... diff truncated";
-  let finalDiff = diff;
-  let diffTruncated = truncated;
-  if (diffTokens > remainingForDiff) {
-    // Truncation required: reserve the note; if even the note does not fit,
-    // emit only the largest content slice (or an empty diff).
-    const noteTokens = estimateTokens(diffTruncationNote);
-    const contentBudget = Math.max(0, remainingForDiff - noteTokens);
-    if (contentBudget === 0) {
-      finalDiff = noteTokens <= remainingForDiff ? diffTruncationNote : "";
-    } else {
-      finalDiff = diff.slice(0, contentBudget * 4) + diffTruncationNote;
-    }
-    diffTruncated = true;
-  }
-
-  const { system, user } = buildAdaptiveReviewPrompt(
-    description,
-    finalDiff,
-    files.map((f) => ({ file: f.file, content: f.content, mode: f.mode })),
-    {
-      vcs,
-      criteria,
-      currentStep,
-      sessionContext,
-      conventionsText,
-      preReviewOutput,
-      memoryContext,
-      decisionsText: decisionsContext,
-      priorRoundContext,
-      relatedContext,
-      codemap,
-      evidencePack: evidenceText,
-      designRefText,
-      instructionsText,
-      truncated: diffTruncated,
-      droppedFiles,
-      omittedFileContents: input.omittedFileContents,
-      budgetNote: `Context window: ${budget.contextWindow.toLocaleString()} tokens. Reserved output: ${budget.reservedOutputTokens.toLocaleString()}. Available for context: ${budget.availableInputTokens.toLocaleString()}.`,
-      nativeJson,
-      focusFiles,
-      levelInstructions: input.levelInstructions,
-      assignment: input.assignment,
-    },
-  );
-
   progress?.(8, STAGES.review, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const toolContext = enableToolLoop
     ? resolveReviewToolContext({
@@ -355,6 +410,16 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       adaptive: input.allowAdaptiveToolContext === true,
     });
   let response: Awaited<ReturnType<typeof callSecondaryModel>>;
+  const execution: ReviewExecution = {
+    batches: 1,
+    segments: input.assignment?.hunk ? 1 : 0,
+    modelCalls: 0,
+    contextRequests: 0,
+    modelTimeMs: 0,
+    contextTimeMs: 0,
+    verificationTimeMs: 0,
+  };
+  const started = Date.now();
   try {
     response = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
       signal,
@@ -370,9 +435,31 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       secondaryOverride: modelConfig,
       structuredOutput: true,
       onStreamProgress: progress ? createStreamProgressCallback(progress, 8, STAGES.review) : undefined,
+      onStreamPhase: progress
+        ? (phase) =>
+            progress(
+              8,
+              STAGES.review,
+              `${relevantPaths.join(", ")}: ${phase === "thinking" ? "model is reasoning" : "model is writing the review"}…`,
+            )
+        : undefined,
       enableToolLoop,
       maxToolIterations,
       ...toolContext,
+      onToolLoopEvent: (event) => {
+        if (event.phase === "model") {
+          execution.modelCalls++;
+          execution.modelTimeMs += event.elapsedMs;
+        } else {
+          execution.contextRequests++;
+          execution.contextTimeMs += event.elapsedMs;
+          progress?.(
+            8,
+            STAGES.review,
+            `${relevantPaths.join(", ")}: context request ${execution.contextRequests} completed…`,
+          );
+        }
+      },
     });
   } catch (error) {
     if (!(error instanceof ToolLoopCoverageError)) throw error;
@@ -391,16 +478,21 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
         coverageGaps: error.coverageGaps.length ? error.coverageGaps : relevantPaths,
         stepComplete: false,
         completedSteps: 0,
-        omittedFileContents: input.omittedFileContents,
+        omittedFileContents: [...omitted],
       },
       usage: error.usage,
       system,
       user,
       rounds: 0,
       truncated: false,
+      execution,
     };
   }
   const { content: raw, usage, rounds, truncated: modelTruncated } = response;
+  if (!execution.modelCalls) {
+    execution.modelCalls = 1 + (rounds ?? 0);
+    execution.modelTimeMs = Date.now() - started;
+  }
 
   const review = parseStructuredResult(cwd, raw, {
     label: "Review",
@@ -416,8 +508,8 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
   if (!review) {
     throw new Error("Failed to parse review from secondary model response.");
   }
-  const omissions = Array.from(new Set([...(input.omittedFileContents ?? []), ...(review.omittedFileContents ?? [])]));
+  const omissions = Array.from(new Set([...[...omitted], ...(review.omittedFileContents ?? [])]));
   if (omissions.length) review.omittedFileContents = omissions;
 
-  return { review, usage, system, user, rounds, truncated: modelTruncated ?? false };
+  return { review, usage, system, user, rounds, truncated: modelTruncated ?? false, execution };
 }

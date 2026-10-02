@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReviewBatch, type ReviewBatchInput } from "./review-helpers.js";
+import { runReviewBatch, reviewDiffAllowance, type ReviewBatchInput } from "./review-helpers.js";
+import { estimateTokens } from "../token-budget.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import { getSessionCost, recordCost } from "../cost-tracker.js";
 import type { SecondaryModelConfig } from "../types.js";
@@ -87,6 +88,35 @@ function mockModel(answer: (system: string, user: string) => unknown): void {
 }
 
 describe("review batch evidence recovery", () => {
+  it("supplies a complete identical addition once, retaining its full patch and source tail", async () => {
+    const input = setup();
+    const content = "UNIQUE_SOURCE_MARKER\n";
+    input.diff = "diff --git a/new.kt b/new.kt\n--- /dev/null\n+++ b/new.kt\n@@ -0,0 +1 @@\n+UNIQUE_SOURCE_MARKER\n";
+    input.files = [{ file: "new.kt", content, mode: "full", lineCount: 1, tokenEstimate: estimateTokens(content) }];
+    input.enableToolLoop = false;
+    mockModel((_system, user) => {
+      assert.ok(user.includes(input.diff));
+      assert.equal(user.match(/UNIQUE_SOURCE_MARKER/g)?.length, 1);
+      return { verdict: "pass", issues: [], suggestions: [], consensus: true };
+    });
+    assert.equal((await runReviewBatch(input)).review.verdict, "pass");
+  });
+  it("measures developer guidance before admitting a complete diff", async () => {
+    const input = setup();
+    input.enableToolLoop = false;
+    const before = reviewDiffAllowance(input);
+    input.instructionsText = "DEVELOPER_GUIDANCE ".repeat(1000);
+    assert.ok(reviewDiffAllowance(input) < before);
+    input.budget.hardInputCap = 1200;
+    let calls = 0;
+    mockModel(() => {
+      calls++;
+      return { verdict: "pass", issues: [], suggestions: [], consensus: true };
+    });
+    const result = await runReviewBatch(input);
+    assert.equal(calls, 0);
+    assert.equal(result.review.inputIncomplete, true);
+  });
   it("reads a 55 KB missing file in complete pages while the 8 KB captured diff is already free", async () => {
     const input = setup();
     const source = "LOCK_START_" + "x".repeat(55_290) + "_LOCK_END";
@@ -119,8 +149,10 @@ describe("review batch evidence recovery", () => {
       source,
       "all source characters including the tail were supplied without gaps or repeats",
     );
-    assert.equal(pages.length, 4);
-    assert.equal(calls, 5);
+    assert.equal(pages.length, 1);
+    assert.equal(calls, 2);
+    assert.equal(result.execution?.modelCalls, 2);
+    assert.equal(result.execution?.contextRequests, 1);
     assert.equal(result.review.verdict, "pass");
     recordCost(input.cwd, result.usage);
     assert.equal(getSessionCost(input.cwd).calls, calls);
@@ -150,7 +182,7 @@ describe("review batch evidence recovery", () => {
     assert.equal(getSessionCost(input.cwd).inputTokens, 200);
   });
 
-  it("preserves the missing path when additional evidence cannot fit the configured input cap", async () => {
+  it("rejects an impossible configured prompt cap before any provider request", async () => {
     const input = setup();
     input.budget.hardInputCap = 1200;
     let calls = 0;
@@ -159,11 +191,11 @@ describe("review batch evidence recovery", () => {
       return { tool: "read_file", path: "pubspec.yaml" };
     });
     const result = await runReviewBatch(input);
-    assert.equal(calls, 1);
+    assert.equal(calls, 0);
     assert.equal(result.review.contextLimited, true);
-    assert.deepEqual(result.review.coverageGaps, ["pubspec.yaml"]);
-    assert.match(result.review.suggestions[0], /input allowance exhausted/);
+    assert.deepEqual(result.review.coverageGaps, ["pubspec.lock"]);
+    assert.match(result.review.suggestions[0], /cannot fit/);
     recordCost(input.cwd, result.usage);
-    assert.equal(getSessionCost(input.cwd).calls, 1);
+    assert.equal(getSessionCost(input.cwd).calls, 0);
   });
 });

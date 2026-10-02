@@ -23,3 +23,6 @@ from missed callers. Update relevant documentation and adapters together.
 Use existing behavior/contract tests to verify preservation. Add a characterization
 test only where an important invariant lacks evidence; do not create tests that merely
 assert the new module layout. Report intentional behavior changes separately.
+
+For a module/architecture change, read [responsibility boundaries](references/architecture.md).
+For a measured latency or resource problem, read [profiling](references/performance.md).

@@ -38,3 +38,7 @@ Commit/push only within existing user authorization. Preserve unrelated changes 
 report what changed, executed check results, skipped/unverified criteria, review scope
 and coverage, remaining findings, and commit/push status. Model approval is not proof
 of tests, visual behavior, or every acceptance criterion.
+
+When the task includes CI, packaging, configuration, or release preparation, read
+[release evidence](references/release.md). Reading this skill does not authorize
+deployment, publication, or changes to external environments.

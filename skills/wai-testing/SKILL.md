@@ -27,3 +27,7 @@ and successful checks. Don't infer all acceptance criteria from one green comman
 
 For review, read [evaluation criteria](references/checks.md). Wai test analysis is
 model assessment, not proof that the commands were executed.
+
+For browser navigation, user flows, or integration failures, read
+[browser and boundary tests](references/browser-integration.md). Use the project's
+existing runner; this guidance does not require installing a new browser framework.

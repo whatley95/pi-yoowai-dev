@@ -40,7 +40,9 @@ export function calculateReviewBudget(
     maxOutputTokens: override.maxOutputTokens,
   });
 
-  const reservedOutputTokens = resolveOutputTokens(info.maxOutputTokens, override.thinking);
+  // Reviews are structured-output requests: SDK and HTTP both permit the
+  // resolved output limit, including reasoning. Reserve that same limit.
+  const reservedOutputTokens = info.maxOutputTokens;
   const safetyMarginTokens = Math.ceil(info.contextWindow * 0.1);
   const fixedTokens =
     estimateTokens(fixedPromptParts.systemPrompt) +
@@ -62,10 +64,4 @@ export function calculateReviewBudget(
     availableInputTokens,
     hardInputCap: config.reviewMaxInputTokens,
   };
-}
-
-function resolveOutputTokens(maxOutputTokens: number, thinking?: string): number {
-  // When reasoning is enabled, the model needs headroom for both reasoning and visible output.
-  if (!thinking || thinking === "off") return Math.min(maxOutputTokens, 2048);
-  return Math.min(maxOutputTokens, 8192);
 }

@@ -5,7 +5,7 @@ import type { FileContentEntry } from "../file-loader.js";
 import type { CallSecondaryModelOptions } from "../types.js";
 
 const MAX_ADAPTIVE_REQUESTS = 20;
-const MAX_READ_PAGE_CHARS = 16_000;
+const MAX_READ_PAGE_CHARS = 64_000;
 const TOOL_INSTRUCTION_TOKENS = 1200;
 
 /** Reserve capacity for missing context only. Complete supplied files and
@@ -23,7 +23,10 @@ export function resolveReviewToolContext(input: {
 }): Pick<CallSecondaryModelOptions, "maxToolIterations" | "readPageChars" | "maxToolContextChars" | "maxInputTokens"> {
   const maxInputTokens = Math.max(
     0,
-    input.budget.contextWindow - input.budget.reservedOutputTokens - input.budget.safetyMarginTokens,
+    Math.min(
+      input.budget.hardInputCap ?? Infinity,
+      input.budget.contextWindow - input.budget.reservedOutputTokens - input.budget.safetyMarginTokens,
+    ),
   );
   const windowHeadroom = maxInputTokens - estimateTokens(input.system + input.user) - TOOL_INSTRUCTION_TOKENS;
   const evidenceHeadroom =

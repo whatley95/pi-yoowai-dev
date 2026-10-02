@@ -5,7 +5,7 @@ import { recordCompletionEvidence } from "../completion-evidence.js";
 import { recordFindingRound, findingGuidance } from "../finding-tracker.js";
 import { loadYoowaiConfig, resolveReviewTaskModel } from "../config.js";
 import { isSafeRelativePath, normalizeReviewPath, resolveProjectPath } from "../path-security.js";
-import { getDiff, splitDiffByFile, splitDiffByHunk, getVcsInfo } from "../diff-grabber.js";
+import { getDiff, splitDiffByFile, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js";
 import { loadFileContentsForReview, isReviewableFile, type FileContentEntry } from "../file-loader.js";
@@ -19,6 +19,7 @@ import { selectLearnedFacts, formatLearnedContext } from "../wai-learn.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
 import { resolveEffectivePreReviewCommands, resolveEffectiveToolLoop } from "./context-shared.js";
 import { groupRelatedReviewFiles } from "./review-batching.js";
+import { splitReviewDiff } from "./review-chunks.js";
 import { calculateReviewBudget, estimateTokens, truncateToTokenBudget, type ReviewBudget } from "../token-budget.js";
 import { getSessionCost, getReservedCost, formatCost } from "../cost-tracker.js";
 import { logEvent } from "../logger.js";
@@ -51,16 +52,18 @@ import {
   runWithConcurrencyLimit,
   mergeReviewResults,
   runReviewBatch,
+  reviewDiffAllowance,
+  type ReviewBatchInput,
   type ConcurrencyOutcome,
 } from "./review-helpers.js";
 import { executeWaiJudge } from "./judge.js";
-import { resolveBackendType } from "../backends/backend-resolver.js";
+import { resolveBackendType, resolveSdkModelInfo, buildModelInfoOverride } from "../backends/backend-resolver.js";
 import { validateReviewResult, getReviewValidationErrors, salvageReviewFromMarkdown } from "../prompts.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
 import { getReviewLevelSettings, resolveRiskReviewLevel } from "../review-level.js";
 import type { ProgressReporter } from "../progress.js";
-import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../types.js";
+import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel, ReviewExecution } from "../types.js";
 import { INCONCLUSIVE_REVIEW_GUIDANCE } from "../workflow-guidance.js";
 import { withReviewRecovery } from "../review-recovery.js";
 
@@ -240,9 +243,18 @@ async function executeReview(
   const reviewSettings = getReviewLevelSettings(config, level);
   const effectiveConfig = { ...config, ...reviewSettings };
   // The effective depth selects the matching per-level model and tool loop.
-  const modelConfig = resolveReviewTaskModel(config, level);
+  let modelConfig = resolveReviewTaskModel(config, level);
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "review", error: REVIEW_NO_MODEL_ERROR };
+  }
+  if (resolveBackendType(modelConfig.provider, modelConfig) === "sdk") {
+    const metadata = await resolveSdkModelInfo(
+      modelConfig.provider,
+      modelConfig.id,
+      buildModelInfoOverride(modelConfig, config.modelInfo, modelConfig.id),
+      modelConfig,
+    );
+    modelConfig = { ...modelConfig, ...metadata };
   }
   const modelProfile = {
     provider: modelConfig.provider,
@@ -370,7 +382,9 @@ async function executeReview(
   const strategy = effectiveConfig.reviewStrategy ?? "auto";
   const explicitParallel = Boolean(config.parallelReview);
   const fileDiffs = splitDiffByFile(diff, vcs);
-  const reviewableFiles = changedFiles.filter(isReviewableFile);
+  // Supplemental-source policy must never remove an already captured patch
+  // (for example dependency lockfiles) from parallel review coverage.
+  const reviewableFiles = changedFiles.filter((file) => Boolean(fileDiffs[file]) || isReviewableFile(file));
   let perFileDiffsRebuilt = false;
   let perFileDiffsTruncated = false;
   // Files whose per-file diff itself hit the cap: their batches must still be
@@ -536,10 +550,47 @@ async function executeReview(
   // fileDiffs/reviewableFiles/perFileDiffs* were prepared before the cache key.
   const filesWithDiff = reviewableFiles.filter((file) => fileDiffs[file] || !truncated);
   const skippedDueToTruncation = reviewableFiles.filter((file) => !fileDiffs[file] && truncated);
-  const diffLikelyTruncated = estimateTokens(diff) > Math.max(0, budgetWithPreReview.availableInputTokens - 1000);
+  const commonBatch = (
+    files: string[],
+    memory = memoryContext,
+    batchBudget = budgetWithPreReview,
+  ): ReviewBatchInput => ({
+    cwd,
+    description,
+    files: [],
+    diff: "",
+    vcs,
+    criteria,
+    currentStep,
+    sessionContext,
+    conventionsText,
+    preReviewOutput,
+    memoryContext: memory,
+    decisionsContext: decisionsText,
+    priorRoundContext,
+    relatedContext,
+    codemap,
+    designRefText,
+    instructionsText,
+    truncated: false,
+    droppedFiles: [],
+    budget: batchBudget,
+    modelConfig,
+    signal,
+    sessionManager: ctx.sessionManager,
+    relevantPaths: files,
+    nativeJson,
+    focusFiles: stepFocusFiles,
+    assignment: { files, batchIndex: 999999, batchCount: 999999, hunk: { index: 999999, count: 999999 } },
+    evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
+    levelInstructions: reviewSettings.instructions,
+    ...toolLoopOptions(loopConfig),
+  });
+  const combinedAllowance = reviewDiffAllowance(commonBatch(filesWithDiff));
+  const diffLikelyTruncated = estimateTokens(diff) > combinedAllowance;
   const shouldParallelize =
     (explicitParallel || ((diffLikelyTruncated || truncated) && strategy !== "diff-only")) &&
-    filesWithDiff.length > 1 &&
+    filesWithDiff.length > 0 &&
     (strategy !== "diff-only" || explicitParallel);
   const maxConcurrency =
     typeof config.parallelReview === "number" && config.parallelReview > 0 ? config.parallelReview : 3;
@@ -556,15 +607,7 @@ async function executeReview(
   // budget math mirrors runReviewBatch's remainingForDiff so a diff that fits
   // never errors here.
   if (strategy === "diff-only") {
-    const remainingForDiff = Math.max(
-      0,
-      budgetWithPreReview.availableInputTokens -
-        1000 -
-        estimateTokens(codemap ?? "") -
-        estimateTokens(designRefText ?? "") -
-        estimateTokens(instructionsText) -
-        estimateTokens(priorRoundContext),
-    );
+    const remainingForDiff = combinedAllowance;
     const diffTokens = estimateTokens(diff);
     if (diffTokens > remainingForDiff && !shouldParallelize) {
       progress(7, STAGES.review, "Diff too large for a diff-only review…");
@@ -586,7 +629,7 @@ async function executeReview(
     if (shouldParallelize) {
       const oversizedFile = filesWithDiff.find((file) => {
         const perFileTokens = estimateTokens(fileDiffs[file] ?? "");
-        return perFileTokens > remainingForDiff;
+        return perFileTokens > reviewDiffAllowance(commonBatch([file]));
       });
       if (oversizedFile) {
         progress(7, STAGES.review, "A single file's diff exceeds the model budget…");
@@ -603,182 +646,27 @@ async function executeReview(
 
   let review: ReviewResult | undefined;
   let cost: UsageCost | undefined;
-  let finalDiffTruncated = false;
-  let finalDroppedFiles: string[] = [];
-  let usedHunkChunking = false;
-  let continuationRounds = 0;
-  let continuationTruncated = false;
+  let finalDiffTruncated: boolean;
+  let finalDroppedFiles: string[];
+  let continuationRounds: number;
+  let continuationTruncated: boolean;
   // Set when a hunk/parallel batch had failed tasks: the merged result is
   // incomplete and must not advance the baseline or record a pass verdict.
   let reviewIncomplete = false;
+  const execution: ReviewExecution = {
+    batches: 0,
+    segments: 0,
+    modelCalls: 0,
+    contextRequests: 0,
+    modelTimeMs: 0,
+    contextTimeMs: 0,
+    verificationTimeMs: 0,
+  };
+  const addExecution = (value?: ReviewExecution) => {
+    if (value) for (const key of Object.keys(execution) as Array<keyof ReviewExecution>) execution[key] += value[key];
+  };
 
-  if (filesWithDiff.length === 1 && diffLikelyTruncated && strategy !== "diff-only") {
-    progress(7, STAGES.review, "Diff is large; splitting into hunks for review…");
-    const file = filesWithDiff[0];
-    const hunks = splitDiffByHunk(fileDiffs[file] ?? "");
-    if (hunks.length > 1) {
-      const fileMemoryContext = truncateToTokenBudget(
-        `${getPastIssuesForFiles(cwd, [file], description)}\n${findingGuidance(cwd)}`.trim(),
-        effectiveConfig.reviewMaxMemoryTokens ?? 800,
-      );
-      const fileBudget = calculateReviewBudget(
-        modelConfig.provider,
-        modelConfig.id,
-        effectiveConfig,
-        {
-          systemPrompt: "",
-          sessionContext,
-          conventionsText,
-          preReviewOutput,
-          description,
-          memoryContext: fileMemoryContext,
-        },
-        modelConfig,
-      );
-      const fileResult = await loadFileContentsForReview({
-        cwd,
-        changedFiles: [file],
-        budget: fileBudget,
-        strategy,
-        fullFileThresholdLines,
-      });
-
-      const sharedContextEstimate = [
-        sessionContext,
-        conventionsText,
-        preReviewOutput,
-        description,
-        // Every model call also receives the injected instructions and the
-        // prior-round context (it is part of every batch prompt).
-        instructionsText,
-        priorRoundContext,
-      ].join("\n");
-      const outputEstimate =
-        modelConfig.thinking && modelConfig.thinking.toLowerCase() !== "off"
-          ? (modelConfig.maxOutputTokens ?? 8192)
-          : 2048;
-      const perHunkInputEstimate =
-        1000 +
-        estimateTokens(sharedContextEstimate) +
-        fileResult.totalTokens +
-        estimateTokens(fileDiffs[file] ?? "") / hunks.length +
-        estimateTokens(fileMemoryContext);
-      const projectedCost = estimateCost(
-        modelConfig.provider,
-        modelConfig.id,
-        perHunkInputEstimate * hunks.length,
-        outputEstimate * hunks.length,
-      );
-      if (config.costBudgetUsd !== undefined && config.costBudgetUsd >= 0) {
-        const sessionCost = getSessionCost(cwd).costUsd;
-        if (sessionCost + getReservedCost(cwd) + projectedCost > config.costBudgetUsd) {
-          pinAttemptedRange(cwd, vcsInfo, diffOptions);
-          return {
-            action: "review",
-            error: `Hunk-based review would exceed the configured cost budget (${formatCost(config.costBudgetUsd)}).`,
-          };
-        }
-      }
-
-      const hunkTasks = hunks.map((hunk, hunkIndex) => async () => {
-        const result = await runReviewBatch({
-          cwd,
-          description,
-          files: fileResult.entries,
-          diff: hunk,
-          vcs,
-          criteria,
-          currentStep,
-          sessionContext,
-          conventionsText,
-          preReviewOutput,
-          memoryContext: fileMemoryContext,
-          decisionsContext: decisionsText,
-          priorRoundContext,
-          relatedContext,
-          codemap,
-          designRefText,
-          instructionsText,
-          truncated,
-          droppedFiles: [],
-          omittedFileContents: fileResult.dropped,
-          budget: fileBudget,
-          modelConfig,
-          signal,
-          sessionManager: ctx.sessionManager,
-          relevantPaths: [file],
-          assignment: {
-            files: [file],
-            batchIndex: hunkIndex + 1,
-            batchCount: hunks.length,
-            hunk: { index: hunkIndex + 1, count: hunks.length },
-          },
-          allowAdaptiveToolContext: config.toolUseLoop === undefined || config.toolUseLoop === true,
-          nativeJson,
-          focusFiles: stepFocusFiles,
-          evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
-          levelInstructions: reviewSettings.instructions,
-          ...toolLoopOptions(loopConfig),
-        });
-        return { review: result.review, usage: result.usage, rounds: result.rounds, truncated: result.truncated };
-      });
-
-      const outcomes: ConcurrencyOutcome<{
-        review: ReviewResult;
-        usage: UsageCost;
-        rounds?: number;
-        truncated?: boolean;
-      }>[] = await runWithConcurrencyLimit(hunkTasks, maxConcurrency, signal);
-
-      const successes: { review: ReviewResult; usage: UsageCost; rounds?: number; truncated?: boolean }[] = [];
-      const failures: string[] = [];
-      for (const outcome of outcomes) {
-        if (outcome.ok) successes.push(outcome.value);
-        else failures.push(outcome.error instanceof Error ? outcome.error.message : String(outcome.error));
-      }
-
-      if (successes.length === 0) {
-        // Every batch failed: the attempted range was NOT reviewed, so pin
-        // it (scoped-aware) before returning — otherwise moving HEAD would
-        // drop the whole range, reproducing the incremental-review blind spot.
-        pinAttemptedRange(cwd, vcsInfo, diffOptions);
-        return { action: "review", error: failures.join("; "), model: modelProfile };
-      }
-
-      review = mergeReviewResults(successes.map((s) => s.review));
-      cost = successes.reduce<UsageCost | undefined>(
-        (acc, s) => (acc && s.usage ? mergeUsageCost(acc, s.usage) : s.usage),
-        undefined,
-      );
-      if (cost) cost = recordCostWithBudget(cwd, cost);
-      finalDiffTruncated = truncated || successes.some((s) => s.review.truncated);
-      finalDroppedFiles = [...skippedDueToTruncation];
-      continuationRounds = successes.reduce((sum, s) => sum + (s.rounds ?? 0), 0);
-      continuationTruncated = successes.some((s) => s.truncated);
-
-      if (failures.length > 0) {
-        review.suggestions.unshift(`Review failed for ${failures.length} hunk(s): ${failures.join("; ")}`);
-        review.consensus = false;
-        reviewIncomplete = true;
-        // The file was only partially reviewed: record it honestly so prior
-        // context cannot claim a pass, and keep the failed hunks in range via
-        // the pending anchor (the merged verdict must not advance anything).
-        recordReviewedFiles(cwd, [file], "needs-work");
-      }
-
-      logEvent(cwd, "info", "Hunk-based review completed", {
-        file,
-        hunkCount: hunks.length,
-        successCount: successes.length,
-        failureCount: failures.length,
-        provider: modelConfig.provider,
-        model: modelConfig.id,
-      });
-      usedHunkChunking = true;
-    }
-  }
-
-  if (!usedHunkChunking && shouldParallelize) {
+  if (shouldParallelize) {
     progress(
       7,
       STAGES.review,
@@ -887,17 +775,69 @@ async function executeReview(
         );
       },
     );
-    const batches = groups.map((items) => ({
-      files: items.map((p) => p.file),
-      fileMemoryContext: [...new Set(items.map((p) => p.fileMemoryContext))].join("\n\n"),
-      fileBudget: items.length === 1 ? items[0].fileBudget : batchBudget(items),
-      fileResult: {
-        entries: items.flatMap((p) => p.fileResult.entries),
-        dropped: items.flatMap((p) => p.fileResult.dropped),
-      },
-      droppedForBudget: items.flatMap((p) => p.droppedForBudget),
-      diff: items.map((p) => fileDiffs[p.file] ?? "").join("\n"),
-    }));
+    let batches: Array<{
+      files: string[];
+      fileMemoryContext: string;
+      fileBudget: ReviewBudget;
+      fileResult: { entries: FileContentEntry[]; dropped: string[] };
+      droppedForBudget: string[];
+      diff: string;
+      hunk?: { index: number; count: number };
+    }>;
+    try {
+      const fittingGroups = groups.flatMap((items) => {
+        const fileBudget = items.length === 1 ? items[0].fileBudget : batchBudget(items);
+        const memory = [...new Set(items.map((p) => p.fileMemoryContext))].join("\n\n");
+        const input = commonBatch(
+          items.map((p) => p.file),
+          memory,
+          fileBudget,
+        );
+        return items.length > 1 &&
+          estimateTokens(items.map((p) => fileDiffs[p.file] ?? "").join("\n")) > reviewDiffAllowance(input)
+          ? items.map((item) => [item])
+          : [items];
+      });
+      batches = fittingGroups.flatMap((items) => {
+        const files = items.map((p) => p.file);
+        const fileMemoryContext = [...new Set(items.map((p) => p.fileMemoryContext))].join("\n\n");
+        const fileBudget = items.length === 1 ? items[0].fileBudget : batchBudget(items);
+        const parts = splitReviewDiff(
+          items.map((p) => fileDiffs[p.file] ?? "").join("\n"),
+          reviewDiffAllowance(commonBatch(files, fileMemoryContext, fileBudget)) * 4,
+        );
+        return parts.map((diff, index) => ({
+          files,
+          fileMemoryContext,
+          fileBudget,
+          diff,
+          fileResult: {
+            entries: items.flatMap((p) => p.fileResult.entries),
+            dropped: items.flatMap((p) => p.fileResult.dropped),
+          },
+          droppedForBudget: items.flatMap((p) => p.droppedForBudget),
+          hunk: parts.length > 1 ? { index: index + 1, count: parts.length } : undefined,
+        }));
+      });
+    } catch (error) {
+      pinAttemptedRange(cwd, vcsInfo, diffOptions);
+      return {
+        action: "review",
+        level,
+        model: modelProfile,
+        review: {
+          verdict: "needs-work",
+          issues: [],
+          suggestions: [String(error)],
+          consensus: false,
+          contextLimited: true,
+          inputIncomplete: true,
+          inconclusive: true,
+          coverageGaps: filesWithDiff,
+          stepComplete: false,
+        },
+      };
+    }
     logEvent(cwd, "info", "Review batches prepared", {
       fileCount: preps.length,
       batchCount: batches.length,
@@ -962,14 +902,21 @@ async function executeReview(
           signal,
           sessionManager: ctx.sessionManager,
           relevantPaths: p.files,
-          assignment: { files: p.files, batchIndex: batchIndex + 1, batchCount: batches.length },
+          assignment: { files: p.files, batchIndex: batchIndex + 1, batchCount: batches.length, hunk: p.hunk },
           allowAdaptiveToolContext: config.toolUseLoop === undefined || config.toolUseLoop === true,
+          progress,
           nativeJson,
           focusFiles: stepFocusFiles,
           evidencePackMaxTokens: effectiveConfig.evidencePackMaxTokens ?? 1200,
           levelInstructions: reviewSettings.instructions,
           ...toolLoopOptions(loopConfig),
         });
+        addExecution(result.execution);
+        progress(
+          8,
+          STAGES.review,
+          `Completed batch ${batchIndex + 1}/${batches.length}: ${p.files.join(", ")}${p.hunk ? ` (segment ${p.hunk.index}/${p.hunk.count})` : ""}`,
+        );
         logEvent(cwd, "info", "Review batch completed", {
           files: p.files,
           elapsedMs: Date.now() - started,
@@ -1013,10 +960,12 @@ async function executeReview(
       truncated?: boolean;
     }[] = [];
     const failures: string[] = [];
+    const failedFiles = new Set<string>();
     for (const [batchIndex, outcome] of outcomes.entries()) {
       if (outcome.ok) {
         successes.push(outcome.value);
       } else {
+        for (const file of batches[batchIndex].files) failedFiles.add(file);
         failures.push(
           `${batches[batchIndex].files.join(", ")}: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`,
         );
@@ -1049,10 +998,51 @@ async function executeReview(
     continuationRounds = successes.reduce((sum, s) => sum + (s.rounds ?? 0), 0);
     continuationTruncated = successes.some((s) => s.truncated);
 
+    if (
+      batches.some((batch) => batch.hunk) &&
+      !failures.length &&
+      !finalDiffTruncated &&
+      !review.contextLimited &&
+      !review.coverageGaps?.length
+    ) {
+      progress(8, STAGES.review, "Checking interactions across reviewed patch segments…");
+      const integrationStarted = Date.now();
+      const assessments = successes.map((success, index) => ({
+        files: success.files,
+        segment: batches[index].hunk,
+        verdict: success.review.verdict,
+        issues: success.review.issues,
+        suggestions: success.review.suggestions,
+      }));
+      try {
+        const integrated = await runReviewBatch({
+          ...commonBatch(filesWithDiff),
+          priorRoundContext: `${priorRoundContext}\nReviewed segment assessments (not source evidence):\n${JSON.stringify(assessments)}`,
+          relatedContext: `${relatedContext ?? ""}\n${buildFileOutlines(cwd, filesWithDiff, 1200).context}`,
+          assignment: { files: filesWithDiff, batchIndex: 1, batchCount: 1, integration: true },
+          allowAdaptiveToolContext: config.toolUseLoop === undefined || config.toolUseLoop === true,
+          progress,
+        });
+        addExecution(integrated.execution);
+        review = mergeReviewResults([review, integrated.review]);
+        if (!review.contextLimited && review.verdict === "pass") review.stepComplete = integrated.review.stepComplete;
+        const recorded = recordCostWithBudget(cwd, integrated.usage);
+        cost = cost ? mergeUsageCost(cost, recorded) : recorded;
+        continuationRounds += integrated.rounds ?? 0;
+        continuationTruncated ||= integrated.truncated;
+      } catch (error) {
+        signal?.throwIfAborted();
+        review.contextLimited = true;
+        review.coverageGaps = filesWithDiff;
+        review.suggestions.push(
+          `Segment integration check failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      execution.verificationTimeMs += Date.now() - integrationStarted;
+    }
+
     if (failures.length > 0) {
-      review.suggestions.unshift(
-        `Review failed for ${preps.length - successes.reduce((total, s) => total + s.files.length, 0)} file(s): ${failures.join("; ")}`,
-      );
+      review.suggestions.unshift(`Review failed for ${failedFiles.size} file(s): ${failures.join("; ")}`);
       review.consensus = false;
       reviewIncomplete = true;
       // Only the successful batches were actually reviewed: record them with
@@ -1068,7 +1058,8 @@ async function executeReview(
             s.review.contextLimited ||
             s.review.coverageGaps?.length ||
             s.review.inputIncomplete ||
-            s.review.inconclusive
+            s.review.inconclusive ||
+            s.files.some((file) => failedFiles.has(file))
             ? "needs-work"
             : s.review.verdict,
         );
@@ -1078,13 +1069,13 @@ async function executeReview(
     logEvent(cwd, "info", "Parallel review completed", {
       fileCount: preps.length,
       batchCount: batches.length,
-      successCount: successes.reduce((total, s) => total + s.files.length, 0),
-      failureCount: preps.length - successes.reduce((total, s) => total + s.files.length, 0),
+      successCount: new Set(successes.flatMap((s) => s.files).filter((file) => !failedFiles.has(file))).size,
+      failureCount: failedFiles.size,
       provider: modelConfig.provider,
       model: modelConfig.id,
       estimatedCostUsd: cost?.estimatedCostUsd,
     });
-  } else if (!usedHunkChunking) {
+  } else {
     const fileResult =
       strategy === "diff-only"
         ? { entries: [] as FileContentEntry[], dropped: [] as string[], totalTokens: 0 }
@@ -1096,17 +1087,8 @@ async function executeReview(
             fullFileThresholdLines,
           });
 
-    const systemPromptEstimate = 1000;
-    const remainingForDiff = Math.max(
-      0,
-      budgetWithPreReview.availableInputTokens - fileResult.totalTokens - systemPromptEstimate,
-    );
-    const diffTokens = estimateTokens(diff);
-    const finalDiff =
-      diffTokens > remainingForDiff ? diff.slice(0, remainingForDiff * 4) + "\n... diff truncated" : diff;
-    finalDiffTruncated = truncated || finalDiff !== diff;
-    // Supplemental contents omitted by policy/budget do not remove their
-    // patches. Missing necessary context is reported through coverageGaps.
+    const finalDiff = diff;
+    finalDiffTruncated = truncated;
     finalDroppedFiles = [...skippedDueToTruncation];
 
     progress(7, STAGES.review, "Building review prompt…");
@@ -1159,12 +1141,15 @@ async function executeReview(
       };
     }
     review = result.review;
+    addExecution(result.execution);
     cost = recordCostWithBudget(cwd, result.usage);
     continuationRounds = result.rounds ?? 0;
     continuationTruncated = result.truncated ?? false;
 
     if (effectiveConfig.selfVerify && !review.contextLimited && !review.coverageGaps?.length) {
       progress(8, STAGES.review, "Self-verifying review result…");
+      const verificationStarted = Date.now();
+      execution.modelCalls++;
       try {
         const verified = await verifyResult(cwd, modelConfig, {
           originalSystem: result.system,
@@ -1191,6 +1176,10 @@ async function executeReview(
         logEvent(cwd, "warn", "Self-verification failed; keeping original review", {
           error: err instanceof Error ? err.message : String(err),
         });
+      } finally {
+        const elapsed = Date.now() - verificationStarted;
+        execution.verificationTimeMs += elapsed;
+        execution.modelTimeMs += elapsed;
       }
     }
   }
@@ -1461,6 +1450,7 @@ async function executeReview(
             model: modelProfile,
             level,
             continuation: continuationMeta(continuationRounds, continuationTruncated),
+            execution,
           };
         } else if (judgeResult.error) {
           review.suggestions.push(`Auto-judge failed: ${judgeResult.error}`);
@@ -1497,5 +1487,6 @@ async function executeReview(
     model: modelProfile,
     level,
     continuation: continuationMeta(continuationRounds, continuationTruncated),
+    execution,
   };
 }

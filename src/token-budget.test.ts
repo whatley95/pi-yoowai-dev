@@ -44,6 +44,26 @@ describe("token budget", () => {
     assert.equal(budget.hardInputCap, 1000);
   });
 
+  it("reserves the actual structured output limit even with thinking off", () => {
+    const parts = {
+      systemPrompt: "",
+      sessionContext: "",
+      conventionsText: "",
+      preReviewOutput: "",
+      description: "",
+      memoryContext: "",
+    };
+    for (const thinking of ["off", "xhigh"]) {
+      const budget = calculateReviewBudget("openai", "example", baseConfig, parts, {
+        contextWindow: 400000,
+        maxOutputTokens: 128000,
+        thinking,
+      });
+      assert.equal(budget.reservedOutputTokens, 128000);
+      assert.equal(budget.availableInputTokens, 232000);
+    }
+  });
+
   it("uses per-task model overrides for context window and output tokens", () => {
     const budget = calculateReviewBudget(
       "openai",

@@ -36,10 +36,7 @@ export function formatDuration(ms: number): string {
  *  exceeded that budget (or an explicit reviewMaxDiffChars /
  *  reviewMaxInputTokens user cap). */
 function largeChangeHint(level: ReviewLevel | undefined): string {
-  if (level === "min" || level === "high") {
-    return `The review ran at level \`${level}\` without diff caps: the change exceeded the model's context budget. Re-run with \`wai_review_med\` (or \`wai_review_high\` for large changes), scope the review with \`files:[...]\`, or raise \`pi-yoowai.reviewMaxDiffChars\` / \`reviewMaxInputTokens\` to allow a larger diff.`;
-  }
-  return "The change exceeded the configured review context limits. Raise `pi-yoowai.reviewMaxDiffChars` / `reviewMaxInputTokens`, or scope the review with `files:[...]` to reduce the diff.";
+  return `Review${level ? ` (${level})` : ""} could not obtain complete evidence. Inspect the listed missing files/ranges and /wai-logs before retrying. Raise reviewMaxDiffChars or reviewMaxInputTokens only when an explicit configured cap caused the gap; these settings cannot enlarge the model's context window. Scoped reviews help diagnose individual files but do not certify the whole tree.`;
 }
 
 export function formatResultText(result: WaiToolResult): string {
@@ -50,6 +47,14 @@ export function formatResultText(result: WaiToolResult): string {
   const lines: string[] = [];
   if (recovery) {
     lines.push(`Recovery (${recovery.reason}): ${recovery.message}`, `Next action: ${recovery.nextAction}`, "");
+  }
+  if (result.execution) {
+    const e = result.execution;
+    lines.push(
+      `Review execution: ${e.batches} batches · ${e.segments} patch segments · ${e.modelCalls} model rounds · ${e.contextRequests} context requests`,
+      `Time across workers: model ${formatDuration(e.modelTimeMs)} · local context ${formatDuration(e.contextTimeMs)} · verification/integration ${formatDuration(e.verificationTimeMs)}`,
+      "",
+    );
   }
 
   const metaParts: string[] = [];

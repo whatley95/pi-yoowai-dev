@@ -182,6 +182,17 @@ export interface ReviewAssignment {
   batchIndex: number;
   batchCount: number;
   hunk?: { index: number; count: number };
+  integration?: boolean;
+}
+
+export interface ReviewExecution {
+  batches: number;
+  segments: number;
+  modelCalls: number;
+  contextRequests: number;
+  modelTimeMs: number;
+  contextTimeMs: number;
+  verificationTimeMs: number;
 }
 
 export interface ReviewResult {
@@ -402,6 +413,7 @@ export interface WaiToolResult {
   cost?: UsageCost;
   /** Wall-clock time the wai tool took to produce this result, in milliseconds. */
   elapsedMs?: number;
+  execution?: ReviewExecution;
   /** The secondary model that produced this result. */
   model?: StageProfile;
   /** Continuation metadata surfaced when the response was assembled from
@@ -482,6 +494,9 @@ export interface CallSecondaryModelOptions {
   structuredOutput?: boolean;
   /** Optional callback invoked with accumulated generated text during SDK streaming. */
   onStreamProgress?: (text: string) => void;
+  onStreamPhase?: (phase: "thinking" | "text") => void;
+  /** Local timing/counter events; never contains model reasoning or source. */
+  onToolLoopEvent?: (event: { phase: "model" | "context"; elapsedMs: number }) => void;
   /** Enable a bounded tool-use loop so the model can request file reads or allowlisted commands before answering. */
   enableToolLoop?: boolean;
   /** Maximum new-evidence requests when enableToolLoop is true. Review level defaults are 3/5; the standalone loop defaults to 5. */

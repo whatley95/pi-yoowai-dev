@@ -109,16 +109,27 @@ describe("assigned review coverage", () => {
     assert.match(prompt.system, /"coverageGaps"/);
   });
 
-  it("identifies the assigned hunk and does not invent workers for a single batch", () => {
+  it("identifies the assigned patch segment and does not invent workers for a single batch", () => {
     const hunk = buildAdaptiveReviewPrompt("large file", "+change", [], {
       assignment: { files: ["large.ts"], batchIndex: 3, batchCount: 5, hunk: { index: 3, count: 5 } },
     });
-    assert.match(hunk.user, /Assigned hunk 3 of 5/);
+    assert.match(hunk.user, /Assigned patch segment 3 of 5/);
+    assert.match(hunk.user, /absolute old\/new line coordinates/);
     const single = buildAdaptiveReviewPrompt("one file", "+change", [], {
       assignment: { files: ["one.ts"], batchIndex: 1, batchCount: 1 },
     });
     assert.match(single.user, /only batch; assess all assigned changes/);
     assert.doesNotMatch(single.user, /other batches review the remaining/);
+  });
+
+  it("requires source evidence for unresolved interactions in segment integration", () => {
+    const prompt = buildAdaptiveReviewPrompt("large change", "", [], {
+      assignment: { files: ["large.ts"], batchIndex: 1, batchCount: 1, integration: true },
+    });
+    assert.match(prompt.user, /Integration check after all assigned patch segments/);
+    assert.match(prompt.user, /model assessments, not substitute source evidence/);
+    assert.match(prompt.user, /Request precise source ranges/);
+    assert.match(prompt.user, /coverageGaps when necessary evidence cannot be obtained/);
   });
 
   it("retains structured missing-evidence fields during validation", () => {

@@ -39,6 +39,25 @@ test("formatDuration guards invalid input", () => {
   assert.strictEqual(formatDuration(Number.NaN), "0ms");
 });
 
+test("review execution distinguishes model rounds, local context, and summed worker time", () => {
+  const text = formatResultText({
+    action: "review",
+    execution: {
+      batches: 4,
+      segments: 3,
+      modelCalls: 6,
+      contextRequests: 2,
+      modelTimeMs: 120000,
+      contextTimeMs: 40,
+      verificationTimeMs: 8000,
+    },
+  });
+  assert.match(text, /6 model rounds/);
+  assert.match(text, /2 context requests/);
+  assert.match(text, /Time across workers/);
+  assert.match(text, /local context 40ms/);
+});
+
 test("formatResultText omits elapsed when not present (byte-identical baseline)", () => {
   const text = formatResultText(recommendResult({ cost: sampleCost }));
   assert.ok(text.includes("in ·"));
@@ -151,9 +170,9 @@ test("formatResultText explains the min-level context cap on truncated reviews",
     },
   });
   assert.ok(text.includes("Large change"), text);
-  assert.ok(text.includes("ran at level `min`"), text);
+  assert.ok(text.includes("Review (min) could not obtain complete evidence"), text);
   assert.ok(text.includes("reviewMaxDiffChars"), text);
-  assert.ok(text.includes("wai_review_med"), text);
+  assert.ok(text.includes("cannot enlarge the model's context window"), text);
 });
 
 test("formatResultText explains the generic cap for med-level truncated reviews", () => {
@@ -169,7 +188,7 @@ test("formatResultText explains the generic cap for med-level truncated reviews"
     },
   });
   assert.ok(text.includes("Large change"), text);
-  assert.ok(text.includes("exceeded the configured review context limits"), text);
+  assert.ok(text.includes("explicit configured cap"), text);
   assert.ok(!text.includes("ran at level"), text);
 });
 
@@ -185,9 +204,9 @@ test("formatResultText explains the high-level truncation without level caps", (
       truncated: true,
     },
   });
-  assert.ok(text.includes("ran at level `high`"), text);
-  assert.ok(text.includes("without diff caps"), text);
-  assert.ok(text.includes("wai_review_med"), text);
+  assert.ok(text.includes("Review (high) could not obtain complete evidence"), text);
+  assert.ok(text.includes("/wai-logs"), text);
+  assert.ok(!text.includes("wai_review_high"), text);
   assert.ok(!text.includes("12,000 chars"), text);
 });
 

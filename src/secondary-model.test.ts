@@ -1611,6 +1611,36 @@ describe("sdk backend", () => {
     assert.equal(progressTexts[progressTexts.length - 1], "hello world");
   });
 
+  it("sdk backend reports reasoning phases without exposing thinking content", async () => {
+    const cwd = makeTempDir("wai-sdk-stream-phase-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "opencode-go", id: "qwen3.7-max", apiKey: "opencode-test" });
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId));
+    setSdkStreamSimpleOverride(
+      () =>
+        ({
+          async *[Symbol.asyncIterator]() {
+            yield { type: "thinking_start" };
+            yield { type: "thinking_delta", delta: "PRIVATE_REASONING" };
+            yield { type: "text_start" };
+            yield { type: "text_delta", delta: "public review" };
+          },
+          result: async () => fakeSdkAssistantMessage("public review"),
+        }) as unknown as import("@earendil-works/pi-ai").AssistantMessageEventStream,
+    );
+    const phases: string[] = [],
+      texts: string[] = [];
+    const response = await callSecondaryModel("opencode-go", "qwen3.7-max", "system", "user", {
+      cwd,
+      onStreamPhase: (phase) => phases.push(phase),
+      onStreamProgress: (text) => texts.push(text),
+    });
+    assert.deepEqual(phases, ["thinking", "text"]);
+    assert.equal(response.content, "public review");
+    assert.ok(texts.length > 0);
+    assert.ok(texts.every((text) => !text.includes("PRIVATE_REASONING")));
+  });
+
   it("sdk backend maps cacheRetention auto to short", async () => {
     const cwd = makeTempDir("wai-sdk-auto-cache-");
     tmpDirs.push(cwd);

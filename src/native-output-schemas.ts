@@ -68,6 +68,17 @@ const workflowOutput = object({
   workflow: optional(WorkflowSchema),
   workspaceFingerprint: optional(Type.String()),
   elapsedMs: optional(Type.Number()),
+  execution: optional(
+    object({
+      batches: Type.Integer(),
+      segments: Type.Integer(),
+      modelCalls: Type.Integer(),
+      contextRequests: Type.Integer(),
+      modelTimeMs: Type.Number(),
+      contextTimeMs: Type.Number(),
+      verificationTimeMs: Type.Number(),
+    }),
+  ),
   level: optional(Type.Union([Type.Literal("min"), Type.Literal("med"), Type.Literal("high")])),
 });
 

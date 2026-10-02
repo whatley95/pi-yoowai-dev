@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -28,6 +28,59 @@ afterEach(() => {
 });
 
 describe("selected development guidance", () => {
+  it("selects web guidance for installed frontend frameworks without assuming Node runtime", () => {
+    const cwd = temp();
+    for (const framework of ["react", "vue", "@angular/core", "svelte", "next"]) {
+      writeFileSync(join(cwd, "package.json"), JSON.stringify({ dependencies: { [framework]: "installed" } }));
+      const selected = selectEvaluationSkills(cwd, "review", ["src/state.ts"]);
+      assert.ok(selected.includes("wai-web"), framework);
+      assert.ok(!selected.includes("wai-node"), framework);
+      const text = capActionInstructions(cwd, "review", 800, ["src/state.ts"]);
+      assert.ok(text.includes("wai-web"));
+      assert.ok(estimateTokens(text) <= 800);
+    }
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({ devDependencies: { vite: "installed" } }));
+    assert.ok(selectEvaluationSkills(cwd, "review", ["src/component.vue"]).includes("wai-web"));
+    assert.ok(!selectEvaluationSkills(cwd, "review", ["src/service.ts"]).includes("wai-web"));
+  });
+  it("uses nearest package boundaries in a frontend/backend monorepo", () => {
+    const cwd = temp();
+    mkdirSync(join(cwd, "web"));
+    mkdirSync(join(cwd, "service"));
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({ dependencies: { react: "installed" } }));
+    writeFileSync(join(cwd, "web", "package.json"), JSON.stringify({ dependencies: { vue: "installed" } }));
+    writeFileSync(join(cwd, "service", "package.json"), JSON.stringify({ dependencies: { express: "installed" } }));
+    const web = selectEvaluationSkills(cwd, "review", ["web/src/state.ts"]);
+    assert.ok(web.includes("wai-web"));
+    assert.ok(!web.includes("wai-node"));
+    const server = selectEvaluationSkills(cwd, "review", ["service/src/main.ts"]);
+    assert.ok(server.includes("wai-node"));
+    assert.ok(!server.includes("wai-web"));
+    const mixed = selectEvaluationSkills(cwd, "review", ["web/src/state.ts", "service/src/main.ts"]);
+    assert.ok(mixed.includes("wai-web") && mixed.includes("wai-node"));
+    const ssr = selectEvaluationSkills(cwd, "review", ["app/api/session.ts"]);
+    assert.ok(ssr.includes("wai-web") && ssr.includes("wai-node"));
+  });
+  it("selects security criteria for security actions and changed credential boundaries", () => {
+    const cwd = temp();
+    assert.ok(selectEvaluationSkills(cwd, "security", ["src/main.ts"]).includes("wai-security"));
+    assert.ok(selectEvaluationSkills(cwd, "review", ["src/auth/token.ts"]).includes("wai-security"));
+    assert.ok(!selectEvaluationSkills(cwd, "review", ["src/main.ts"]).includes("wai-security"));
+    const text = capActionInstructions(cwd, "security", 800, ["src/main.ts"]);
+    assert.ok(text.includes("wai-security"));
+    assert.ok(estimateTokens(text) <= 800);
+  });
+  it("does not use malformed or external package metadata as stack evidence", () => {
+    const cwd = temp(),
+      outside = temp();
+    writeFileSync(join(cwd, "package.json"), "{broken");
+    assert.ok(!selectEvaluationSkills(cwd, "review", ["src/main.ts"]).includes("wai-node"));
+    writeFileSync(join(outside, "package.json"), JSON.stringify({ dependencies: { react: "installed" } }));
+    symlinkSync(outside, join(cwd, "external"), process.platform === "win32" ? "junction" : "dir");
+    const escaped = selectEvaluationSkills(cwd, "review", ["external/src/main.ts", "../external/component.tsx"]);
+    assert.ok(!escaped.includes("wai-web"));
+    assert.ok(!escaped.includes("wai-node"));
+  });
   it("selects Kotlin Android guidance without requiring a separate Kotlin plugin", () => {
     const cwd = temp(),
       module = join(cwd, "android", "app");

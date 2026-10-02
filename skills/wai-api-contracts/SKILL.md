@@ -27,3 +27,6 @@ or a universal deployment gate into an ordinary change.
 
 For review, read [evaluation criteria](references/checks.md). Report assumptions and
 unverified integration behavior instead of manufacturing code findings.
+
+For persisted schema changes or rolling-version compatibility, read
+[data migrations](references/migrations.md).

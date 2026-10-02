@@ -1,7 +1,7 @@
 import type { ModelInfo } from "../model-registry.js";
 import type { BackendType, ProviderApiInfo, SecondaryModelConfig } from "../types/secondary-model.js";
 import { resolveProviderApiInfo } from "./provider-api.js";
-import { getPiAiCompat, resolveRuntimeModel } from "./sdk-backend.js";
+import { getPiAiCompat, getSdkRegistry, resolveRuntimeModel } from "./sdk-backend.js";
 
 export function buildModelInfoOverride(
   secondary: SecondaryModelConfig | undefined,
@@ -28,12 +28,22 @@ export async function resolveSdkModelInfo(
   provider: string,
   model: string,
   modelInfoOverride?: Partial<ModelInfo>,
+  secondary?: SecondaryModelConfig,
 ): Promise<Partial<ModelInfo> | undefined> {
   try {
-    const piAi = await getPiAiCompat();
+    // Match the SDK streaming route without resolving credentials. Live
+    // extension/custom models can differ from the static builtin catalog.
+    const registryUsable =
+      !secondary?.apiKey &&
+      !secondary?.baseUrl &&
+      (secondary?.authHeader === undefined || secondary.authHeader === true);
+    let builtinModel = registryUsable ? getSdkRegistry()?.find(provider, model) : undefined;
     // The builtin catalog is static; extension providers (e.g. pi-crof) and
     // custom models.json entries only exist in Pi's runtime registry.
-    const builtinModel = piAi.getModel(provider, model) ?? (await resolveRuntimeModel(provider, model));
+    if (!builtinModel) {
+      const piAi = await getPiAiCompat();
+      builtinModel = piAi.getModel(provider, model) ?? (await resolveRuntimeModel(provider, model));
+    }
     if (!builtinModel) return undefined;
     const info: Partial<ModelInfo> = {};
     if (typeof builtinModel.contextWindow === "number" && builtinModel.contextWindow > 0) {
@@ -87,7 +97,8 @@ export async function resolveBackend(
   const autoSelectedSdk = !explicitBackend && !secondary?.baseUrl;
 
   const modelInfoOverride = buildModelInfoOverride(secondary, modelInfo, model);
-  let sdkModelInfo = backend === "sdk" ? await resolveSdkModelInfo(provider, model, modelInfoOverride) : undefined;
+  let sdkModelInfo =
+    backend === "sdk" ? await resolveSdkModelInfo(provider, model, modelInfoOverride, secondary) : undefined;
 
   // If the backend was auto-selected and the model is in neither Pi's built-in
   // SDK catalog nor the runtime registry (resolveSdkModelInfo checked both),

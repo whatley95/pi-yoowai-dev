@@ -1,0 +1,3 @@
+- Trace reachable untrusted input to a privileged operation; verify server authorization and resource ownership where changed.
+- Check relevant injection, canonical file containment, secret handling, and sensitive output using concrete triggers.
+- Support severity with preconditions and impact; distinguish demonstrated defects from missing evidence and test denial paths.

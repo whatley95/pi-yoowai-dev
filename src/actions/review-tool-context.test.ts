@@ -30,8 +30,8 @@ writeFileSync(join(cwd, "pubspec.lock"), "x".repeat(55_311));
 describe("review context capacity", () => {
   it("reserves sufficient bounded pages for a missing 55 KB file", () => {
     const resolved = resolveReviewToolContext(base);
-    assert.equal(resolved.readPageChars, 16_000);
-    assert.equal(resolved.maxToolIterations, 6);
+    assert.equal(resolved.readPageChars, 64_000);
+    assert.equal(resolved.maxToolIterations, 3);
     assert.ok(resolved.maxToolContextChars! >= 55_311);
     assert.equal(resolved.maxInputTokens, 55_552);
   });
@@ -54,11 +54,11 @@ describe("review context capacity", () => {
     writeFileSync(join(cwd, "second.lock"), "y".repeat(55_311));
     assert.equal(
       resolveReviewToolContext({ ...base, paths: ["pubspec.lock", "pubspec.lock", "second.lock"] }).maxToolIterations,
-      9,
+      4,
     );
     writeFileSync(join(cwd, "large.ts"), "z".repeat(1_000_000));
     const largeBudget = { ...budget, contextWindow: 1_000_000, availableInputTokens: 900_000 };
-    assert.equal(resolveReviewToolContext({ ...base, paths: ["large.ts"], budget: largeBudget }).maxToolIterations, 20);
+    assert.equal(resolveReviewToolContext({ ...base, paths: ["large.ts"], budget: largeBudget }).maxToolIterations, 18);
   });
 
   it("respects input headroom and cannot inspect outside-project junctions", () => {

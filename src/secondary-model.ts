@@ -199,6 +199,7 @@ async function runSingleAttempt(
           sdkModelInfo,
           structuredOutput: opts.structuredOutput,
           onStreamProgress: opts.onStreamProgress,
+          onStreamPhase: opts.onStreamPhase,
           images: opts.images,
         });
       }

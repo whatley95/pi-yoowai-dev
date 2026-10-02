@@ -186,8 +186,10 @@ export interface FileContentContext {
 
 export function formatReviewAssignment(assignment?: ReviewAssignment): string {
   if (!assignment) return "";
+  if (assignment.integration)
+    return "\n\n<review_assignment>\nIntegration check after all assigned patch segments were reviewed. Compare their findings and the supplied source context for interactions across segments/files. Segment summaries are model assessments, not substitute source evidence. Request precise source ranges for unresolved interactions and report coverageGaps when necessary evidence cannot be obtained. Do not re-review unrelated changes. Assess overall plan completion separately from code quality.\n</review_assignment>";
   const scope = assignment.hunk
-    ? `Assigned hunk ${assignment.hunk.index} of ${assignment.hunk.count} in ${JSON.stringify(assignment.files)}.`
+    ? `Assigned patch segment ${assignment.hunk.index} of ${assignment.hunk.count} in ${JSON.stringify(assignment.files)}. Segments retain absolute old/new line coordinates and may overlap for context.`
     : `Assigned files: ${JSON.stringify(assignment.files)}.`;
   const coverage =
     assignment.batchCount > 1

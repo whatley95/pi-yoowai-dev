@@ -38,11 +38,11 @@ export interface ToolResult {
 }
 
 const DEFAULT_MAX_ITERATIONS = 5;
-const MAX_TOOL_FILE_BYTES = 100 * 1024;
+const MAX_TOOL_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 4000;
 const MAX_BATCH_READS = 4;
 const MAX_REUSED_READS = 2;
-const MAX_READ_PAGE_CHARS = 16_000;
+const MAX_READ_PAGE_CHARS = 64_000;
 const MAX_SEARCH_MATCHES = 50;
 const MAX_NATIVE_SEARCH_FILES = 32;
 const MAX_NATIVE_SEARCH_GLOB_CHARS = 2000;
@@ -580,12 +580,15 @@ export async function executeToolLoop(
       throw error;
     }
     const { content, usage, truncated } = response;
+    options.onToolLoopEvent?.({ phase: "model", elapsedMs: Date.now() - modelStarted });
     totalUsage = totalUsage ? mergeUsageCost(totalUsage, usage) : usage;
     logEvent(cwd, "info", "Tool loop model completed", {
       ...metadata,
       modelCall: modelCalls,
       elapsedMs: Date.now() - modelStarted,
       finalOnly,
+      inputTokens: usage.estimatedInputTokens,
+      outputTokens: usage.estimatedOutputTokens,
     });
     const requests = parseToolRequests(content);
     if (!requests) {
@@ -609,6 +612,7 @@ export async function executeToolLoop(
           });
           try {
             const resumed = await callModel(s, u, o);
+            options.onToolLoopEvent?.({ phase: "model", elapsedMs: Date.now() - resumeStarted });
             logEvent(cwd, "info", "Tool loop model completed", {
               ...metadata,
               modelCall: modelCalls,
@@ -732,6 +736,7 @@ export async function executeToolLoop(
         outputLength: result.output.length,
       });
       const formatted = formatToolResult(request, result);
+      options.onToolLoopEvent?.({ phase: "context", elapsedMs: Date.now() - toolStarted });
       if (
         toolContextChars + formatted.length > contextChars ||
         estimateTokens(system + currentUser + formatted) > inputLimit

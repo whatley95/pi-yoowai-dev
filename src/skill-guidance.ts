@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { estimateTokens } from "./token-budget.js";
@@ -15,6 +15,8 @@ export const PACKAGED_SKILLS = [
   "wai-kotlin",
   "wai-spring",
   "wai-node",
+  "wai-web",
+  "wai-security",
 ] as const;
 export type PackagedSkill = (typeof PACKAGED_SKILLS)[number];
 export function getPackagedSkillsRoot(): string {
@@ -22,7 +24,9 @@ export function getPackagedSkillsRoot(): string {
 }
 function readManifest(cwd: string, file: string): string {
   try {
-    const text = readFileSync(join(cwd, file), "utf8");
+    const path = resolveProjectPath(cwd, file);
+    if (!path || statSync(path).size > 128 * 1024) return "";
+    const text = readFileSync(path, "utf8");
     return text.length <= 128 * 1024 ? text : "";
   } catch {
     return "";
@@ -30,6 +34,60 @@ function readManifest(cwd: string, file: string): string {
 }
 export function isFlutterProject(cwd: string): boolean {
   return /^\s*flutter:\s*(?:#.*)?\r?\n\s+sdk:\s*flutter\s*(?:#.*)?$/m.test(readManifest(cwd, "pubspec.yaml"));
+}
+
+/** Nearest package owns stack selection in mixed repositories. Build tools
+ * alone do not imply that browser code runs in Node. Cache per selection call. */
+function javascriptSkills(cwd: string, file: string, manifests: Map<string, string>): PackagedSkill[] {
+  if (!/\.(?:[cm]?[jt]sx?|vue|svelte|html|css|scss)$/i.test(file)) return [];
+  const absolute = resolveProjectPath(cwd, file);
+  if (!absolute) return [];
+  const root = resolve(cwd);
+  let manifest = "";
+  const visited: string[] = [];
+  for (let dir = dirname(absolute), depth = 0; depth < 24; dir = dirname(dir), depth++) {
+    const known = manifests.get(dir);
+    if (known !== undefined) {
+      manifest = known;
+      break;
+    }
+    visited.push(dir);
+    const name = join(relative(root, dir), "package.json");
+    const path = resolveProjectPath(cwd, name);
+    if (path && existsSync(path)) {
+      manifest = readManifest(cwd, name);
+      break;
+    }
+    if (dir === root) break;
+  }
+  for (const dir of visited) manifests.set(dir, manifest);
+  const browserFile = /\.(?:[jt]sx|vue|svelte|html|css|scss)$/i.test(file);
+  let dependencies: string[] = [];
+  let packageParsed = false;
+  try {
+    const pkg = JSON.parse(manifest) as Record<string, unknown>;
+    if (!pkg || typeof pkg !== "object" || Array.isArray(pkg)) return browserFile ? ["wai-web"] : [];
+    packageParsed = true;
+    dependencies = ["dependencies", "devDependencies", "peerDependencies"].flatMap((key) =>
+      pkg[key] && typeof pkg[key] === "object" ? Object.keys(pkg[key] as object) : [],
+    );
+  } catch {
+    /* Invalid/missing metadata is not stack evidence. */
+  }
+  const web =
+    browserFile ||
+    dependencies.some((name) =>
+      /^(?:react|react-dom|next|vue|nuxt|svelte|@angular\/core|@sveltejs\/kit|@solidjs\/start|solid-js|astro)$/.test(
+        name,
+      ),
+    );
+  const server =
+    /(?:^|\/)(?:server|backend|api|scripts)(?:\/|[.])|(?:^|\/)(?:vite|webpack|rollup|eslint)\.config\./i.test(file) ||
+    dependencies.some((name) => /^(?:express|fastify|koa|hapi|@hapi\/hapi|@nestjs\/core)$/.test(name));
+  return [
+    ...(web ? ["wai-web" as const] : []),
+    ...(packageParsed && (!web || server) && !browserFile ? ["wai-node" as const] : []),
+  ];
 }
 
 /** Inspect the containing module, stopping at a non-Android Gradle boundary.
@@ -70,7 +128,14 @@ export function isAndroidModuleFile(cwd: string, file: string, modules?: Map<str
 export function selectEvaluationSkills(cwd: string, action: string, files: string[]): PackagedSkill[] {
   if (!["review", "judge", "test", "security"].includes(action) || files.length === 0) return [];
   const paths = files.map((file) => file.replace(/\\/g, "/"));
-  const selected: PackagedSkill[] = action === "security" ? ["wai-api-contracts"] : ["wai-testing"];
+  const selected: PackagedSkill[] = action === "security" ? ["wai-security", "wai-api-contracts"] : ["wai-testing"];
+  if (
+    action !== "security" &&
+    paths.some((file) =>
+      /(?:^|[/._-])(?:auth(?:entication|orization)?|secrets?|credentials?|permissions?)(?:[/._-]|$)/i.test(file),
+    )
+  )
+    selected.push("wai-security");
   if (
     action !== "test" &&
     paths.some((file) =>
@@ -90,8 +155,8 @@ export function selectEvaluationSkills(cwd: string, action: string, files: strin
     )
   )
     selected.push("wai-spring");
-  if (paths.some((file) => /\.[cm]?[jt]sx?$/i.test(file)) && existsSync(join(cwd, "package.json")))
-    selected.push("wai-node");
+  const manifests = new Map<string, string>();
+  for (const path of paths) selected.push(...javascriptSkills(cwd, path, manifests));
   return [...new Set(selected)];
 }
 const selections = new Map<string, Record<string, PackagedSkill[]>>();

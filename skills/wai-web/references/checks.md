@@ -1,0 +1,3 @@
+- Trace changed URLs, direct entry/refresh, back/forward, queries, route guards, and deployment rewrites where affected.
+- Check state ownership, stale asynchronous responses, effect cleanup, form races, and relevant loading/error/focus behavior.
+- For SSR, verify request-local state and hydration assumptions; browser checks and component mocks establish different evidence.

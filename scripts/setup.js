@@ -34,6 +34,8 @@ const WAI_SKILLS = [
   "wai-kotlin",
   "wai-spring",
   "wai-node",
+  "wai-web",
+  "wai-security",
 ];
 
 function resolveSettingsPath() {

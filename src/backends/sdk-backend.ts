@@ -658,10 +658,20 @@ export async function callSdkBackend(
   ): Promise<{ content: string; usage: ReturnType<typeof buildUsage>; truncated?: boolean }> => {
     // Stream progress to the TUI when a callback is provided. We throttle updates
     // to avoid saturating the UI with every token.
-    if (options.onStreamProgress) {
-      const progress = createStreamProgressHandler(options.onStreamProgress);
+    if (options.onStreamProgress || options.onStreamPhase) {
+      const progress = createStreamProgressHandler(options.onStreamProgress ?? (() => {}));
+      let phase: "thinking" | "text" | undefined;
       try {
         for await (const event of stream) {
+          const nextPhase = event.type.startsWith("thinking_")
+            ? "thinking"
+            : event.type.startsWith("text_")
+              ? "text"
+              : undefined;
+          if (nextPhase && nextPhase !== phase) {
+            phase = nextPhase;
+            options.onStreamPhase?.(phase);
+          }
           progress.handle(event);
           if (event.type === "done" || event.type === "error") break;
         }

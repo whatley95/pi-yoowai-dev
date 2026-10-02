@@ -27,6 +27,7 @@ import {
 } from "./sdk-backend.js";
 import { setAgentDirForTests, getAgentDir } from "../pi-paths.js";
 import { callSecondaryModel, setPiSpawnResolver } from "../secondary-model.js";
+import { resolveBackend, resolveSdkModelInfo } from "./backend-resolver.js";
 
 // --- Local fakes (mirroring the helpers in secondary-model.test.ts) ---
 
@@ -44,6 +45,49 @@ function fakeSdkModel(provider: string, modelId: string, opts?: { input?: ("text
     maxTokens: 4096,
   } as Model<Api>;
 }
+
+describe("live SDK budget metadata", () => {
+  it("uses the session model limits and preserves SDK routing without credential calls", async () => {
+    const live = { ...fakeSdkModel("custom-provider", "custom-model"), contextWindow: 400000, maxTokens: 128000 };
+    const fake = makeCapableRegistry({ model: live });
+    setSdkRegistryOverride(() => fake.registry);
+    setSdkGetModelOverride(() => {
+      throw new Error("Static catalog must not replace a live model");
+    });
+    assert.deepEqual(await resolveSdkModelInfo("custom-provider", "custom-model"), {
+      contextWindow: 400000,
+      maxOutputTokens: 128000,
+    });
+    const backend = await resolveBackend("custom-provider", "custom-model");
+    assert.equal(backend.backend, "sdk");
+    assert.equal(backend.sdkModelInfo?.maxOutputTokens, 128000);
+    assert.equal(fake.state.streamSimpleCalls.length, 0);
+    assert.deepEqual(await resolveSdkModelInfo("custom-provider", "custom-model", { maxOutputTokens: 8192 }), {
+      contextWindow: 400000,
+      maxOutputTokens: 8192,
+    });
+  });
+  it("uses compatibility metadata when credentials or endpoint settings require that route", async () => {
+    const fake = makeCapableRegistry({ model: fakeSdkModel("custom-provider", "custom-model") });
+    setSdkRegistryOverride(() => fake.registry);
+    setSdkGetModelOverride((provider, model) => ({
+      ...fakeSdkModel(provider, model),
+      contextWindow: 64000,
+      maxTokens: 2048,
+    }));
+    for (const setting of [{ apiKey: "inline-test" }, { baseUrl: "https://example.com" }, { authHeader: false }]) {
+      assert.deepEqual(
+        await resolveSdkModelInfo("custom-provider", "custom-model", undefined, {
+          provider: "custom-provider",
+          id: "custom-model",
+          ...setting,
+        }),
+        { contextWindow: 64000, maxOutputTokens: 2048 },
+      );
+    }
+    assert.equal(fake.state.findCalls, 0);
+  });
+});
 
 function fakeSdkAssistantMessage(text: string, stopReason = "stop", errorMessage?: string): AssistantMessage {
   const inputTokens = 10;

@@ -516,6 +516,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     failOnMarker?: string;
     stepComplete?: boolean;
     reviewOverrides?: Partial<ReviewResult>;
+    integrationOverrides?: Partial<ReviewResult>;
   }): Promise<{ url: string; bodies: string[]; authorizations: Array<string | undefined>; peakActive: () => number }> {
     const bodies: string[] = [];
     const authorizations: Array<string | undefined> = [];
@@ -556,7 +557,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
                 suggestions: [],
                 consensus: false,
               };
-    const respond = (res: ServerResponse) => {
+    const respond = (res: ServerResponse, body: string) => {
       active -= 1;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
@@ -568,6 +569,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
                   ...reviewPayload,
                   planStale: options?.planStale ?? false,
                   ...options?.reviewOverrides,
+                  ...(body.includes("Integration check after") ? options?.integrationOverrides : undefined),
                 }),
               },
             },
@@ -596,10 +598,10 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
           }
           const target = options?.holdForConcurrency;
           if (!target || active >= target) {
-            respond(res);
+            respond(res, body);
             releaseAll();
           } else {
-            held.push(() => respond(res));
+            held.push(() => respond(res, body));
             if (!releaseTimer) {
               releaseTimer = setTimeout(releaseAll, 10_000);
             }
@@ -706,7 +708,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
   for (const scenario of [
     { maxFiles: 1, expectedCalls: 3, cap: undefined, fail: false },
     { maxFiles: 3, expectedCalls: 2, cap: undefined, fail: false },
-    { maxFiles: 3, expectedCalls: 3, cap: 1600, fail: false },
+    { maxFiles: 3, expectedCalls: 0, cap: 1600, fail: false },
     { maxFiles: 3, expectedCalls: 2, cap: undefined, fail: true },
   ]) {
     it(
@@ -752,6 +754,12 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
           () => {},
         );
         assert.equal(bodies.length, scenario.expectedCalls);
+        if (scenario.expectedCalls === 0) {
+          assert.equal(result.review?.verdict, "needs-work");
+          assert.equal(result.review?.inputIncomplete, true);
+          assert.equal(getLastReviewedCommit(cwd), undefined);
+          return;
+        }
         for (const marker of ["CORE_FULL_CONTEXT_MARKER", "SPEC_FULL_CONTEXT_MARKER", "OTHER_FULL_CONTEXT_MARKER"])
           assert.ok(
             bodies.some((body) => body.includes(marker)),
@@ -1555,6 +1563,91 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     assert.equal(getLastReviewedCommit(cwd), head, "a passing root-commit review must anchor the baseline");
   });
 
+  for (const scenario of [
+    { multi: false, fail: false },
+    { multi: true, fail: false },
+    { multi: true, fail: true },
+    { multi: false, fail: false, gap: true },
+  ]) {
+    it(
+      `large new-file review keeps all segments and certification guards (${JSON.stringify(scenario)})`,
+      { skip: !hasGit },
+      async () => {
+        const cwd = makeRepoWithChange("hello\n");
+        const content =
+          Array.from({ length: 900 }, (_, i) => `val MARKER_${String(i).padStart(4, "0")} = "${"x".repeat(65)}"`).join(
+            "\n",
+          ) + "\n";
+        writeFileSync(join(cwd, "NewScreen.kt"), content);
+        if (scenario.multi) writeFileSync(join(cwd, "a.txt"), "COMPANION_MARKER\n");
+        const { url, bodies } = await startStubServer({
+          failOnMarker: scenario.fail ? "MARKER_0899" : undefined,
+          integrationOverrides: scenario.gap
+            ? { contextLimited: true, coverageGaps: ["NewScreen.kt: unresolved integration evidence"] }
+            : undefined,
+        });
+        writeSettings(cwd, {
+          reviewLevel: "high",
+          selfVerify: false,
+          toolUseLoop: false,
+          autoJudge: false,
+          secondary: {
+            provider: "openai",
+            id: "gpt-5.1",
+            backend: "http",
+            baseUrl: url,
+            apiKey: "test",
+            thinking: "xhigh",
+            contextWindow: 12000,
+            maxOutputTokens: 1024,
+            maxRetries: 0,
+          },
+        });
+        const result = await executeWaiReview(
+          cwd,
+          "Review Kotlin scaffold",
+          { cwd } as ExtensionContext,
+          {},
+          undefined,
+          () => {},
+        );
+        assert.ok(bodies.length > 1);
+        for (let i = 0; i < 900; i++)
+          assert.ok(
+            bodies.some((body) => body.includes(`MARKER_${String(i).padStart(4, "0")}`)),
+            `missing source line ${i}`,
+          );
+        for (const body of bodies) {
+          const request = JSON.parse(body) as { messages: Array<{ content: string }>; reasoning_effort?: string };
+          assert.ok(estimateTokens(request.messages.map((message) => message.content).join("")) <= 9776);
+          // The HTTP adapter's existing provider mapping remains unchanged;
+          // the review never changes the resolved model/thinking settings.
+          assert.equal(request.reasoning_effort, "high");
+        }
+        assert.equal(result.model?.thinking, "xhigh");
+        if (scenario.fail) {
+          assert.equal(result.review?.verdict, "needs-work");
+          assert.equal(getLastReviewedCommit(cwd), undefined);
+          assert.notEqual(getReviewedFiles(cwd)["NewScreen.kt"]?.verdict, "pass");
+          assert.ok(!bodies.some((body) => body.includes("Integration check after")));
+        } else if (scenario.gap) {
+          assert.equal(result.review?.verdict, "needs-work");
+          assert.equal(getLastReviewedCommit(cwd), undefined);
+          assert.ok(result.review?.coverageGaps?.length);
+          assert.ok(bodies.some((body) => body.includes("Integration check after")));
+          assert.notEqual(getReviewedFiles(cwd)["NewScreen.kt"]?.verdict, "pass");
+        } else {
+          assert.equal(result.review?.verdict, "pass", JSON.stringify(result));
+          assert.ok(!result.review?.truncated);
+          assert.ok(bodies.some((body) => body.includes("Integration check after")));
+          assert.ok((result.execution?.segments ?? 0) > 1);
+          assert.equal(result.execution?.modelCalls, bodies.length);
+          if (scenario.multi) assert.ok(bodies.some((body) => body.includes("COMPANION_MARKER")));
+        }
+      },
+    );
+  }
+
   it("hunk-split reviews record the file with its merged verdict", { skip: !hasGit }, async () => {
     const cwd = mkdtempSync(join(tmpdir(), "review-hunk-repo-"));
     tmpDirs.push(cwd);
@@ -2299,7 +2392,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     },
   );
 
-  it("a pass on a truncated diff is downgraded to inconclusive and never cached", { skip: !hasGit }, async () => {
+  it("truncated capture is inconclusive and refused before provider work on every attempt", { skip: !hasGit }, async () => {
     const cwd = mkdtempSync(join(tmpdir(), "review-truncated-pass-repo-"));
     tmpDirs.push(cwd);
     initGitRepo(cwd);
@@ -2307,9 +2400,8 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
     writeFileSync(join(cwd, "big.txt"), "hello\n");
     commitAll(cwd);
-    // ~5.5k tokens of diff: fits the model budget loosely enough to avoid the
-    // diff-only guard (med = auto strategy) but exceeds the remaining diff
-    // budget, forcing the single-call truncation path.
+    // An explicit capture cap leaves an incomplete patch. Stop before
+    // provider work instead of obtaining a nominal pass on a fragment.
     const bigLine = "x".repeat(150);
     const big = Array.from({ length: 145 }, (_, i) => `${i} ${bigLine}`).join("\n");
     writeFileSync(join(cwd, "big.txt"), `hello\n\n${big}\n`);
@@ -2317,9 +2409,8 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     const { url, bodies } = await startStubServer();
     writeSettings(cwd, {
       reviewLevel: "med",
-      // Exercise a returned pass on partial capture independently of the
-      // tool loop's pre-provider input-capacity refusal.
       toolUseLoop: false,
+      reviewMaxDiffChars: 3000,
       secondary: {
         provider: "openai",
         id: "gpt-4o-mini",
@@ -2342,10 +2433,10 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     );
 
     // Identical retry: not served from the cache (inconclusive results are
-    // never cached) — the model is called again.
+    // never cached) — local capture checks run again without a model call.
     const second = await executeWaiReview(cwd, "truncated pass probe", ctx, {}, undefined, () => {});
     assert.equal(second.review?.verdict, "needs-work");
-    assert.equal(bodies.length, 2, "an inconclusive result must not be cached");
+    assert.equal(bodies.length, 0, "known incomplete capture must never consume provider requests");
   });
 
   for (const parallel of [false, true]) {
@@ -2481,7 +2572,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
       // Scoped reviews never touch range state (they are self-contained).
       assert.equal(getLastReviewedCommit(cwd), undefined);
       assert.equal(getPendingReviewCommit(cwd), undefined);
-      // Not cached: an identical retry re-runs the model.
+      // Identical incomplete input remains blocked before provider work.
       const second = await executeWaiReview(
         cwd,
         "scoped truncated probe",
@@ -2491,7 +2582,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
         () => {},
       );
       assert.equal(second.review?.verdict, "needs-work");
-      assert.equal(bodies.length, 2, "a scoped coverage-inconclusive result must not be cached");
+      assert.equal(bodies.length, 0, "a scoped incomplete capture must not consume provider requests");
     },
   );
 
