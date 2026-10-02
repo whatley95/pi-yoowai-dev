@@ -62,6 +62,7 @@ import { getReviewLevelSettings, resolveRiskReviewLevel } from "../review-level.
 import type { ProgressReporter } from "../progress.js";
 import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel } from "../types.js";
 import { INCONCLUSIVE_REVIEW_GUIDANCE } from "../workflow-guidance.js";
+import { withReviewRecovery } from "../review-recovery.js";
 
 /** Error returned when no review model can be resolved — the effective level
  *  drives the per-level task lookup (reviewMin/reviewMed/reviewHigh) with the
@@ -106,7 +107,11 @@ export function planAdvanceFromReview(
   return null;
 }
 
-export async function executeWaiReview(
+export async function executeWaiReview(...args: Parameters<typeof executeReview>): Promise<WaiToolResult> {
+  return withReviewRecovery(await executeReview(...args));
+}
+
+async function executeReview(
   cwd: string,
   description: string,
   ctx: ExtensionContext,
@@ -159,6 +164,13 @@ export async function executeWaiReview(
     const reason = unavailableReason ?? "No code changes were found in the requested review scope.";
     return {
       action: "review",
+      recovery: {
+        reason: unavailableReason ? "diff-unavailable" : "empty-diff",
+        message: reason,
+        nextAction:
+          "Verify the working directory, file scope, and VCS range. Include new files; retry only once a reviewable diff is available.",
+        retry: "after-change",
+      },
       review: {
         verdict: "needs-work",
         issues: [],
@@ -182,6 +194,14 @@ export async function executeWaiReview(
   if (missingScopes.length > 0) {
     return {
       action: "review",
+      recovery: {
+        reason: "missing-scoped-files",
+        message: "No diff was captured for one or more requested files or directories.",
+        affectedFiles: missingScopes,
+        nextAction:
+          "Check the project root and VCS range. Run Pi in the other project's directory for files outside this checkout.",
+        retry: "after-change",
+      },
       review: {
         verdict: "needs-work",
         issues: [],
@@ -1157,6 +1177,7 @@ export async function executeWaiReview(
   }
   recordIssues(cwd, review.issues);
   if (checks.some((check) => check.exitCode !== 0)) {
+    review.checksFailed = true;
     review.verdict = "needs-work";
     review.consensus = false;
     review.stepComplete = false;

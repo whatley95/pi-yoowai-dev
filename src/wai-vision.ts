@@ -43,9 +43,32 @@ export function isSupportedVisionPath(path: string): boolean {
 }
 
 export interface YooVisionParams {
-  path: string;
+  path?: string;
+  image?: { type: "image"; data: string; mimeType: string };
   question?: string;
   context?: string;
+}
+
+/** Inline Pi image blocks avoid filesystem writes and base64 in model-facing reports. */
+export function validateInlineImage(
+  raw: unknown,
+): { ok: false; error: string } | { ok: true; image: NonNullable<YooVisionParams["image"]> } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "Expected an image block." };
+  const block = raw as Record<string, unknown>;
+  if (block.type !== "image" || typeof block.data !== "string" || typeof block.mimeType !== "string")
+    return { ok: false, error: "Expected {type:'image', data:base64, mimeType}." };
+  if (!Object.values(MIME_BY_EXT).includes(block.mimeType))
+    return { ok: false, error: "Unsupported inline image MIME type; use PNG, JPEG, GIF, or WebP." };
+  if (block.data.length > Math.ceil(VISION_MAX_IMAGE_BYTES / 3) * 4)
+    return { ok: false, error: "Inline image exceeds the 5 MB image size cap." };
+  if (!block.data || block.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(block.data))
+    return { ok: false, error: "Inline image data must be non-empty canonical base64." };
+  const bytes = Buffer.from(block.data, "base64");
+  if (bytes.length > VISION_MAX_IMAGE_BYTES)
+    return { ok: false, error: "Inline image exceeds the 5 MB image size cap." };
+  if (bytes.toString("base64") !== block.data)
+    return { ok: false, error: "Inline image data must be canonical base64." };
+  return { ok: true, image: { type: "image", data: block.data, mimeType: block.mimeType } };
 }
 
 export function validateWaiVisionParams(
@@ -55,10 +78,18 @@ export function validateWaiVisionParams(
     return { ok: false, error: "Invalid parameters: expected an object." };
   }
   const r = raw as Record<string, unknown>;
-  if (typeof r.path !== "string" || r.path.length === 0) {
-    return { ok: false, error: "Missing or empty 'path' parameter." };
+  if (r.path !== undefined && r.image !== undefined)
+    return { ok: false, error: "Choose either path or image, not both." };
+  const params: YooVisionParams = {};
+  if (r.image !== undefined) {
+    const inline = validateInlineImage(r.image);
+    if (!inline.ok) return inline;
+    params.image = inline.image;
+  } else {
+    if (typeof r.path !== "string" || r.path.length === 0)
+      return { ok: false, error: "Missing or empty 'path' parameter; alternatively provide an inline image block." };
+    params.path = r.path;
   }
-  const params: YooVisionParams = { path: r.path };
   if (typeof r.question === "string" && r.question.length > 0) {
     params.question = r.question;
   }
@@ -266,6 +297,10 @@ export async function executeWaiVision(
     getBranch(): unknown[];
   },
 ): Promise<{ result: VisionResult; cost: UsageCost; model: StageProfile } | { error: string }> {
+  signal?.throwIfAborted();
+  const validated = validateWaiVisionParams(params);
+  if (!validated.ok) return { error: validated.error };
+  params = validated.params;
   const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, "vision");
   if (!modelConfig.provider || !modelConfig.id) {
@@ -273,7 +308,17 @@ export async function executeWaiVision(
   }
 
   progress(1, 3, "Loading input…");
-  const loaded = await loadVisionInput(cwd, params.path);
+  const label = params.path ?? "inline image";
+  const loaded = params.image
+    ? {
+        ok: true as const,
+        input: {
+          kind: "image" as const,
+          images: [{ data: params.image.data, mimeType: params.image.mimeType }],
+          mimeType: params.image.mimeType,
+        },
+      }
+    : await loadVisionInput(cwd, params.path!);
   if (!loaded.ok) {
     return { error: loaded.error };
   }
@@ -287,8 +332,8 @@ export async function executeWaiVision(
     input.kind === "text" ? capActionInstructions(cwd, "vision", config.instructionsMaxTokens ?? 800) : "";
   const { system, user } =
     input.kind === "text"
-      ? buildPdfAnalysisPrompt(params.path, input.text, input.pages, params.question, params.context, instructionsText)
-      : buildVisionPrompt(params.path, params.question, params.context);
+      ? buildPdfAnalysisPrompt(label, input.text, input.pages, params.question, params.context, instructionsText)
+      : buildVisionPrompt(label, params.question, params.context);
   const { content: raw, usage } = await callSecondaryModel(modelConfig.provider, modelConfig.id, system, user, {
     signal,
     thinking: modelConfig.thinking,
@@ -309,7 +354,7 @@ export async function executeWaiVision(
   };
   const resultMimeType = input.kind === "text" ? "application/pdf" : input.mimeType;
   logEvent(cwd, "info", "Vision analysis completed", {
-    path: params.path,
+    path: label,
     inputKind: input.kind,
     mimeType: resultMimeType,
     provider: modelConfig.provider,
@@ -321,7 +366,7 @@ export async function executeWaiVision(
     result: {
       summary: raw.slice(0, 500).trim(),
       details: raw.trim(),
-      imagePath: params.path,
+      imagePath: label,
       mimeType: resultMimeType,
     },
     cost,

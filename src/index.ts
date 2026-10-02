@@ -29,16 +29,8 @@ import {
 import { cleanupProgressReporter, createProgressReporter, clearWaiStatus } from "./progress.js";
 import { setSessionId, clearSessionId, pruneSessionDirs } from "./session-scope.js";
 import { validateWaiToolParams } from "./wai-tool-params.js";
-import {
-  PLAN_GUIDANCE,
-  PLAN_ALIGNMENT_GUIDANCE,
-  REVIEW_SCOPE_GUIDANCE,
-  REVIEW_PROGRESS_GUIDANCE,
-  INCONCLUSIVE_REVIEW_GUIDANCE,
-  COMMIT_GUIDANCE,
-  GIT_COMMIT_GUIDANCE,
-  COMPLETION_EVIDENCE_GUIDANCE,
-} from "./workflow-guidance.js";
+import { WAI_TOOL_GUIDANCE } from "./tool-guidance.js";
+import { attachWorkflowMetadata } from "./review-recovery.js";
 import {
   recordLearnedFact,
   findLearnedFacts,
@@ -393,6 +385,7 @@ export default async function (pi: ExtensionAPI) {
     }
 
     signal?.throwIfAborted();
+    attachWorkflowMetadata(ctx.cwd, result);
     publishWaiResult(ctx, result);
 
     result.elapsedMs = Date.now() - start;
@@ -510,6 +503,7 @@ export default async function (pi: ExtensionAPI) {
     }
 
     signal?.throwIfAborted();
+    attachWorkflowMetadata(ctx.cwd, result);
     publishWaiResult(ctx, result);
     result.elapsedMs = Date.now() - start;
 
@@ -584,41 +578,7 @@ export default async function (pi: ExtensionAPI) {
       "Mandatory second-opinion workflow powered by a secondary model. Always use wai.plan before implementing, wai.advisor for quick judgment calls (cheap, conversational — call it often), wai.review after every change, wai.scan when opening a new project, wai.suggest for structured alternative comparisons, wai.recommend when deciding next steps, and wai.judge before declaring work complete. Optionally use wai.test to check test coverage and failures, and wai.security to audit for vulnerabilities.",
     promptSnippet:
       "wai: always get a second opinion from the secondary model before acting on code or making architectural decisions",
-    promptGuidelines: [
-      PLAN_GUIDANCE,
-      PLAN_ALIGNMENT_GUIDANCE,
-      "Use wai({ plan: '<task description>' }) before starting non-trivial implementation. The secondary model creates a structured todo list with acceptance criteria.",
-      "Use wai({ review: '<change description>' }) after every cohesive code change. Resolve actionable findings and re-run review until it passes with complete coverage. If a finding is wrong, refute it with concrete evidence (file/line, test output, docs) instead of changing correct code; use verify:true for high-stakes disagreements and ask the user when needed.",
-      "A 'code change' = a cohesive edit batch / one plan step's worth of edits — review once per batch before moving on (not after every keystroke). Fixes after feedback are a new batch and need review. A focused pass closes only that scope; whole-tree certification must include all pending changes.",
-      REVIEW_SCOPE_GUIDANCE,
-      "Pick the review depth by the change's risk and complexity: wai_review_min for docs, comments, config, tests-only, or tiny mechanical changes (renames, version bumps); wai_review_med as the default for normal features and bugfixes when unsure; wai_review_high for changes touching auth, secrets, payments, migrations, public APIs, or concurrency, and for complex logic such as algorithm changes, state machines, intricate control flow, or cross-module refactors. The configured pi-yoowai.reviewLevel is the default authority for plain `wai review` calls; the explicit wai_review_min/med/high tools always override it.",
-      "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans. Add scanDeep:true on that first scan to also sample source files and build the project symbol index.",
-      "Scan reuses matching inputs for 24 hours without a model call. Set scanRefresh:true to explicitly re-run the scan model; a reused deep scan still refreshes the symbol graph.",
-      "Use wai({ advisor: '<question>' }) for quick judgment calls before committing to an approach or when stuck. When the question needs a structured comparison of alternatives, use suggest instead.",
-      "Use wai({ suggest: '<question>' }) for structured alternative approaches with evidence. If stuck or looping, consult suggest or advisor before asking the user for implementation guidance.",
-      "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call wai.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without wai.",
-      "Use wai({ recommend: '<next-step question>' }) when deciding what to do next. If you have spent more than one turn without clear progress, call wai.recommend.",
-      "Use wai({ test: '<testing question>' }) for a dedicated assessment of missing tests, failing tests, or test quality. This assessment does not replace executing the required checks.",
-      "Use wai({ security: '<change description>' }) when the change involves auth, input handling, secrets, dependencies, or another security-sensitive area. Scope focused audits with files:[...] if needed.",
-      "Use wai({ judge: '<completed task description>' }) after completing all work for a final holistic review against the original plan.",
-      "An errored, incomplete, or inconclusive review does not certify completion or clear the review gate. Resolve model availability, budget, or input failures before advancing the workflow; report an unresolved blocker instead of looping on retries.",
-      INCONCLUSIVE_REVIEW_GUIDANCE,
-      "Run relevant/fast project checks (typecheck, lint, targeted tests) before each batch review, then the project's full prescribed check suite once on the complete diff before the final review and judge. Include concise result summaries — not full log dumps.",
-      "Workflow order: plan → implement → checks and focused review as needed → fix confirmed findings → complete whole-tree review → inspect returned plan progress → judge the complete task. Use done only for a reviewed step that has not already advanced.",
-      REVIEW_PROGRESS_GUIDANCE,
-      "If plan progress drifts, inspect the plan and code before correcting it with done:<step number>. Lower numbers regress progress and 0 resets it; use done:'all' only when every step is actually complete. Use force only for an explicitly requested manual override and report it as manual completion. Judge can re-sync progress from completedStepIds/incompleteStepIds.",
-      COMMIT_GUIDANCE,
-      GIT_COMMIT_GUIDANCE,
-      COMPLETION_EVIDENCE_GUIDANCE,
-      "Use wai with planUpdate:'<changed decision and remaining work>' when the plan needs revision. It receives the existing plan; progress is retained only for unchanged completed leading steps. Changed or reordered steps need verification again.",
-      "Enable autoJudge in settings.json to automatically run judge when the last plan step is completed (passes review or is marked done via /wai-done).",
-
-      "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
-      "Use `verify: true` when a wai finding is surprising, high-stakes, or unclear. The main agent must then confirm or refute the finding with evidence before acting.",
-      "The secondary model should be a DIFFERENT model family than the main model to catch blind spots. Configure in settings.json under pi-yoowai.secondary.",
-      "Only one action (plan/advisor/review/suggest/recommend/judge/scan/test/security/done/planUpdate) per call. Do not combine them.",
-      "When stuck, confused, or looping, stop and use a wai tool. Do not spin in place or guess.",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai,
     parameters: Type.Object({
       plan: Type.Optional(
         Type.String({
@@ -756,11 +716,7 @@ export default async function (pi: ExtensionAPI) {
     description:
       "Lightweight diff review for small or low-risk changes. Flags obvious bugs, syntax errors, clear regressions, and surface-level style issues. Skips architecture, speculative edge cases, and deep cross-file analysis.",
     promptSnippet: "wai_review_min: quick lightweight review for small or low-risk changes",
-    promptGuidelines: [
-      "Use wai_review_min for small, low-risk changes where a quick sanity check is enough.",
-      "The tool uses the MINIMAL review level: it skips architecture, deep edge cases, and cross-file analysis.",
-      "Pass files:[...] to scope the review, or verify:true when a finding is surprising.",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai_review_min,
     parameters: reviewToolSchema(),
     renderCall: (args, theme, context) => renderReviewToolCall("min", args as { description?: string }, theme, context),
     renderResult,
@@ -775,11 +731,7 @@ export default async function (pi: ExtensionAPI) {
     description:
       "Balanced code review for normal changes. Checks logic, correctness, tests, conventions, and cross-file impact. Flags real problems without nit-picking or speculative issues without evidence.",
     promptSnippet: "wai_review_med: standard balanced review for most changes",
-    promptGuidelines: [
-      "Use wai_review_med as the default review for most code changes.",
-      "The tool uses the STANDARD review level: it checks logic, correctness, tests, conventions, and cross-file impact.",
-      "Pass files:[...] to scope the review, or verify:true for high-stakes disagreements.",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai_review_med,
     parameters: reviewToolSchema(),
     renderCall: (args, theme, context) => renderReviewToolCall("med", args as { description?: string }, theme, context),
     renderResult,
@@ -794,11 +746,7 @@ export default async function (pi: ExtensionAPI) {
     description:
       "Thorough critical review for complex, risky, or security-sensitive changes. Examines architecture, security, edge cases, error handling, concurrency, API contracts, and cross-file implications. Strict: only passes when the change is genuinely robust.",
     promptSnippet: "wai_review_high: deep thorough review for complex or risky changes",
-    promptGuidelines: [
-      "Use wai_review_high for complex, risky, or security-sensitive changes.",
-      "The tool uses the DEEP review level: it examines architecture, security, edge cases, error handling, concurrency, and API contracts.",
-      "Pass files:[...] to scope the review, or verify:true for high-stakes findings.",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai_review_high,
     parameters: reviewToolSchema(),
     renderCall: (args, theme, context) =>
       renderReviewToolCall("high", args as { description?: string }, theme, context),
@@ -840,19 +788,7 @@ export default async function (pi: ExtensionAPI) {
     description:
       "Read stored wai project context: conventions, active plan, review memory, session cost, and recent logs. No model call — fast and deterministic. Use this before making changes to understand the project's rules, current task, and past issues.",
     promptSnippet: "wai_index: retrieve stored project context before acting on code",
-    promptGuidelines: [
-      "Call wai_index when you need a quick overview of the project conventions, active plan, or recent review issues.",
-      "Use topic 'conventions' to learn the project's stack, naming, structure, and patterns.",
-      "Use topic 'plan' to see the current todo list and progress.",
-      "Use topic 'memory' with files:[...] to see past review issues for specific files.",
-      "Use topic 'cost' to check estimated spend in the current session.",
-      "Use topic 'logs' to see recent wai errors or warnings.",
-      "Use topic 'index' to see the project symbol index built by wai scan-deep or wai_index update.",
-      "Use topic 'learned' to see facts recorded with wai_learn.",
-      "Prefer a specific topic, files, and query over topic 'all' during ongoing work to avoid repeatedly returning unrelated context.",
-      "Set update:true to rebuild the symbol index on demand.",
-      "wai_index does not call a model. Symbol-index reads refresh an existing stale graph locally; update:true also builds a missing index.",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai_index,
     parameters: Type.Object({
       topic: Type.Optional(
         Type.Union(
@@ -865,6 +801,7 @@ export default async function (pi: ExtensionAPI) {
             Type.Literal("logs"),
             Type.Literal("index"),
             Type.Literal("learned"),
+            Type.Literal("guidance"),
           ],
           {
             description: "Which stored context to return. Defaults to 'all'.",
@@ -879,6 +816,14 @@ export default async function (pi: ExtensionAPI) {
       query: Type.Optional(
         Type.String({
           description: "Optional keyword filter applied to learned facts, memory text, and index symbols.",
+        }),
+      ),
+      limit: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 100,
+          description:
+            "Limit returned knowledge items and symbols (1-100). Selection counts report omissions; this never limits review coverage.",
         }),
       ),
       update: Type.Optional(
@@ -944,12 +889,7 @@ export default async function (pi: ExtensionAPI) {
     description:
       "Explain a code snippet, error message, diff, or file using the secondary model. Useful when the main agent encounters an unfamiliar API, a cryptic error, or wants a second pair of eyes on a piece of code.",
     promptSnippet: "wai_explain: explain this code or error before acting on it",
-    promptGuidelines: [
-      "Call wai_explain when you see an error you do not fully understand.",
-      "Use wai_explain to get a concise explanation of a code snippet, function, or file.",
-      "Pass files:[...] so the model can see full context around the target.",
-      "Use context to add extra background (e.g. 'this is thrown during wai scan').",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai_explain,
     parameters: Type.Object({
       target: Type.String({
         description: "The code, error message, diff, or concept to explain. Required.",
@@ -1025,16 +965,30 @@ export default async function (pi: ExtensionAPI) {
       "backend and a model that accepts image input (configure one via /wai-model for the vision task if the base " +
       "model is text-only).",
     promptSnippet: "wai_vision: analyze this image or PDF before acting on it",
-    promptGuidelines: [
-      "Call wai_vision when the user references a screenshot, UI mockup, diagram, error capture, or PDF document in the project.",
-      "Pass a focused question (e.g. 'does this UI match the design rules?') to get actionable analysis instead of a generic caption.",
-      "Use context to add background (e.g. 'this is the settings dialog after my change').",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai_vision,
     parameters: Type.Object({
-      path: Type.String({
-        description:
-          "Path to the image (png, jpg, jpeg, webp, gif; max 5 MB) or PDF (max 20 MB). Project-relative or absolute. Required.",
-      }),
+      path: Type.Optional(
+        Type.String({
+          description:
+            "Image path (max 5 MB) or PDF path (max 20 MB), project-relative or absolute. Provide either path or image.",
+        }),
+      ),
+      image: Type.Optional(
+        Type.Object({
+          type: Type.Literal("image"),
+          data: Type.String({
+            maxLength: Math.ceil((5 * 1024 * 1024) / 3) * 4,
+            description:
+              "Base64 image data, at most 5 MB decoded. Pass a Pi generated image block directly; do not print its data.",
+          }),
+          mimeType: Type.Union([
+            Type.Literal("image/png"),
+            Type.Literal("image/jpeg"),
+            Type.Literal("image/gif"),
+            Type.Literal("image/webp"),
+          ]),
+        }),
+      ),
       question: Type.Optional(
         Type.String({
           description: "What to analyze or answer about the image. Defaults to a full analysis.",
@@ -1047,7 +1001,7 @@ export default async function (pi: ExtensionAPI) {
       ),
     }),
     renderCall: (args, theme, context) =>
-      renderVisionCall(args as { path?: string; question?: string }, theme, context),
+      renderVisionCall(args as { path?: string; image?: unknown; question?: string }, theme, context),
     renderResult: (result, opts, theme, context) => renderAuxResult("vision", result, opts, theme, context),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       return runWaiVisionTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);
@@ -1236,16 +1190,7 @@ export default async function (pi: ExtensionAPI) {
     description:
       "Record a persistent project fact that wai will remember across sessions. Facts are surfaced by wai_index so the main agent can ground future work in project-specific knowledge.",
     promptSnippet: "wai_learn: remember this project fact for future sessions",
-    promptGuidelines: [
-      "Call wai_learn to record project-specific facts, decisions, or quirks the main agent should remember.",
-      "Use a category to group related facts (e.g. 'auth', 'build', 'conventions').",
-      "Keep facts concise and actionable.",
-      "Include a project-relative source file for factual claims. Stored memory is context; verify it against current code before acting on it.",
-      "Recorded facts appear in wai_index topic 'learned'.",
-      "Fresh learned facts are automatically selected by task and source-file relevance for the main agent, within its context budget. Fresh decisions are also selected for review prompts.",
-      "Use verify:true for structural reference checks; these do not renew freshness or prove a behavioral claim.",
-      "Add deep:true to verify with the secondary model for higher accuracy (costs tokens per fact).",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai_learn,
     parameters: Type.Object({
       fact: Type.Optional(
         Type.String({
@@ -1313,14 +1258,7 @@ export default async function (pi: ExtensionAPI) {
     description:
       "Scaffold the fullstack guidance templates into real per-repo files (deterministic, no model calls): preview by default; apply only with apply:true; never overwrites existing files.",
     promptSnippet: "wai_scaffold: create the engineering guidance files for this repo",
-    promptGuidelines: [
-      "Call wai_scaffold WITHOUT apply to preview the proposed files first; show the user the preview and get approval before calling it again with apply:true.",
-      "Targets: skill (.pi/skills/engineering-standards/SKILL.md), review/security/test (.pi/yoowai/instructions/<action>.md) — pass an array of the ones wanted.",
-      "The tool fills only factual placeholders from the conventions scan and manifests. Recognized keys WITHOUT evidence render as <FILL ME: key — evidence: ...> (never raw); only UNKNOWN template keys stay as {{key}} and count as unresolved.",
-      "Existing files are NEVER overwritten (exclusive creation) — report skipped files to the user.",
-      "After scaffolding, fill the unresolved markers explicitly by reading the repo (a /wai-fill completion command is planned; do not invent values).",
-      "No model calls, no command execution, no writes without apply:true.",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai_scaffold,
     parameters: Type.Object({
       targets: Type.Array(
         Type.Union([Type.Literal("skill"), Type.Literal("review"), Type.Literal("security"), Type.Literal("test")]),
@@ -1412,13 +1350,7 @@ export default async function (pi: ExtensionAPI) {
     description:
       "Read curated UI/animation design guidance (vendored from Emil Kowalski's skills, MIT). Call this when building, reviewing, or improving UI/animation code to get detailed design guidance.",
     promptSnippet: "wai_design_ref: read detailed UI/animation design guidance for a topic",
-    promptGuidelines: [
-      "Call wai_design_ref when building, reviewing, or improving UI/animation code to get detailed design guidance.",
-      "Call without a topic to list the available topics and their docs.",
-      "Pass a topic (e.g. 'animate', 'review-animations', 'apple-design') to read its SKILL.md guidance.",
-      "Pass doc to read a specific document of a topic (e.g. topic 'improve-animations', doc 'AUDIT.md').",
-      "The distilled baseline rules are already injected automatically for UI files; use this tool for depth.",
-    ],
+    promptGuidelines: WAI_TOOL_GUIDANCE.wai_design_ref,
     parameters: Type.Object({
       topic: Type.Optional(
         Type.String({

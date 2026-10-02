@@ -12,11 +12,13 @@ import {
   loadVisionInput,
   loadVisionPdf,
   validateWaiVisionParams,
+  validateInlineImage,
   VISION_MAX_IMAGE_BYTES,
 } from "./wai-vision.js";
 import { buildPdfAnalysisPrompt, buildVisionPrompt } from "./prompts.js";
 import { callSecondaryModel, setSdkGetModelOverride, setSdkStreamSimpleOverride } from "./secondary-model.js";
 import { getSdkRegistry, setSdkSessionRegistry } from "./backends/sdk-backend.js";
+import { readRecentLogs } from "./logger.js";
 
 const tmpDirs: string[] = [];
 
@@ -338,6 +340,43 @@ describe("wai-vision prompt", () => {
 });
 
 describe("wai-vision model call", () => {
+  it("analyzes a generated inline image without writing a source file or logging base64", async () => {
+    const cwd = makeTempDir("wai-inline-vision-");
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o", backend: "sdk", apiKey: "sk-test" });
+    setSdkGetModelOverride((provider, modelId) => fakeSdkModel(provider, modelId, ["text", "image"]));
+    let captured: { messages: { content: unknown[] }[] } | undefined;
+    setSdkStreamSimpleOverride(((_model: unknown, context: unknown) => {
+      captured = context as typeof captured;
+      return fakeSdkStream(fakeSdkAssistantMessage("Reference has clear hierarchy"));
+    }) as never);
+    const image = { type: "image" as const, mimeType: "image/png", data: "aGk=" };
+    const result = await executeWaiVision(
+      cwd,
+      { image, question: "Does this follow the design rules?" },
+      undefined,
+      () => {},
+    );
+    assert.ok("result" in result);
+    assert.equal(result.result.imagePath, "inline image");
+    assert.match(result.result.details, /clear hierarchy/);
+    assert.ok(captured?.messages[0]?.content.some((block) => (block as { data?: string }).data === image.data));
+    assert.ok(!JSON.stringify(result).includes(image.data));
+    assert.ok(!readRecentLogs(cwd, 100).join("\n").includes(image.data));
+  });
+
+  it("rejects ambiguous, invalid, and oversized inline images before model work", () => {
+    const image = { type: "image", mimeType: "image/png", data: "aGk=" };
+    assert.equal(validateWaiVisionParams({ image }).ok, true);
+    assert.equal(validateWaiVisionParams({ image, path: "a.png" }).ok, false);
+    assert.equal(validateInlineImage({ ...image, data: "aGk" }).ok, false);
+    assert.equal(validateInlineImage({ ...image, data: "aGl=" }).ok, false);
+    assert.equal(validateInlineImage({ ...image, data: "data:image/png;base64,aGk=" }).ok, false);
+    assert.equal(validateInlineImage({ ...image, mimeType: "application/pdf" }).ok, false);
+    assert.equal(
+      validateInlineImage({ ...image, data: "A".repeat(Math.ceil(VISION_MAX_IMAGE_BYTES / 3) * 4 + 4) }).ok,
+      false,
+    );
+  });
   it("rejects images on the http backend", async () => {
     const cwd = makeTempDir("wai-vision-http-");
     writeSettings(cwd, { provider: "openai", id: "gpt-4o", backend: "http", apiKey: "sk-test" });

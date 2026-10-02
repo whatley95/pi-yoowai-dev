@@ -28,7 +28,7 @@ jobs:
       - run: npm test
 
   # Required compatibility job: checks types and focused integration suites
-  # against a disposable install pinned to a recent Pi host (0.99.2). The repo
+  # against a disposable install pinned to a recent Pi host (1.0.0). The repo
   # itself stays on its >=0.82.1 peer floor; this job only proves the registry
   # adapter against a real newer host, including its actual agent execution loop.
   compat-latest:
@@ -38,25 +38,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Stage disposable 0.99.2 tree
+      - name: Stage disposable 1.0.0 tree
         run: |
           mkdir -p "$RUNNER_TEMP/pi-yoowai-latest"
           cd "$RUNNER_TEMP/pi-yoowai-latest"
           cat > package.json << 'PKG'
           {
-            "name": "pi-yoowai-099-validation",
+            "name": "pi-yoowai-100-validation",
             "version": "0.0.0",
             "private": true,
             "type": "module",
             "scripts": {
               "typecheck": "tsc --noEmit",
-              "test-focused": "node --import tsx --test src/file-write-tools.test.ts src/backends/sdk-backend.test.ts src/integration/*.test.ts src/index.test.ts src/wai-vision.test.ts src/secondary-model.test.ts src/auth-reader.test.ts src/actions/scan.test.ts src/actions/test.test.ts src/actions/done.test.ts src/json-read-cache.test.ts src/wai-learn.test.ts src/review-memory.test.ts src/wai-index.test.ts src/tool-loop.test.ts src/actions/review-batching.test.ts"
+              "test-focused": "node --import tsx --test src/file-write-tools.test.ts src/backends/sdk-backend.test.ts src/integration/*.test.ts src/index.test.ts src/wai-vision.test.ts src/secondary-model.test.ts src/auth-reader.test.ts src/actions/scan.test.ts src/actions/test.test.ts src/actions/done.test.ts src/json-read-cache.test.ts src/wai-learn.test.ts src/review-memory.test.ts src/wai-index.test.ts src/tool-loop.test.ts src/actions/review-batching.test.ts src/actions/review.test.ts src/native-output-schemas.test.ts src/tool-guidance.test.ts src/review-recovery.test.ts"
             },
             "dependencies": {
-              "@earendil-works/pi-agent-core": "0.99.2",
-              "@earendil-works/pi-ai": "0.99.2",
-              "@earendil-works/pi-coding-agent": "0.99.2",
-              "@earendil-works/pi-tui": "0.99.2",
+              "@earendil-works/pi-agent-core": "1.0.0",
+              "@earendil-works/pi-ai": "1.0.0",
+              "@earendil-works/pi-coding-agent": "1.0.0",
+              "@earendil-works/pi-tui": "1.0.0",
               "@sinclair/typebox": "^0.34.49",
               "@types/node": "^26.0.0",
               "duck-duck-scrape": "^2.2.7",
@@ -72,5 +72,5 @@ jobs:
           cp -r "${{ github.workspace }}/scripts" ./scripts
           cp "${{ github.workspace }}/tsconfig.json" ./tsconfig.json
           npm install --no-audit --no-fund
-      - name: Types and integration suites under 0.99.2
+      - name: Types and integration suites under 1.0.0
         run: cd "$RUNNER_TEMP/pi-yoowai-latest" && npm run typecheck && npm run test-focused

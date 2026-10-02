@@ -10,20 +10,33 @@ import {
   type ProjectIndex,
 } from "./project-index.js";
 import { loadState } from "./plan-store.js";
-import { getMemorySummary, getPastIssuesForFiles } from "./review-memory.js";
+import { getMemorySummary, getPastIssuesForFiles, getMemoryEntries } from "./review-memory.js";
 import { findLearnedFacts, formatLearnedFactsWithFreshness, type LearnedFact } from "./wai-learn.js";
-import type { Conventions, YoowaiSessionState, PlanTodoItem } from "./types.js";
+import type { Conventions, YoowaiSessionState, PlanTodoItem, MemoryEntry } from "./types.js";
+import { WAI_NAMESPACE } from "./tool-guidance.js";
 
-export type IndexTopic = "all" | "plan" | "memory" | "conventions" | "cost" | "logs" | "index" | "learned";
+export type IndexTopic = "all" | "plan" | "memory" | "conventions" | "cost" | "logs" | "index" | "learned" | "guidance";
 
 export interface WaiIndexParams {
   topic?: IndexTopic;
   files?: string[];
   query?: string;
   update?: boolean;
+  /** Bound returned memory files, learned facts, and index files/symbols; never review coverage. */
+  limit?: number;
 }
 
-const VALID_TOPICS: IndexTopic[] = ["all", "plan", "memory", "conventions", "cost", "logs", "index", "learned"];
+const VALID_TOPICS: IndexTopic[] = [
+  "all",
+  "plan",
+  "memory",
+  "conventions",
+  "cost",
+  "logs",
+  "index",
+  "learned",
+  "guidance",
+];
 
 export function validateWaiIndexParams(raw: unknown): WaiIndexParams {
   const params: WaiIndexParams = {};
@@ -41,6 +54,7 @@ export function validateWaiIndexParams(raw: unknown): WaiIndexParams {
     if (r.update === true) {
       params.update = true;
     }
+    if (typeof r.limit === "number" && Number.isInteger(r.limit) && r.limit > 0) params.limit = Math.min(r.limit, 100);
   }
   return params;
 }
@@ -55,6 +69,8 @@ export interface IndexResult {
     acceptanceCriteria?: string[];
   };
   memory?: string;
+  memoryEntries?: MemoryEntry[];
+  guidance?: string;
   conventions?: Conventions;
   cost?: {
     calls: number;
@@ -69,6 +85,18 @@ export interface IndexResult {
   indexUpdated?: boolean;
   learned?: LearnedFact[];
   learnedSummary?: string;
+  selection?: {
+    memory?: { matched: number; returned: number };
+    learned?: { matched: number; returned: number };
+    index?: {
+      totalFiles: number;
+      matchedFiles: number;
+      returnedFiles: number;
+      matchedSymbols: number;
+      returnedSymbols: number;
+      limited: boolean;
+    };
+  };
 }
 
 function normalizeTopic(topic: unknown): IndexTopic {
@@ -97,6 +125,20 @@ export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResul
   const wants = (t: IndexTopic) => topic === "all" || topic === t;
 
   const result: IndexResult = { topic };
+  // Guidance stays on-demand; topic 'all' must not inject it into every context query.
+  if (topic === "guidance") return { topic, guidance: WAI_NAMESPACE.instructions };
+  const limit =
+    typeof params.limit === "number" && Number.isInteger(params.limit) && params.limit > 0
+      ? Math.min(params.limit, 100)
+      : undefined;
+  const normalizePath = (value: string) => value.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+  const scopes = files.map(normalizePath);
+  const matchesFile = (file: string) =>
+    !scopes.length ||
+    scopes.some((scope) => {
+      const path = normalizePath(file);
+      return path === scope || path.startsWith(`${scope.replace(/\/$/, "")}/`);
+    });
 
   if (params.update) {
     try {
@@ -126,17 +168,45 @@ export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResul
   }
 
   if (wants("memory")) {
+    const entries = getMemoryEntries(cwd)
+      .filter((entry) => matchesFile(entry.file))
+      .map((entry) => ({
+        ...entry,
+        issues: entry.issues.filter(
+          (issue) => !query || `${entry.file} ${issue.issue} ${issue.suggestion}`.toLowerCase().includes(query),
+        ),
+      }))
+      .filter((entry) => entry.issues.length > 0);
+    result.memoryEntries = limit ? entries.slice(0, limit) : entries;
+    result.selection = {
+      ...result.selection,
+      memory: { matched: entries.length, returned: result.memoryEntries.length },
+    };
     result.memory = query
       ? getMemorySummary(cwd, query, files)
       : files.length > 0
         ? getPastIssuesForFiles(cwd, files)
         : getMemorySummary(cwd);
+    if (limit || scopes.some((scope) => !entries.some((entry) => normalizePath(entry.file) === scope))) {
+      result.memory = result.memoryEntries
+        .map(
+          (entry) =>
+            `${entry.file}:\n${entry.issues.map((issue) => `  - [${issue.severity}] ${issue.issue}`).join("\n")}`,
+        )
+        .join("\n\n");
+    }
   }
 
   if (wants("learned")) {
-    const learnedFacts = findLearnedFacts(cwd, query || undefined);
-    result.learned = learnedFacts;
-    result.learnedSummary = formatLearnedFactsWithFreshness(learnedFacts);
+    const learnedFacts = findLearnedFacts(cwd, query || undefined).filter(
+      (fact) => !scopes.length || (fact.source && matchesFile(fact.source)),
+    );
+    result.learned = limit ? learnedFacts.slice(0, limit) : learnedFacts;
+    result.selection = {
+      ...result.selection,
+      learned: { matched: learnedFacts.length, returned: result.learned.length },
+    };
+    result.learnedSummary = formatLearnedFactsWithFreshness(result.learned);
   }
 
   if (wants("cost")) {
@@ -151,8 +221,39 @@ export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResul
   if (wants("index")) {
     const index = loadFreshProjectIndex(cwd);
     if (index) {
-      result.index = index;
-      result.indexSummary = formatIndexSummary(index, query || undefined);
+      const matchingFiles = index.files
+        .filter((file) => matchesFile(file.file))
+        .map((file) => ({
+          ...file,
+          symbols:
+            !query || file.file.toLowerCase().includes(query)
+              ? file.symbols
+              : file.symbols.filter((symbol) =>
+                  `${symbol.name} ${symbol.signature ?? ""}`.toLowerCase().includes(query),
+                ),
+        }))
+        .filter((file) => !query || file.symbols.length > 0 || file.file.toLowerCase().includes(query));
+      let remaining = limit ?? Number.POSITIVE_INFINITY;
+      const selectedFiles = (limit ? matchingFiles.slice(0, limit) : matchingFiles).map((file) => {
+        const symbols = file.symbols.slice(0, remaining);
+        remaining -= symbols.length;
+        return { ...file, symbols };
+      });
+      result.index = { ...index, files: selectedFiles };
+      const matchedSymbols = matchingFiles.reduce((sum, file) => sum + file.symbols.length, 0);
+      const returnedSymbols = selectedFiles.reduce((sum, file) => sum + file.symbols.length, 0);
+      result.selection = {
+        ...result.selection,
+        index: {
+          totalFiles: index.files.length,
+          matchedFiles: matchingFiles.length,
+          returnedFiles: selectedFiles.length,
+          matchedSymbols,
+          returnedSymbols,
+          limited: selectedFiles.length < matchingFiles.length || returnedSymbols < matchedSymbols,
+        },
+      };
+      result.indexSummary = formatIndexSummary(result.index, query || undefined);
     }
   }
 
@@ -162,6 +263,18 @@ export function executeWaiIndex(cwd: string, params: WaiIndexParams): IndexResul
 export function formatIndexResult(result: IndexResult): string {
   const parts: string[] = [];
   parts.push(`# wai index (${result.topic})`);
+  if (result.guidance) return `${parts[0]}\n\n${result.guidance}`;
+  if (result.selection) {
+    const selected = result.selection;
+    const counts = [
+      selected.memory ? `memory files ${selected.memory.returned}/${selected.memory.matched}` : "",
+      selected.learned ? `learned facts ${selected.learned.returned}/${selected.learned.matched}` : "",
+      selected.index
+        ? `index files ${selected.index.returnedFiles}/${selected.index.matchedFiles}, symbols ${selected.index.returnedSymbols}/${selected.index.matchedSymbols}`
+        : "",
+    ].filter(Boolean);
+    if (counts.length) parts.push(`Selection: ${counts.join("; ")}. Knowledge selection is not review coverage.`);
+  }
 
   if (result.indexUpdated === true) {
     parts.push("\n_Index updated successfully._");

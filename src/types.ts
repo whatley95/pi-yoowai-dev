@@ -188,6 +188,8 @@ export interface ReviewResult {
   inputIncomplete?: boolean;
   /** A scoped or historical review cannot certify the current whole working tree. */
   scopeLimited?: boolean;
+  /** Locally executed configured checks failed; never set by model parsing. */
+  checksFailed?: boolean;
   planProgress?: string;
   nextStep?: string;
   escalated?: boolean;
@@ -366,6 +368,9 @@ export interface WaiToolParams {
 }
 
 export interface WaiToolResult {
+  /** Locally derived diagnostics; these do not grant completion or change review gates. */
+  recovery?: ReviewRecovery;
+  workflow?: WorkflowSnapshot;
   /** Actual tree captured before review; approval is invalid if it changes. */
   workspaceFingerprint?: string;
   action: WaiAction;
@@ -400,6 +405,35 @@ export interface WaiToolResult {
   inProgress?: boolean;
   progressMessage?: string;
   verificationRequested?: boolean;
+}
+
+export interface ReviewRecovery {
+  reason:
+    | "diff-unavailable"
+    | "empty-diff"
+    | "missing-scoped-files"
+    | "input-coverage"
+    | "output-truncated"
+    | "budget-exceeded"
+    | "malformed-output"
+    | "verdict-without-findings"
+    | "plan-mismatch"
+    | "workspace-changed"
+    | "checks-failed"
+    | "model-unavailable"
+    | "review-failed";
+  message: string;
+  nextAction: string;
+  retry: "after-change" | "manual" | "transient";
+  affectedFiles?: string[];
+}
+
+export interface WorkflowSnapshot {
+  completedSteps: number;
+  totalSteps: number;
+  currentStep?: string;
+  pendingEdits: number;
+  reviewPending: boolean;
 }
 
 export interface UsageCost {

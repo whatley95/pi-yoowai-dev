@@ -7,8 +7,9 @@ import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { createNativeToolRegistrar, reportNativeUsage } from "./native-tools.js";
 import { cancelSessionWork } from "./session-work.js";
+import { executeWaiIndex } from "../wai-index.js";
 
-function fixture(cwd: string) {
+function fixture(cwd: string, compactGuidance = false) {
   const definitions: ToolDefinition[] = [];
   let onResult: (event: ToolResultEvent) => { isError: boolean } | undefined;
   const pi = {
@@ -22,7 +23,7 @@ function fixture(cwd: string) {
   } as unknown as ExtensionAPI;
   return {
     pi,
-    register: createNativeToolRegistrar(pi),
+    register: createNativeToolRegistrar(pi, { compactGuidance }),
     definitions,
     onResult: (event: ToolResultEvent) => onResult(event),
     ctx: { cwd } as Parameters<ToolDefinition["execute"]>[4],
@@ -45,7 +46,7 @@ it("reads verdicts and errors through Pi's real codemode sandbox", { timeout: 30
     t.skip("Codemode requires Pi 0.99+");
     return;
   }
-  const f = fixture("native-codemode-probe");
+  const f = fixture("native-codemode-probe", true);
   let calls = 0;
   f.register({
     name: "wai",
@@ -57,16 +58,25 @@ it("reads verdicts and errors through Pi's real codemode sandbox", { timeout: 30
       details: ++calls === 1 ? { review: { verdict: "needs-work" } } : { error: "provider unavailable" },
     }),
   });
+  f.register({
+    name: "wai_index",
+    label: "context",
+    description: "context",
+    parameters: Type.Object({ topic: Type.String() }),
+    execute: async (_id, params) => ({
+      content: [],
+      details: executeWaiIndex(f.ctx.cwd, { topic: params.topic as "guidance" }),
+    }),
+  });
   host.createCodemodeExtension({ models: false })(f.pi);
-  const wai = f.definitions[0];
-  const codemode = f.definitions[1];
+  const codemode = f.definitions.find((tool) => tool.name === "codemode")!;
   const ctx = {
     ...f.ctx,
     sessionManager: { getBranch: () => [] },
-    tools: [wai],
+    tools: f.definitions.filter((tool) => tool.name !== "codemode"),
     executeTool: async (name: string, args: unknown) => {
-      assert.equal(name, "wai");
-      const result = await wai.execute("codemode/wai", args, undefined, undefined, f.ctx);
+      const tool = f.definitions.find((tool) => tool.name === name)!;
+      const result = await tool.execute(`codemode/${name}`, args, undefined, undefined, f.ctx);
       return {
         toolCall: { id: "codemode/wai", name, arguments: args },
         result,
@@ -77,7 +87,9 @@ it("reads verdicts and errors through Pi's real codemode sandbox", { timeout: 30
   try {
     const result = await codemode.execute(
       "codemode",
-      { code: "text((await tools.wai({})).review.verdict); text((await tools.wai({})).error);" },
+      {
+        code: "text((await tools.wai({})).review.verdict); text((await tools.wai({})).error); text((await describeNamespace('wai')).instructions.includes('models.generateImages')); text((await tools.wai_index({topic:'guidance'})).guidance.includes('base64'));",
+      },
       undefined,
       undefined,
       ctx,
@@ -89,9 +101,38 @@ it("reads verdicts and errors through Pi's real codemode sandbox", { timeout: 30
     assert.match(text, /Script completed/);
     assert.match(text, /needs-work/);
     assert.match(text, /provider unavailable/);
+    assert.match(text, /true[\s\S]*true/);
     assert.equal(calls, 2);
   } finally {
     cancelSessionWork(f.ctx.cwd);
+  }
+});
+
+it("keeps full guidance on legacy hosts and core rules plus a discoverable namespace on modern hosts", () => {
+  for (const compact of [false, true]) {
+    const f = fixture(`native-metadata-${compact}`, compact);
+    f.register({
+      name: "wai",
+      label: "wai",
+      description: "original",
+      promptGuidelines: ["original rule"],
+      parameters: Type.Object({}),
+      execute: async () => ({ content: [], details: {} }),
+    });
+    const definition = f.definitions[0] as ToolDefinition & {
+      namespace?: { name: string; instructions: string };
+      outputSchema?: { properties: Record<string, unknown> };
+    };
+    if (compact) {
+      assert.equal(definition.namespace?.name, "wai");
+      assert.match(definition.namespace?.instructions ?? "", /Scoped|scoped/);
+      assert.match(definition.promptGuidelines?.join("\n") ?? "", /Commit only when authorized/);
+    } else {
+      assert.equal(definition.namespace, undefined);
+      assert.deepEqual(definition.promptGuidelines, ["original rule"]);
+      assert.equal(definition.description, "original");
+    }
+    assert.ok(definition.outputSchema?.properties.review);
   }
 });
 

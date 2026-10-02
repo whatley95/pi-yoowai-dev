@@ -1444,7 +1444,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-index", {
     description:
-      "Read stored wai project context. Usage: /wai-index [all|plan|memory|conventions|cost|logs|index|learned] [--update]",
+      "Read stored wai project context. Usage: /wai-index [all|plan|memory|conventions|cost|logs|index|learned|guidance] [--update]",
     handler: indexHandler,
   });
 

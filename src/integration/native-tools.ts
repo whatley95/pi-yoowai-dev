@@ -1,11 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { Type } from "@sinclair/typebox";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { beginSessionWork } from "./session-work.js";
+import { getNativeOutputSchema } from "../native-output-schemas.js";
+import { compactToolMetadata } from "../tool-guidance.js";
+import { supportsCompactToolGuidance } from "./host-capabilities.js";
 
 const usageScopes = new AsyncLocalStorage<{ usage?: Usage }>();
-const outputMetadata = { outputSchema: Type.Object({}, { additionalProperties: true }) };
 const mutableTools = new Set([
   "wai",
   "wai_review_min",
@@ -39,7 +40,11 @@ export function reportNativeUsage(usage: Usage): void {
 }
 
 /** Keep human-readable content and details; Pi 0.99+ also exposes details to codemode. */
-export function createNativeToolRegistrar(pi: ExtensionAPI): ExtensionAPI["registerTool"] {
+export function createNativeToolRegistrar(
+  pi: ExtensionAPI,
+  options: { compactGuidance?: boolean } = {},
+): ExtensionAPI["registerTool"] {
+  const compactGuidance = options.compactGuidance ?? supportsCompactToolGuidance();
   const names = new Set<string>();
   pi.on("tool_result", (event) => {
     if (!names.has(event.toolName)) return;
@@ -57,9 +62,11 @@ export function createNativeToolRegistrar(pi: ExtensionAPI): ExtensionAPI["regis
   return (definition) => {
     names.add(definition.name);
     const mutable = mutableTools.has(definition.name);
+    const nativeMetadata = { outputSchema: getNativeOutputSchema(definition.name) };
     pi.registerTool({
       ...definition,
-      ...outputMetadata,
+      ...nativeMetadata,
+      ...(compactGuidance ? compactToolMetadata(definition.name) : {}),
       ...(mutable ? { executionMode: "sequential" as const } : {}),
       execute: async (id, params, signal, update, ctx) => {
         const work = beginSessionWork(ctx.cwd, signal);

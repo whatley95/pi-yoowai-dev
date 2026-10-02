@@ -294,7 +294,11 @@ describe("wai extension registration", () => {
   it("registers guidance consistent with review certification, progress, commit authorization, and tool schemas", async () => {
     const { pi, toolDefs } = createMockPi();
     await initWai(pi);
-    const guidance = (toolDefs.find((tool) => tool.name === "wai")?.promptGuidelines as string[]).join("\n");
+    const tool = toolDefs.find((tool) => tool.name === "wai");
+    const guidance =
+      (tool?.promptGuidelines as string[]).join("\n") +
+      "\n" +
+      ((tool?.namespace as { instructions?: string } | undefined)?.instructions ?? "");
     assert.match(guidance, /scoped or historical pass cannot clear the done gate/);
     assert.match(guidance, /without files, exclude, revision, or since/);
     assert.match(guidance, /only if the same reviewed step remains current/);

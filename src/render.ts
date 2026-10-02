@@ -171,11 +171,11 @@ export function renderExplainCall(args: { target?: string }, theme: Theme, conte
 
 /** Render a call to the wai_vision tool. */
 export function renderVisionCall(
-  args: { path?: string; question?: string },
+  args: { path?: string; image?: unknown; question?: string },
   theme: Theme,
   context?: ToolRenderContext,
 ): Text {
-  const path = typeof args.path === "string" ? args.path : "";
+  const path = typeof args.path === "string" ? args.path : args.image ? "inline image" : "";
   const question = typeof args.question === "string" && args.question ? ` — ${truncate(args.question, 60)}` : "";
   const label = `wai vision: ${truncate(path, 60) || "…"}${question}`;
   const text = getTextComponent(context);

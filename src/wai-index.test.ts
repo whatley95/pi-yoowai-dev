@@ -14,6 +14,62 @@ import { recordLearnedFact } from "./wai-learn.js";
 import type { Conventions, YoowaiSessionState, ReviewIssue, UsageCost } from "./types.js";
 
 describe("wai-index", () => {
+  it("returns detailed guidance on demand without loading project context", () => {
+    const result = executeWaiIndex("nonexistent-context-project", { topic: "guidance", update: true });
+    assert.match(result.guidance ?? "", /models\.generateImages/);
+    assert.match(formatIndexResult(result), /wai_index/);
+    assert.equal(result.indexUpdated, undefined);
+    assert.equal(result.plan, undefined);
+    assert.deepEqual(validateWaiIndexParams({ topic: "guidance", limit: 1000 }), { topic: "guidance", limit: 100 });
+    assert.deepEqual(validateWaiIndexParams({ limit: -1 }), {});
+  });
+
+  it("bounds structured knowledge and symbols and never saves the filtered index", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wai-bounded-index-"));
+    try {
+      mkdirSync(join(dir, "src"));
+      writeFileSync(join(dir, "src", "auth.ts"), "export const authOne = 1; export const authTwo = 2;\n");
+      writeFileSync(join(dir, "other.ts"), "export const authOther = 3;\n");
+      saveProjectIndex(dir, buildProjectIndex(dir));
+      const storedPath = join(dir, ".pi", "yoowai", "index.json");
+      const before = readFileSync(storedPath, "utf8");
+      const result = executeWaiIndex(dir, { topic: "index", files: ["src\\"], query: "auth", limit: 1 });
+      assert.deepEqual(
+        result.index?.files.map((file) => file.file),
+        ["src/auth.ts"],
+      );
+      assert.equal(result.index?.files[0]?.symbols.length, 1);
+      assert.deepEqual(result.selection?.index, {
+        totalFiles: 2,
+        matchedFiles: 1,
+        returnedFiles: 1,
+        matchedSymbols: 2,
+        returnedSymbols: 1,
+        limited: true,
+      });
+      assert.equal(readFileSync(storedPath, "utf8"), before);
+      assert.equal(executeWaiIndex(dir, { topic: "index" }).index?.files.length, 2);
+      recordLearnedFact(dir, "Auth uses locks", { source: "src/auth.ts" });
+      recordLearnedFact(dir, "Auth retries", { source: "src/auth.ts" });
+      recordLearnedFact(dir, "Other behavior", { source: "other.ts" });
+      const facts = executeWaiIndex(dir, { topic: "learned", files: ["src/"], limit: 1 });
+      assert.equal(facts.learned?.length, 1);
+      assert.deepEqual(facts.selection?.learned, { matched: 2, returned: 1 });
+      recordIssues(dir, [
+        { severity: "high", file: "src/auth.ts", issue: "Auth race", suggestion: "Lock auth" },
+        { severity: "high", file: "other.ts", issue: "Auth race", suggestion: "Lock other" },
+      ]);
+      const memory = executeWaiIndex(dir, { topic: "memory", files: ["src/"], query: "race", limit: 1 });
+      assert.deepEqual(
+        memory.memoryEntries?.map((entry) => entry.file),
+        ["src/auth.ts"],
+      );
+      assert.doesNotMatch(memory.memory ?? "", /other\.ts/);
+      assert.match(formatIndexResult(memory), /Knowledge selection is not review coverage/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it("keeps file attribution when searching issues or source paths", () => {
     const dir = mkdtempSync(join(tmpdir(), "wai-memory-query-"));
     try {

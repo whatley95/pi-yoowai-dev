@@ -4,6 +4,7 @@ import { formatConventions } from "./conventions.js";
 import { planStepDescription, isPlanStep } from "./types.js";
 import type { StageProfile, WaiToolResult, ReviewLevel } from "./types.js";
 import { INCONCLUSIVE_REVIEW_GUIDANCE, REVIEW_PROGRESS_GUIDANCE } from "./workflow-guidance.js";
+import { getReviewRecovery } from "./review-recovery.js";
 
 export function issueEmoji(severity: "high" | "medium" | "low"): string {
   switch (severity) {
@@ -42,9 +43,14 @@ function largeChangeHint(level: ReviewLevel | undefined): string {
 }
 
 export function formatResultText(result: WaiToolResult): string {
-  if (result.error) return `wai error: ${result.error}`;
+  const recovery = getReviewRecovery(result);
+  if (result.error)
+    return `wai error: ${result.error}${recovery ? `\n\nRecovery (${recovery.reason}): ${recovery.nextAction}` : ""}`;
 
   const lines: string[] = [];
+  if (recovery) {
+    lines.push(`Recovery (${recovery.reason}): ${recovery.message}`, `Next action: ${recovery.nextAction}`, "");
+  }
 
   const metaParts: string[] = [];
   if (result.cost) {

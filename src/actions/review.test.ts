@@ -721,6 +721,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
       const missing = await executeWaiReview(cwd, "missing file", ctx, { files: ["missing.ts"] }, undefined, () => {});
       assert.equal(missing.review?.verdict, "needs-work");
       assert.equal(missing.review?.inconclusive, true);
+      assert.equal(missing.recovery?.reason, "empty-diff");
       assert.match(missing.review?.suggestions.join(" ") ?? "", /No code changes.*requested review scope/);
       const partial = await executeWaiReview(
         cwd,
@@ -731,6 +732,8 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
         () => {},
       );
       assert.equal(partial.review?.inconclusive, true);
+      assert.equal(partial.recovery?.reason, "missing-scoped-files");
+      assert.deepEqual(partial.recovery?.affectedFiles, ["missing.ts"]);
       assert.match(
         partial.review?.suggestions.join(" ") ?? "",
         /No diff was captured for requested scope: missing\.ts/,
@@ -744,6 +747,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
         () => {},
       );
       assert.equal(outside.review?.inconclusive, true);
+      assert.equal(outside.recovery?.reason, "diff-unavailable");
       assert.match(outside.review?.suggestions.join(" ") ?? "", /outside the current project/);
       const mixed = await executeWaiReview(
         cwd,
