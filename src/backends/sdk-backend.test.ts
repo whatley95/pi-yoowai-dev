@@ -27,7 +27,7 @@ import {
 } from "./sdk-backend.js";
 import { setAgentDirForTests, getAgentDir } from "../pi-paths.js";
 import { callSecondaryModel, setPiSpawnResolver } from "../secondary-model.js";
-import { resolveBackend, resolveSdkModelInfo } from "./backend-resolver.js";
+import { resolveBackend, resolveSdkModelInfo, resolveBudgetModel } from "./backend-resolver.js";
 
 // --- Local fakes (mirroring the helpers in secondary-model.test.ts) ---
 
@@ -47,6 +47,38 @@ function fakeSdkModel(provider: string, modelId: string, opts?: { input?: ("text
 }
 
 describe("live SDK budget metadata", () => {
+  it("shares resolved capacity across actions while preserving task settings and explicit overrides", async () => {
+    const live = { ...fakeSdkModel("custom-provider", "custom-model"), contextWindow: 400000, maxTokens: 128000 };
+    const fake = makeCapableRegistry({ model: live });
+    setSdkRegistryOverride(() => fake.registry);
+    const secondary = { provider: "custom-provider", id: "custom-model", thinking: "xhigh" };
+    assert.deepEqual(await resolveBudgetModel(secondary), {
+      ...secondary,
+      contextWindow: 400000,
+      maxOutputTokens: 128000,
+    });
+    assert.deepEqual(
+      await resolveBudgetModel(
+        { ...secondary, maxOutputTokens: 4096 },
+        {
+          "custom-model": { contextWindow: 64000, maxOutputTokens: 8192 },
+        },
+      ),
+      { ...secondary, contextWindow: 64000, maxOutputTokens: 4096 },
+    );
+    assert.equal(fake.state.streamSimpleCalls.length, 0);
+  });
+  it("uses explicit model-info capacity for non-SDK backends without consulting the live registry", async () => {
+    const fake = makeCapableRegistry({ model: fakeSdkModel("custom-provider", "custom-model") });
+    setSdkRegistryOverride(() => fake.registry);
+    const secondary = { provider: "custom-provider", id: "custom-model", backend: "http" as const, apiKey: "test" };
+    assert.deepEqual(
+      await resolveBudgetModel(secondary, { "custom-model": { contextWindow: 64000, maxOutputTokens: 2048 } }),
+      { ...secondary, contextWindow: 64000, maxOutputTokens: 2048 },
+    );
+    assert.equal(fake.state.findCalls, 0);
+    assert.equal(fake.state.streamSimpleCalls.length, 0);
+  });
   it("uses the session model limits and preserves SDK routing without credential calls", async () => {
     const live = { ...fakeSdkModel("custom-provider", "custom-model"), contextWindow: 400000, maxTokens: 128000 };
     const fake = makeCapableRegistry({ model: live });

@@ -57,7 +57,7 @@ import {
   type ConcurrencyOutcome,
 } from "./review-helpers.js";
 import { executeWaiJudge } from "./judge.js";
-import { resolveBackendType, resolveSdkModelInfo, buildModelInfoOverride } from "../backends/backend-resolver.js";
+import { resolveBackendType, resolveBudgetModel } from "../backends/backend-resolver.js";
 import { validateReviewResult, getReviewValidationErrors, salvageReviewFromMarkdown } from "../prompts.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
@@ -247,15 +247,7 @@ async function executeReview(
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "review", error: REVIEW_NO_MODEL_ERROR };
   }
-  if (resolveBackendType(modelConfig.provider, modelConfig) === "sdk") {
-    const metadata = await resolveSdkModelInfo(
-      modelConfig.provider,
-      modelConfig.id,
-      buildModelInfoOverride(modelConfig, config.modelInfo, modelConfig.id),
-      modelConfig,
-    );
-    modelConfig = { ...modelConfig, ...metadata };
-  }
+  modelConfig = await resolveBudgetModel(modelConfig, config.modelInfo);
   const modelProfile = {
     provider: modelConfig.provider,
     id: modelConfig.id,
@@ -432,6 +424,8 @@ async function executeReview(
       : undefined,
     description,
     modelProfile,
+    modelCapacity: { contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens },
+    language: config.language,
     currentStep,
     // Plan progress is part of the key: without it, a cached review with
     // stepComplete/consensus auto-advance could replay after a tracker

@@ -1,4 +1,16 @@
-import { splitDiffByHunk } from "../diff-grabber.js";
+import { splitDiffByHunk, splitDiffByFile } from "../diff-grabber.js";
+import type { FileContentEntry } from "../file-loader.js";
+
+/** Keep one exact copy of complete newly added source in the patch. Other
+ * source, outlines, and partial additions remain supplemental evidence. */
+export function deduplicateAddedSource(
+  diff: string,
+  files: FileContentEntry[],
+  vcs?: "git" | "svn",
+): FileContentEntry[] {
+  const byFile = splitDiffByFile(diff, vcs ?? (/^Index: /m.test(diff) ? "svn" : "git"));
+  return files.filter((file) => file.mode !== "full" || !additionContainsSource(byFile[file.file] ?? "", file.content));
+}
 
 /** Preserve every patch row and absolute old/new coordinates. Overlap is
  * review context, not another change; segments are never applied as patches. */

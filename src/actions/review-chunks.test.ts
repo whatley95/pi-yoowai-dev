@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { splitReviewDiff, additionContainsSource } from "./review-chunks.js";
+import { splitReviewDiff, additionContainsSource, deduplicateAddedSource } from "./review-chunks.js";
+import type { FileContentEntry } from "../file-loader.js";
 
 function patch(
   rows: string[],
@@ -100,4 +101,24 @@ test("source deduplication requires a complete identical addition", () => {
   assert.ok(!additionContainsSource(diff.replace("--- /dev/null", "--- a/app.kt"), content));
   assert.ok(!additionContainsSource(diff, content.trimEnd()));
   assert.ok(additionContainsSource(diff + "\\ No newline at end of file\n", content.trimEnd()));
+});
+
+test("deduplication matches each Git/SVN path and retains partial, outlined and non-patch source", () => {
+  const content = "val first = 1\nval second = 2\n";
+  const full: FileContentEntry = { file: "app.kt", content, mode: "full", lineCount: 2, tokenEstimate: 8 };
+  const git = patch(["+val first = 1", "+val second = 2"], "@@ -0,0 +1,2 @@");
+  const svn = git.replace(
+    "diff --git a/app.kt b/app.kt\n--- /dev/null\n+++ b/app.kt",
+    "Index: app.kt\n===================================================================\n--- app.kt (nonexistent)\n+++ app.kt (working copy)",
+  );
+  for (const diff of [git, svn]) {
+    assert.deepEqual(deduplicateAddedSource(diff, [full]), []);
+    for (const file of [
+      { ...full, file: "other.kt" },
+      { ...full, mode: "outline" as const },
+      { ...full, content: content + "val third = 3\n" },
+    ])
+      assert.deepEqual(deduplicateAddedSource(diff, [file]), [file]);
+  }
+  assert.deepEqual(deduplicateAddedSource("Project-wide security scan of 1 sampled file(s).", [full]), [full]);
 });

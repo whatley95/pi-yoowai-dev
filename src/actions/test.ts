@@ -6,10 +6,11 @@ import { getDiff, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { logEvent } from "../logger.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
-import { resolveBackendType } from "../backends/backend-resolver.js";
+import { resolveBackendType, resolveBudgetModel } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { runPreReviewCommands, formatPreReviewOutput, type PreReviewOutput } from "../pre-review.js";
 import { calculateReviewBudget } from "../token-budget.js";
+import { deduplicateAddedSource } from "./review-chunks.js";
 import { buildTestPrompt, validateTestResult, getTestValidationErrors, salvageTestFromMarkdown } from "../prompts.js";
 import { capActionInstructions } from "../instructions.js";
 import {
@@ -18,11 +19,10 @@ import {
   recordCostWithBudget,
   parseStructuredResult,
   createStreamProgressCallback,
-  toolLoopOptions,
   continuationMeta,
 } from "./shared.js";
 import { getSessionContext } from "./review-helpers.js";
-import { prepareActionDiff } from "./context-shared.js";
+import { prepareActionDiff, prepareActionContext } from "./context-shared.js";
 import { resolveRangeBase, rebuiltDiff } from "./range.js";
 import { buildCacheKey, getCachedTest, setCachedResult } from "../review-cache.js";
 import { getState, getLastReviewedCommit, getPendingReviewCommit } from "../session-state.js";
@@ -72,10 +72,11 @@ export async function executeWaiTest(
   progress: ProgressReporter,
 ): Promise<WaiToolResult> {
   const config = loadYoowaiConfig(cwd);
-  const modelConfig = resolveTaskModel(config, "test");
+  let modelConfig = resolveTaskModel(config, "test");
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "test", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
+  modelConfig = await resolveBudgetModel(modelConfig, config.modelInfo);
   const modelProfile = {
     provider: modelConfig.provider,
     id: modelConfig.id,
@@ -174,6 +175,9 @@ export async function executeWaiTest(
     diff,
     description,
     modelProfile,
+    modelCapacity: { contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens },
+    reviewMaxInputTokens: config.reviewMaxInputTokens,
+    language: config.language,
     options: { ...options, command: testCommand },
     testCommand,
     instructionsText,
@@ -232,14 +236,16 @@ export async function executeWaiTest(
     strategy,
     fullFileThresholdLines,
   });
-  const fileContents = mapFileContentEntries(fileResult.entries);
+  const files = deduplicateAddedSource(diff, fileResult.entries);
+  const fileTokens = files.reduce((sum, file) => sum + file.tokenEstimate, 0);
+  const fileContents = mapFileContentEntries(files);
 
   // Fail closed instead of silently truncating: test has no hunk/parallel
   // splitting, so an over-budget diff returns guidance before any model call.
   const prepared = prepareActionDiff("test", {
     diff,
     availableInputTokens: budget.availableInputTokens,
-    fileTokens: fileResult.totalTokens,
+    fileTokens,
   });
   if (!prepared.ok) {
     return { action: "test", error: prepared.error, model: modelProfile };
@@ -256,6 +262,8 @@ export async function executeWaiTest(
     currentStep,
     instructionsText,
   );
+  const context = prepareActionContext("test", config, { cwd, paths: changedFiles, files, budget, system, user });
+  if (!context.ok) return { action: "test", error: context.error, model: modelProfile };
   progress(6, STAGES.test, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const {
     content: raw,
@@ -270,7 +278,7 @@ export async function executeWaiTest(
     task: "test",
     structuredOutput: true,
     onStreamProgress: createStreamProgressCallback(progress, 6, STAGES.test),
-    ...toolLoopOptions(config),
+    ...context.options,
   });
 
   progress(7, STAGES.test, "Parsing test result…");

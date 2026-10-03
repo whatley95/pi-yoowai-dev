@@ -49,9 +49,48 @@ This is mechanical coverage and call-count evidence. No live-model accuracy comp
 or promised wall-clock speedup is claimed; provider reasoning and necessary context
 can still dominate a high review.
 
+## Coverage across actions
+
+The follow-up extends shared capacity resolution and exact new-file source
+deduplication to judge, security, and test analysis. Their complete prompts are
+measured before a provider request; when context tools are explicitly enabled,
+64k read pages are bounded by the remaining prompt capacity. Unset/false still
+disables their loops, true still permits five requests, and numeric limits remain
+authoritative. Min/medium/high reviews, automatic review, and `/wai-audit` share
+these executors. Council members receive the same deduplicated source and retain
+parallel assessment plus synthesis. Standalone tools retain 4k pages.
+
+The actual judge/security/test executors each deliver a complete identical 55 KB
+source fixture in one context request and two model rounds with an explicit
+one-request cap. Each also verifies one copy of new-file source, retained
+modified-file contents, and zero provider calls for an impossible input cap.
+Additional checks cover SDK/configured capacity precedence, Git/SVN source identity,
+sampled-security source retention, disabled loops, language overhead, and small
+remaining context. These are local HTTP/SDK stubs rather than live-model timings.
+
+## Tradeoffs
+
+- A larger page can increase tokens in one request while reducing repeated model
+  round trips. Pages shrink with available headroom; native host byte/line limits
+  can still require multiple reads.
+- Medium/high segmentation repeats instructions and overlap and requires an
+  integration pass. It can cost more or take longer than an already-fitting call.
+  Judge/security/test still require a complete diff to fit one assessment; they
+  do not gain review's segmentation. Project-wide security remains a sample.
+- Configured reasoning, verification, council membership, actual check execution,
+  cancellation, native policy, fingerprints and certification are preserved.
+  Provider reasoning and configured commands can still dominate latency.
+- Complete-input preflight can reject an impossible cap sooner, producing an
+  honest error rather than spending model calls on incomplete evidence. Changed
+  cache contracts/capacity settings require a fresh assessment once.
+- Small one-call reviews may improve little. Changing evidence paging/distribution
+  can affect model attention; coverage regression tests do not prove identical
+  defect detection. A repeated, human-adjudicated live comparison is still needed
+  for an accuracy or end-to-end speed claim.
+
 ## Validation
 
-Supported development host: the full suite passed with 1,470 successful tests,
+Supported development host: the full suite passed with 1,484 successful tests,
 four expected older-host skips, and zero failures. Typecheck, ESLint, source
 formatting, and staged whitespace checks passed.
 
@@ -59,3 +98,8 @@ Pi 1.0.0: all-source typecheck and 564 checks passed without skips or failures
 (413 component/SDK/native integration checks, 140 prompt checks, and 11 review
 executor cases). Native discovery/filtering and package checks cover twelve skills
 and all 39 skill files. Skill frontmatter validation passed for every entry.
+
+The follow-up also passed all-source typechecking on Pi 1.0.0 and 97 focused
+context/judge/security/test/SDK regressions without skips or failures. The full
+supported-host suite used the unchanged test glob with Node's worker limit before
+the file arguments (`node --import tsx --test --test-concurrency=4 "src/**/*.test.ts"`).

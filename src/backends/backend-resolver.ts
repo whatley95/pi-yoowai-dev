@@ -81,6 +81,20 @@ export function resolveBackendType(provider: string, secondary?: SecondaryModelC
   return secondary?.backend ?? (secondary?.baseUrl ? "http" : useSdk ? "sdk" : "pi");
 }
 
+/** Resolve prompt capacity from the same catalog/overrides as execution,
+ * without authentication or a provider request. */
+export async function resolveBudgetModel(
+  secondary: SecondaryModelConfig,
+  modelInfo?: Record<string, Partial<ModelInfo>>,
+): Promise<SecondaryModelConfig> {
+  const overrides = buildModelInfoOverride(secondary, modelInfo, secondary.id);
+  const metadata =
+    resolveBackendType(secondary.provider, secondary) === "sdk"
+      ? await resolveSdkModelInfo(secondary.provider, secondary.id, overrides, secondary)
+      : undefined;
+  return { ...secondary, ...metadata, ...overrides };
+}
+
 export async function resolveBackend(
   provider: string,
   model: string,

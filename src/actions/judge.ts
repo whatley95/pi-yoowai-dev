@@ -9,7 +9,7 @@ import { formatDesignRulesForPrompt, hasUiChanges } from "../design-ref.js";
 import { capActionInstructions } from "../instructions.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
-import { resolveBackendType } from "../backends/backend-resolver.js";
+import { resolveBackendType, resolveBudgetModel } from "../backends/backend-resolver.js";
 import { buildReviewEvidencePack } from "./evidence-pack.js";
 import {
   buildJudgePrompt,
@@ -20,6 +20,7 @@ import {
 import { getPastIssuesForFiles } from "../review-memory.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
 import { calculateReviewBudget } from "../token-budget.js";
+import { deduplicateAddedSource } from "./review-chunks.js";
 import {
   getState,
   buildReviewHistory,
@@ -38,12 +39,11 @@ import {
   recordCostWithBudget,
   parseStructuredResult,
   createStreamProgressCallback,
-  toolLoopOptions,
   continuationMeta,
 } from "./shared.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { runJudgeCouncil } from "./judge-council.js";
-import { resolveEffectivePreReviewCommands, prepareActionDiff } from "./context-shared.js";
+import { resolveEffectivePreReviewCommands, prepareActionDiff, prepareActionContext } from "./context-shared.js";
 import { buildCacheKey, getCachedJudge, setCachedResult } from "../review-cache.js";
 import type { ProgressReporter } from "../progress.js";
 import type { JudgeResult, UsageCost, WaiToolResult } from "../types.js";
@@ -57,10 +57,11 @@ export async function executeWaiJudge(
 ): Promise<WaiToolResult> {
   signal?.throwIfAborted();
   const config = loadYoowaiConfig(cwd);
-  const modelConfig = resolveTaskModel(config, "judge");
+  let modelConfig = resolveTaskModel(config, "judge");
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "judge", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
+  modelConfig = await resolveBudgetModel(modelConfig, config.modelInfo);
   const modelProfile = {
     provider: modelConfig.provider,
     id: modelConfig.id,
@@ -194,6 +195,9 @@ export async function executeWaiJudge(
     diff,
     description,
     modelProfile,
+    modelCapacity: { contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens },
+    reviewMaxInputTokens: config.reviewMaxInputTokens,
+    language: config.language,
     // The resolved range state is part of the key: two holistic ranges can
     // produce identical diff TEXT while representing different accepted/
     // pending review state, so a cached judgment must never replay across a
@@ -294,12 +298,15 @@ export async function executeWaiJudge(
           fullFileThresholdLines,
         });
 
+  const files = deduplicateAddedSource(diff, fileResult.entries);
+  const fileTokens = files.reduce((sum, file) => sum + file.tokenEstimate, 0);
+
   // Fail closed instead of silently truncating: judge has no hunk/parallel
   // splitting, so an over-budget diff returns guidance before any model call.
   const prepared = prepareActionDiff("judge", {
     diff,
     availableInputTokens: budgetWithPreReview.availableInputTokens,
-    fileTokens: fileResult.totalTokens,
+    fileTokens,
     codemap,
     designRefText,
   });
@@ -321,11 +328,21 @@ export async function executeWaiJudge(
     instructionsText,
     evidencePack: judgeEvidencePack.text,
     diff: finalDiff,
-    fileContents: fileResult.entries.map((f) => ({ file: f.file, content: f.content, mode: f.mode })),
+    fileContents: files.map((f) => ({ file: f.file, content: f.content, mode: f.mode })),
     droppedFiles: finalDroppedFiles,
     budgetNote: `Context window: ${budgetWithPreReview.contextWindow.toLocaleString()} tokens. Reserved output: ${budgetWithPreReview.reservedOutputTokens.toLocaleString()}. Available for context: ${budgetWithPreReview.availableInputTokens.toLocaleString()}.`,
     nativeJson,
   });
+
+  const context = prepareActionContext("judge", config, {
+    cwd,
+    paths: changedFiles,
+    files,
+    budget: budgetWithPreReview,
+    system,
+    user,
+  });
+  if (!context.ok) return { action: "judge", error: context.error, model: modelProfile };
 
   let judge: JudgeResult | null;
   let cost: UsageCost | undefined;
@@ -365,7 +382,7 @@ export async function executeWaiJudge(
       task: "judge",
       structuredOutput: true,
       onStreamProgress: createStreamProgressCallback(progress, 3, STAGES.judge),
-      ...toolLoopOptions(config),
+      ...context.options,
     });
     rounds = singleRounds;
     finalTruncated = singleTruncated;

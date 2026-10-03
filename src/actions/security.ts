@@ -4,9 +4,10 @@ import { getDiff, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions, scanProjectConventions, gatherDeepScanSamples } from "../conventions.js";
 import { logEvent } from "../logger.js";
 import { callSecondaryModel, providerSupportsJsonObject } from "../secondary-model.js";
-import { resolveBackendType } from "../backends/backend-resolver.js";
+import { resolveBackendType, resolveBudgetModel } from "../backends/backend-resolver.js";
 import { loadFileContentsForReview, type FileContentEntry } from "../file-loader.js";
 import { calculateReviewBudget } from "../token-budget.js";
+import { deduplicateAddedSource } from "./review-chunks.js";
 import { capActionInstructions } from "../instructions.js";
 import {
   buildSecurityPrompt,
@@ -20,11 +21,10 @@ import {
   recordCostWithBudget,
   parseStructuredResult,
   createStreamProgressCallback,
-  toolLoopOptions,
   continuationMeta,
 } from "./shared.js";
 import { getSessionContext } from "./review-helpers.js";
-import { prepareActionDiff } from "./context-shared.js";
+import { prepareActionDiff, prepareActionContext } from "./context-shared.js";
 import { resolveRangeBase, rebuiltDiff } from "./range.js";
 import { buildCacheKey, getCachedSecurity, setCachedResult } from "../review-cache.js";
 import { getState, getLastReviewedCommit, getPendingReviewCommit } from "../session-state.js";
@@ -55,10 +55,11 @@ export async function executeWaiSecurity(
   progress: ProgressReporter,
 ): Promise<WaiToolResult> {
   const config = loadYoowaiConfig(cwd);
-  const modelConfig = resolveTaskModel(config, "security");
+  let modelConfig = resolveTaskModel(config, "security");
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "security", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
   }
+  modelConfig = await resolveBudgetModel(modelConfig, config.modelInfo);
   const modelProfile = {
     provider: modelConfig.provider,
     id: modelConfig.id,
@@ -163,6 +164,9 @@ export async function executeWaiSecurity(
     diff: options.fullProject ? `project-scan:${changedFiles.join(",")}` : diff,
     description,
     modelProfile,
+    modelCapacity: { contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens },
+    reviewMaxInputTokens: config.reviewMaxInputTokens,
+    language: config.language,
     options: { ...options, untracked: options.untracked ?? true },
     instructionsText,
     conventionsText,
@@ -207,14 +211,16 @@ export async function executeWaiSecurity(
     strategy,
     fullFileThresholdLines,
   });
-  const fileContents = mapFileContentEntries(fileResult.entries);
+  const files = deduplicateAddedSource(diff, fileResult.entries);
+  const fileTokens = files.reduce((sum, file) => sum + file.tokenEstimate, 0);
+  const fileContents = mapFileContentEntries(files);
 
   // Fail closed instead of silently truncating: security has no hunk/parallel
   // splitting, so an over-budget diff returns guidance before any model call.
   const prepared = prepareActionDiff("security", {
     diff,
     availableInputTokens: budget.availableInputTokens,
-    fileTokens: fileResult.totalTokens,
+    fileTokens,
   });
   if (!prepared.ok) {
     return { action: "security", error: prepared.error, model: modelProfile };
@@ -230,6 +236,8 @@ export async function executeWaiSecurity(
     currentStep,
     instructionsText,
   );
+  const context = prepareActionContext("security", config, { cwd, paths: changedFiles, files, budget, system, user });
+  if (!context.ok) return { action: "security", error: context.error, model: modelProfile };
   progress(4, STAGES.security, `Calling ${secondaryModelLabel(modelConfig)}…`);
   const {
     content: raw,
@@ -244,7 +252,7 @@ export async function executeWaiSecurity(
     task: "security",
     structuredOutput: true,
     onStreamProgress: createStreamProgressCallback(progress, 4, STAGES.security),
-    ...toolLoopOptions(config),
+    ...context.options,
   });
 
   progress(5, STAGES.security, "Parsing security audit…");

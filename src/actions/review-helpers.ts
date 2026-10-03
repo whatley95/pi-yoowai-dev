@@ -3,10 +3,9 @@ import { buildReviewEvidencePack } from "./evidence-pack.js";
 import { callSecondaryModel } from "../secondary-model.js";
 import { ToolLoopCoverageError } from "../tool-loop.js";
 import { resolveReviewToolContext } from "./review-tool-context.js";
-import { additionContainsSource } from "./review-chunks.js";
+import { deduplicateAddedSource } from "./review-chunks.js";
 import { logEvent } from "../logger.js";
 import { emptyRecordedUsage } from "../cost-tracker.js";
-import { splitDiffByFile } from "../diff-grabber.js";
 import {
   buildAdaptiveReviewPrompt,
   validateReviewResult,
@@ -296,10 +295,9 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
     evidencePackMaxTokens,
   } = input;
 
-  const byFile = splitDiffByFile(diff, input.vcs as "git" | "svn" | undefined);
-  let files = input.files.filter(
-    (file) => input.truncated || !additionContainsSource(byFile[file.file] ?? diff, file.content),
-  );
+  let files = input.truncated
+    ? input.files
+    : deduplicateAddedSource(diff, input.files, input.vcs as "git" | "svn" | undefined);
   const duplicateSourceFiles = input.files.length - files.length;
   const omitted = new Set(input.omittedFileContents ?? []);
   if (input.truncated) {

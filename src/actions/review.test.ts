@@ -2392,52 +2392,56 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     },
   );
 
-  it("truncated capture is inconclusive and refused before provider work on every attempt", { skip: !hasGit }, async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "review-truncated-pass-repo-"));
-    tmpDirs.push(cwd);
-    initGitRepo(cwd);
-    mkdirSync(join(cwd, ".pi"), { recursive: true });
-    writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
-    writeFileSync(join(cwd, "big.txt"), "hello\n");
-    commitAll(cwd);
-    // An explicit capture cap leaves an incomplete patch. Stop before
-    // provider work instead of obtaining a nominal pass on a fragment.
-    const bigLine = "x".repeat(150);
-    const big = Array.from({ length: 145 }, (_, i) => `${i} ${bigLine}`).join("\n");
-    writeFileSync(join(cwd, "big.txt"), `hello\n\n${big}\n`);
+  it(
+    "truncated capture is inconclusive and refused before provider work on every attempt",
+    { skip: !hasGit },
+    async () => {
+      const cwd = mkdtempSync(join(tmpdir(), "review-truncated-pass-repo-"));
+      tmpDirs.push(cwd);
+      initGitRepo(cwd);
+      mkdirSync(join(cwd, ".pi"), { recursive: true });
+      writeFileSync(join(cwd, ".gitignore"), ".pi/\n", "utf-8");
+      writeFileSync(join(cwd, "big.txt"), "hello\n");
+      commitAll(cwd);
+      // An explicit capture cap leaves an incomplete patch. Stop before
+      // provider work instead of obtaining a nominal pass on a fragment.
+      const bigLine = "x".repeat(150);
+      const big = Array.from({ length: 145 }, (_, i) => `${i} ${bigLine}`).join("\n");
+      writeFileSync(join(cwd, "big.txt"), `hello\n\n${big}\n`);
 
-    const { url, bodies } = await startStubServer();
-    writeSettings(cwd, {
-      reviewLevel: "med",
-      toolUseLoop: false,
-      reviewMaxDiffChars: 3000,
-      secondary: {
-        provider: "openai",
-        id: "gpt-4o-mini",
-        thinking: "off",
-        contextWindow: 8000,
-        maxOutputTokens: 1024,
-        backend: "http",
-        baseUrl: url,
-        apiKey: "test-key",
-      },
-    });
-    const ctx = { cwd } as unknown as ExtensionContext;
-    const first = await executeWaiReview(cwd, "truncated pass probe", ctx, {}, undefined, () => {});
-    assert.equal(first.review?.verdict, "needs-work", "a pass on a truncated diff must be downgraded");
-    assert.equal(first.review?.inconclusive, true);
-    assert.equal(getLastReviewedCommit(cwd), undefined, "a truncated pass must not advance the baseline");
-    assert.ok(
-      first.review?.suggestions.some((s) => s.includes("truncated")),
-      "the downgrade must tell the user why",
-    );
+      const { url, bodies } = await startStubServer();
+      writeSettings(cwd, {
+        reviewLevel: "med",
+        toolUseLoop: false,
+        reviewMaxDiffChars: 3000,
+        secondary: {
+          provider: "openai",
+          id: "gpt-4o-mini",
+          thinking: "off",
+          contextWindow: 8000,
+          maxOutputTokens: 1024,
+          backend: "http",
+          baseUrl: url,
+          apiKey: "test-key",
+        },
+      });
+      const ctx = { cwd } as unknown as ExtensionContext;
+      const first = await executeWaiReview(cwd, "truncated pass probe", ctx, {}, undefined, () => {});
+      assert.equal(first.review?.verdict, "needs-work", "a pass on a truncated diff must be downgraded");
+      assert.equal(first.review?.inconclusive, true);
+      assert.equal(getLastReviewedCommit(cwd), undefined, "a truncated pass must not advance the baseline");
+      assert.ok(
+        first.review?.suggestions.some((s) => s.includes("truncated")),
+        "the downgrade must tell the user why",
+      );
 
-    // Identical retry: not served from the cache (inconclusive results are
-    // never cached) — local capture checks run again without a model call.
-    const second = await executeWaiReview(cwd, "truncated pass probe", ctx, {}, undefined, () => {});
-    assert.equal(second.review?.verdict, "needs-work");
-    assert.equal(bodies.length, 0, "known incomplete capture must never consume provider requests");
-  });
+      // Identical retry: not served from the cache (inconclusive results are
+      // never cached) — local capture checks run again without a model call.
+      const second = await executeWaiReview(cwd, "truncated pass probe", ctx, {}, undefined, () => {});
+      assert.equal(second.review?.verdict, "needs-work");
+      assert.equal(bodies.length, 0, "known incomplete capture must never consume provider requests");
+    },
+  );
 
   for (const parallel of [false, true]) {
     it(

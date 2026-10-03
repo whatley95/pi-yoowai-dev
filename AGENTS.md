@@ -357,6 +357,8 @@ The project uses the Node.js built-in test runner with `tsx` for TypeScript load
 
 Test files are co-located with the source modules they cover (`src/**/*.test.ts`). When adding new functionality, add or extend the relevant test file. Note that `npm test` passes a glob to the test runner, which requires Node ≥ 22.
 
+On resource-constrained hosts, run the same suite with `node --import tsx --test --test-concurrency=4 "src/**/*.test.ts"`. Put runner flags before the test paths; appending them with `npm test -- ...` does not constrain this script's worker count.
+
 ---
 
 ## Configuration and runtime architecture
@@ -526,6 +528,8 @@ The extension stores per-project runtime data under `.pi/yoowai/`:
 - `completion-evidence.ts` persists configured command exit codes and separate model assessments in plan state. Criteria remain unverified rather than deriving proof from generic test success. Configured failing checks prevent passing review/judge verdicts; requests with configured checks bypass model-result caches to execute checks afresh.
 - `finding-tracker.ts` tracks complete fresh whole-tree rounds (no cache/scoped/incomplete counts), supplies documented dismissal context, and is cleared by `/wai-clear`.
 - `review-benchmark.ts` and `scripts/review-benchmark.ts` provide eight paired fixtures, an opt-in live runner, and a scorer requiring human adjudication. `npm run benchmark -- --fixtures`/`--score <report>` are offline; `--live --output <report>` makes provider calls with a cumulative configured budget. Do not report measured model accuracy from fixture or unit-test success.
+
+- `resolveBudgetModel` shares execution-route SDK metadata and explicit capacity overrides across review/judge/security/test. `deduplicateAddedSource` matches complete exact additions by Git/SVN path; modified files, outlines, partial patches and sampled security contents remain supplied. `prepareActionContext` measures complete judgment/security/test prompts (including language and tool overhead), fails locally on impossible caps, and enables bounded 64k pages only when their existing tool-loop configuration permits it. Numeric request limits and the true=5 default remain; councils still receive the same prepared source and keep their existing parallel/synthesis flow. Cache keys include capacity/input caps and language. These actions still require a complete single-call diff; only medium/high review segments large patches. Preserve required evidence and avoid claiming measured accuracy or universal speedups from deterministic request-count checks.
 
 - This file is maintained alongside the code; it was written from the actual project contents and should be updated whenever the structure, commands, or conventions change.
 - Do not assume a build step. Changes are validated with `npm run typecheck` and `npm run lint`.
