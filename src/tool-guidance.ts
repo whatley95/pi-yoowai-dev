@@ -18,7 +18,7 @@ export const WAI_TOOL_GUIDANCE = {
     "Use wai({ review: '<change description>' }) after every cohesive code change. Resolve actionable findings and re-run review until it passes with complete coverage. If a finding is wrong, refute it with concrete evidence (file/line, test output, docs) instead of changing correct code; use verify:true for high-stakes disagreements and ask the user when needed.",
     "A 'code change' = a cohesive edit batch / one plan step's worth of edits — review once per batch before moving on (not after every keystroke). Fixes after feedback are a new batch and need review. A focused pass closes only that scope; whole-tree certification must include all pending changes.",
     REVIEW_SCOPE_GUIDANCE,
-    "Pick the review depth by the change's risk and complexity: wai_review_min for docs, comments, config, tests-only, or tiny mechanical changes (renames, version bumps); wai_review_med as the default for normal features and bugfixes when unsure; wai_review_high for changes touching auth, secrets, payments, migrations, public APIs, or concurrency, and for complex logic such as algorithm changes, state machines, intricate control flow, or cross-module refactors. The configured pi-yoowai.reviewLevel is the default authority for plain `wai review` calls; the explicit wai_review_min/med/high tools always override it.",
+    "Pick review depth by the change's risk and complexity: wai_review_med is the default for normal features and bugfixes or when unsure; wai_review_min is for clearly low-risk docs, comments, config, tests-only, or tiny mechanical changes (renames, version bumps); wai_review_high requires a concrete risk such as auth, secrets, payments, migrations, public API behavior, concurrency, algorithms, state machines, intricate control flow, or cross-module refactors. File count, model family, and thinking level alone do not justify high. A small security-sensitive change can still require high. Plain `wai review` defaults to med unless pi-yoowai.reviewLevel is configured; the explicit wai_review_min/med/high tools always override that default.",
     "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans. Add scanDeep:true on that first scan to also sample source files and build the project symbol index.",
     "Scan reuses matching inputs for 24 hours without a model call. Set scanRefresh:true to explicitly re-run the scan model; a reused deep scan still refreshes the symbol graph.",
     "Use wai({ advisor: '<question>' }) for quick judgment calls before committing to an approach or when stuck. When the question needs a structured comparison of alternatives, use suggest instead.",
@@ -135,6 +135,9 @@ WAI_TOOL_GUIDANCE.wai_vision.push(CODEMODE_IMAGE_GUIDANCE);
 const COMPACT_CORE = [
   "Use one wai action per call: plan before non-trivial work, review each cohesive edit batch, judge before completion. " +
     "Read wai_index({topic:'guidance'}) or describeNamespace('wai').instructions before first use for detailed workflow and tool guidance.",
+  "Default to med for normal changes or uncertainty; use min for clearly low-risk edits and high for a concrete " +
+    "security, data, contract, concurrency, or complexity risk. File count, model family, and thinking level alone " +
+    "do not justify high. Explicit tool/config review levels win.",
   "A scoped/historical pass, inconclusive result, omitted files, truncated input/output, or failed checks cannot certify " +
     "the whole tree. Include new files in a complete unscoped final review; inspect recovery before retrying unchanged input.",
   "Review may already advance the plan: inspect workflow.completedSteps or wai_index({topic:'plan'}) before done. " +
@@ -147,7 +150,7 @@ const COMPACT_CORE = [
 const DESCRIPTIONS: Record<string, string> = {
   wai: "Secondary-model planning, advice, review, testing assessment, security assessment, judgment, and plan progress. One action per call.",
   wai_review_min: "Lightweight second-opinion review for small, low-risk changes.",
-  wai_review_med: "Balanced second-opinion review for normal features and fixes.",
+  wai_review_med: "Default balanced second-opinion review for normal features and fixes.",
   wai_review_high: "Deep second-opinion review for risky or complex changes.",
   wai_index: "Query stored project context, plan progress, memory, learned facts, and symbols. No model call.",
   wai_explain: "Ask the secondary model to explain code, a file, or an error.",

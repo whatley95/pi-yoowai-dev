@@ -76,7 +76,7 @@ export interface YoowaiConfig {
   reviewMaxConventionsTokens?: number;
   reviewMaxMemoryTokens?: number;
   reviewStrategy?: "auto" | "diff-only" | "full-files";
-  /** Review depth preset. Defaults to a model-derived value; individual review budgets override the preset. */
+  /** Review depth preset. Defaults to med; explicit review settings override the preset defaults. */
   reviewLevel?: ReviewLevel;
   /** Opt-in diff-based review depth for calls without an explicit level. */
   riskBasedReview?: boolean;

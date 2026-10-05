@@ -20,6 +20,9 @@ it("retains detailed workflow rules on demand while reducing always-present inst
   assert.match(visible, /Commit only when authorized/);
   assert.match(visible, /reviewPending|completedSteps/);
   assert.match(visible, /wai_index\(\{topic:'guidance'\}\)/);
+  assert.match(visible, /Default to med/);
+  assert.match(visible, /high for a concrete/);
+  assert.match(visible, /model family, and thinking level alone.*do not justify high/s);
   assert.equal(compactToolMetadata("another-extension"), undefined);
 });
 

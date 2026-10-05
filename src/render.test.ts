@@ -90,6 +90,15 @@ describe("renderCall review level from config", () => {
     const title = textOf(renderCall({ review: "check the retry loop" }, theme, { cwd }));
     assert.equal(title, "wai review (auto): check the retry loop");
   });
+
+  it("shows med for an unconfigured depth even with a reasoning-heavy model", () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { secondary: { provider: "openai", id: "gpt-5", thinking: "xhigh" } } }),
+    );
+    const title = textOf(renderCall({ review: "check the retry loop" }, theme, { cwd }));
+    assert.equal(title, "wai review (med): check the retry loop");
+  });
 });
 
 describe("renderResult review level", () => {

@@ -160,6 +160,8 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     reviewMaxConventionsTokens: 1000,
     reviewMaxMemoryTokens: 800,
     reviewStrategy: undefined,
+    // Keep explicit settings distinguishable so optional risk routing can
+    // refine the shared med fallback when no level was chosen.
     reviewLevel: undefined,
     riskBasedReview: false,
     verifyDoneClaims: true,

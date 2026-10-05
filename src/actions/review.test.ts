@@ -71,7 +71,7 @@ describe("executeWaiReview generic-path model resolution (cost-budget probe)", (
     }
   });
 
-  it("generic wai review resolves the per-level model from the effective level", async () => {
+  it("generic wai review defaults to med and resolves its per-level model without an explicit depth", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "review-model-cwd-"));
     tmpDirs.push(cwd);
     const git = (args: string[]) => execFileSync("git", args, { cwd, env: gitSpawnEnv(), stdio: "pipe" });
@@ -88,7 +88,6 @@ describe("executeWaiReview generic-path model resolution (cost-budget probe)", (
       join(piDir, "settings.json"),
       JSON.stringify({
         "pi-yoowai": {
-          reviewLevel: "med",
           // Hard stop before any backend call: the probe asserts the review got
           // PAST the model gate via the reviewMed override and stopped at the
           // cost budget instead of calling a model.
@@ -127,7 +126,7 @@ describe("executeWaiReview generic-path model resolution (cost-budget probe)", (
 
 describe("executeWaiReview model resolution (effective level drives per-level model)", () => {
   // Pins the caller contract in executeWaiReview: the generic `wai review`
-  // resolves the effective level first (config.reviewLevel ?? model-derived),
+  // resolves the effective level first (config.reviewLevel ?? balanced default),
   // then resolves the model from that level — so taskModels.reviewMed/reviewHigh
   // are honored on the generic path, not just by the explicit tools.
   const config: YoowaiConfig = {
@@ -147,6 +146,24 @@ describe("executeWaiReview model resolution (effective level drives per-level mo
     assert.equal(model.provider, "kimi-coding");
     assert.equal(model.id, "k3-256k");
     assert.equal(model.thinking, "low"); // reviewMed wins over the review task's high
+  });
+
+  it("unconfigured depth uses reviewMed even when the base and review models are reasoning-heavy", () => {
+    const unconfigured: YoowaiConfig = {
+      ...config,
+      reviewLevel: undefined,
+      secondary: { provider: "anthropic", id: "claude-opus-4-5", thinking: "high" },
+      taskModels: {
+        ...config.taskModels,
+        review: { provider: "openai", id: "gpt-5", thinking: "xhigh" },
+      },
+    };
+    const settings = resolveReviewSettings(unconfigured);
+    const model = resolveReviewTaskModel(unconfigured, settings.level);
+    assert.equal(settings.level, "med");
+    assert.equal(settings.selfVerify, false);
+    assert.equal(model.id, "k3-256k");
+    assert.equal(model.thinking, "low");
   });
 
   it("an explicit tool override wins over the configured level when its entry exists", () => {

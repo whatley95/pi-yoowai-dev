@@ -1439,19 +1439,23 @@ describe("live thinking levels in model and council commands", () => {
 
 describe("buildReviewLevelItems", () => {
   it("lists the configured current level first so a blind Enter keeps it", () => {
-    assert.deepStrictEqual(buildReviewLevelItems("min", "med"), ["min ✓ current", "med (suggested)", "high"]);
+    assert.deepStrictEqual(buildReviewLevelItems("min"), ["min ✓ current", "med (default)", "high"]);
   });
 
-  it("lists the model-suggested level first when no level is configured", () => {
-    assert.deepStrictEqual(buildReviewLevelItems(undefined, "med"), ["med (suggested)", "min", "high"]);
+  it("lists med first when no level is configured", () => {
+    assert.deepStrictEqual(buildReviewLevelItems(undefined), ["med (default)", "min", "high"]);
   });
 
-  it("keeps the configured current level first even when it differs from the suggestion", () => {
-    assert.deepStrictEqual(buildReviewLevelItems("high", "med"), ["high ✓ current", "min", "med (suggested)"]);
+  it("keeps the configured current level first even when it differs from the default", () => {
+    assert.deepStrictEqual(buildReviewLevelItems("high"), ["high ✓ current", "min", "med (default)"]);
+  });
+
+  it("labels med as both current and default when configured", () => {
+    assert.deepStrictEqual(buildReviewLevelItems("med"), ["med ✓ current (default)", "min", "high"]);
   });
 
   it("never drops a level and always returns exactly three items", () => {
-    const items = buildReviewLevelItems("min", "high");
+    const items = buildReviewLevelItems("min");
     assert.strictEqual(items.length, 3);
     for (const level of ["min", "med", "high"]) {
       assert.ok(

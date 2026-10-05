@@ -1,6 +1,7 @@
 import type { ReviewLevel, YoowaiConfig } from "./types.js";
-import { getDefaultReviewLevel } from "./model-registry.js";
-import { resolveTaskModel } from "./config.js";
+
+/** Balanced review is the fallback regardless of model family or thinking level. */
+export const DEFAULT_REVIEW_LEVEL: ReviewLevel = "med";
 
 /** Review-strategy choices controlled by review level. */
 export type ReviewStrategy = "auto" | "diff-only" | "full-files";
@@ -89,16 +90,12 @@ export const LEVEL_DEFAULTS: Record<
 /** Pick a review level using, in order:
  *  1. explicit tool-call override
  *  2. config setting
- *  3. model-derived default from the effective review model
+ *  3. balanced default, independent of the review model
  */
 export function resolveReviewLevel(config: YoowaiConfig, toolOverride?: ReviewLevel): ReviewLevel {
   if (toolOverride) return toolOverride;
   if (config.reviewLevel) return config.reviewLevel;
-  const reviewModel = resolveTaskModel(config, "review");
-  if (reviewModel.provider && reviewModel.id) {
-    return getDefaultReviewLevel(reviewModel.provider, reviewModel.id);
-  }
-  return "med";
+  return DEFAULT_REVIEW_LEVEL;
 }
 
 /** Conservative, opt-in routing: deepen security/data changes, and spend less

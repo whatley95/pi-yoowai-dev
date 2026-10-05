@@ -40,18 +40,31 @@ function baseConfig(secondary: SecondaryModelConfig): YoowaiConfig {
 describe("resolveReviewLevel", () => {
   it("uses the tool-call override first", () => {
     const config = baseConfig({ provider: "openai", id: "gpt-4o-mini", thinking: "off" });
-    assert.equal(resolveReviewLevel(config, "high"), "high");
+    config.reviewLevel = "high";
+    for (const level of ["min", "med", "high"] as const) {
+      assert.equal(resolveReviewLevel(config, level), level);
+    }
   });
 
   it("uses the config setting when no tool override", () => {
     const config = baseConfig({ provider: "openai", id: "gpt-4o-mini", thinking: "off" });
-    config.reviewLevel = "min";
-    assert.equal(resolveReviewLevel(config), "min");
+    for (const level of ["min", "med", "high"] as const) {
+      config.reviewLevel = level;
+      assert.equal(resolveReviewLevel(config), level);
+    }
   });
 
-  it("falls back to the model-derived default", () => {
-    const config = baseConfig({ provider: "openai", id: "gpt-4o-mini", thinking: "off" });
-    assert.equal(resolveReviewLevel(config), "min");
+  it("defaults to med for cheap, reasoning-heavy, custom, and missing models", () => {
+    for (const secondary of [
+      { provider: "openai", id: "gpt-4o-mini", thinking: "off" },
+      { provider: "openai", id: "gpt-5", thinking: "xhigh" },
+      { provider: "anthropic", id: "claude-opus-4-5", thinking: "high" },
+      { provider: "deepseek", id: "deepseek-reasoner", thinking: "high" },
+      { provider: "unknown", id: "custom-model", thinking: "off" },
+      { provider: "", id: "", thinking: "xhigh" },
+    ]) {
+      assert.equal(resolveReviewLevel(baseConfig(secondary)), "med", secondary.id);
+    }
   });
 
   it("falls back to med for unknown models", () => {
@@ -59,10 +72,10 @@ describe("resolveReviewLevel", () => {
     assert.equal(resolveReviewLevel(config), "med");
   });
 
-  it("uses the effective review task model for defaults", () => {
+  it("changing the review task model does not change the default depth", () => {
     const config = baseConfig({ provider: "openai", id: "gpt-4o", thinking: "medium" });
     config.taskModels = { review: { provider: "anthropic", id: "claude-opus-4-5" } };
-    assert.equal(resolveReviewLevel(config), "high");
+    assert.equal(resolveReviewLevel(config), "med");
   });
 });
 
@@ -85,6 +98,17 @@ describe("resolveRiskReviewLevel", () => {
   it("uses a light pass for documentation-only changes and the normal depth for code", () => {
     assert.equal(resolveRiskReviewLevel(config, undefined, ["README.md", "docs/guide.mdx"], "+text"), "min");
     assert.equal(resolveRiskReviewLevel(config, undefined, ["src/view.ts"], "+text"), "med");
+  });
+
+  it("routes by evidence rather than a reasoning-heavy review model", () => {
+    const strongModelConfig = {
+      ...config,
+      secondary: { provider: "anthropic", id: "claude-opus-4-5", thinking: "high" },
+      taskModels: { review: { provider: "openai", id: "gpt-5", thinking: "xhigh" } },
+    };
+    assert.equal(resolveRiskReviewLevel(strongModelConfig, undefined, ["README.md"], "+text"), "min");
+    assert.equal(resolveRiskReviewLevel(strongModelConfig, undefined, ["src/view.ts"], "+text"), "med");
+    assert.equal(resolveRiskReviewLevel(strongModelConfig, undefined, ["src/auth.ts"], "+text"), "high");
   });
 
   it("honors explicit depth and remains disabled by default", () => {
@@ -165,11 +189,11 @@ describe("resolveReviewSettings", () => {
   it("combines level resolution and settings application", () => {
     const config = baseConfig({ provider: "openai", id: "gpt-4o-mini", thinking: "off" });
     const settings = resolveReviewSettings(config);
-    assert.equal(settings.level, "min");
-    assert.equal(settings.reviewStrategy, "diff-only");
+    assert.equal(settings.level, "med");
+    assert.equal(settings.reviewStrategy, "auto");
   });
 
-  it("tool override wins over config and model default", () => {
+  it("tool override wins over config and balanced default", () => {
     const config = baseConfig({ provider: "openai", id: "gpt-4o-mini", thinking: "off" });
     config.reviewLevel = "min";
     const settings = resolveReviewSettings(config, "high");

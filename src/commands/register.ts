@@ -43,7 +43,7 @@ import { executeWaiVision } from "../wai-vision.js";
 import { handleWaiSearchCommand } from "../wai-search.js";
 import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
 import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
-import { resolveReviewLevel } from "../review-level.js";
+import { DEFAULT_REVIEW_LEVEL, resolveReviewLevel } from "../review-level.js";
 import { modelTaskLabel, resolveModelTask } from "../model-task-routing.js";
 import type { YoowaiConfig } from "../types.js";
 import {
@@ -91,7 +91,6 @@ import { reflectOnMemory, formatReflectionReport, learnReflectionSuggestions } f
 import { formatCouncilMember, addCouncilMember, councilMemberKey } from "../council-members.js";
 import { WAI_MODEL_TASKS } from "../wai-tool-params.js";
 import { planStepDescription } from "../types.js";
-import { getDefaultReviewLevel } from "../model-registry.js";
 import type { SecondaryModelConfig, WaiToolResult, WaiModelTask, WaiAction, ReviewLevel } from "../types.js";
 import type { LoopDetectionState } from "../loop-detector.js";
 
@@ -264,13 +263,13 @@ export function buildModelConfigEntry(
 }
 
 /** Build the "Pick default review level:" picker items with the effective
- *  current level (config value ?? model-suggested) listed first, so the
+ *  current level (config value ?? balanced default) listed first, so the
  *  select's pre-highlighted first item is what a blind Enter keeps. */
-export function buildReviewLevelItems(currentLevel: ReviewLevel | undefined, suggestedLevel: ReviewLevel): string[] {
-  const effectiveLevel = currentLevel ?? suggestedLevel;
+export function buildReviewLevelItems(currentLevel: ReviewLevel | undefined): string[] {
+  const effectiveLevel = currentLevel ?? DEFAULT_REVIEW_LEVEL;
   return ["min", "med", "high"]
     .map((l) => ({
-      text: `${l}${l === currentLevel ? " ✓ current" : ""}${l === suggestedLevel ? " (suggested)" : ""}`,
+      text: `${l}${l === currentLevel ? " ✓ current" : ""}${l === DEFAULT_REVIEW_LEVEL ? " (default)" : ""}`,
       isCurrent: l === effectiveLevel,
     }))
     .sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent))
@@ -1207,15 +1206,14 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       //    (and Esc there used to discard the whole model selection). The
       //    level stays editable via `/wai-config set reviewLevel <min|med|high>`
       //    or the review-only scope. The effective current level (config value
-      //    ?? model-suggested) is listed first so a blind Enter keeps it.
+      //    ?? balanced default) is listed first so a blind Enter keeps it.
       let reviewLevel: ReviewLevel | undefined;
       if (action === "review") {
-        const suggestedLevel = getDefaultReviewLevel(provider, modelId);
         const currentLevel = currentConfig.reviewLevel;
-        const levelItems = buildReviewLevelItems(currentLevel, suggestedLevel);
+        const levelItems = buildReviewLevelItems(currentLevel);
         const levelPicked = await ctx.ui.select("Pick default review level:", levelItems);
         if (levelPicked) {
-          reviewLevel = levelPicked.replace(/ ✓ current|\s*\(suggested\)/g, "").trim() as ReviewLevel;
+          reviewLevel = levelPicked.replace(/ ✓ current|\s*\(default\)/g, "").trim() as ReviewLevel;
         }
         // Esc skips: keep the current reviewLevel and still save the model below.
       }
