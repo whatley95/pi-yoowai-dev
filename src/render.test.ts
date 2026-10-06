@@ -29,6 +29,19 @@ function toolResult(details: WaiToolResult): AgentToolResult<WaiToolResult> {
   return { content: [{ type: "text", text: "x" }], details } as unknown as AgentToolResult<WaiToolResult>;
 }
 
+it("renders a skipped council assessment visibly without a passing verdict", () => {
+  const rendered = textOf(
+    renderResult(
+      toolResult({ action: "judge", skipped: true, skipReason: "Empty council" }),
+      { expanded: false, isPartial: false },
+      theme,
+    ),
+  );
+  assert.match(rendered, /wai judge skipped/);
+  assert.match(rendered, /Empty council/);
+  assert.ok(!rendered.includes("✓"));
+});
+
 describe("renderCall review level", () => {
   it("shows the explicit level in the review call title", () => {
     const title = textOf(renderCall({ review: "check the retry loop" }, theme, {}, "med"));

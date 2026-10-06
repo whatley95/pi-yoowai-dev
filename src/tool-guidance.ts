@@ -7,6 +7,7 @@ import {
   COMMIT_GUIDANCE,
   GIT_COMMIT_GUIDANCE,
   COMPLETION_EVIDENCE_GUIDANCE,
+  FINAL_COUNCIL_GUIDANCE,
 } from "./workflow-guidance.js";
 
 /** Detailed instructions remain available on old hosts and through the wai namespace. */
@@ -27,18 +28,18 @@ export const WAI_TOOL_GUIDANCE = {
     "Use wai({ recommend: '<next-step question>' }) when deciding what to do next. If you have spent more than one turn without clear progress, call wai.recommend.",
     "Use wai({ test: '<testing question>' }) for a dedicated assessment of missing tests, failing tests, or test quality. This assessment does not replace executing the required checks.",
     "Use wai({ security: '<change description>' }) when the change involves auth, input handling, secrets, dependencies, or another security-sensitive area. Scope focused audits with files:[...] if needed.",
-    "Use wai({ judge: '<completed task description>' }) after completing all work for a final holistic review against the original plan.",
+    FINAL_COUNCIL_GUIDANCE,
     "An errored, incomplete, or inconclusive review does not certify completion or clear the review gate. Resolve model availability, budget, or input failures before advancing the workflow; report an unresolved blocker instead of looping on retries.",
     INCONCLUSIVE_REVIEW_GUIDANCE,
-    "Run relevant/fast project checks (typecheck, lint, targeted tests) before each batch review, then the project's full prescribed check suite once on the complete diff before the final review and judge. Include concise result summaries — not full log dumps.",
-    "Workflow order: plan → implement → checks and focused review as needed → fix confirmed findings → complete whole-tree review → inspect returned plan progress → judge the complete task. Use done only for a reviewed step that has not already advanced.",
+    "Run relevant/fast project checks (typecheck, lint, targeted tests) before each batch review, then the project's full prescribed check suite once on the complete diff before the final whole-tree review and any optional council assessment. Include concise result summaries — not full log dumps.",
+    "Workflow order: plan → implement → checks and focused review as needed → fix confirmed findings → complete whole-tree review → inspect returned plan progress → optional configured council assessment. Use done only for a reviewed step that has not already advanced.",
     REVIEW_PROGRESS_GUIDANCE,
     "If plan progress drifts, inspect the plan and code before correcting it with done:<step number>. Lower numbers regress progress and 0 resets it; use done:'all' only when every step is actually complete. Use force only for an explicitly requested manual override and report it as manual completion. Judge can re-sync progress from completedStepIds/incompleteStepIds.",
     COMMIT_GUIDANCE,
     GIT_COMMIT_GUIDANCE,
     COMPLETION_EVIDENCE_GUIDANCE,
     "Use wai with planUpdate:'<changed decision and remaining work>' when the plan needs revision. It receives the existing plan; progress is retained only for unchanged completed leading steps. Changed or reordered steps need verification again.",
-    "Enable autoJudge in settings.json to automatically run judge when the last plan step is completed (passes review or is marked done via /wai-done).",
+    "Enable autoJudge with configured council members to automatically run final council assessment when the last plan step completes. Empty council disables it even when autoJudge is true.",
 
     "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",
     "Use `verify: true` when a wai finding is surprising, high-stakes, or unclear. The main agent must then confirm or refute the finding with evidence before acting.",
@@ -133,11 +134,12 @@ WAI_TOOL_GUIDANCE.wai_index.push(
 WAI_TOOL_GUIDANCE.wai_vision.push(CODEMODE_IMAGE_GUIDANCE);
 
 const COMPACT_CORE = [
-  "Use one wai action per call: plan before non-trivial work, review each cohesive edit batch, judge before completion. " +
+  "Use one wai action per call: plan before non-trivial work, review each cohesive edit batch, and run required checks. " +
     "Read wai_index({topic:'guidance'}) or describeNamespace('wai').instructions before first use for detailed workflow and tool guidance.",
   "Default to med for normal changes or uncertainty; use min for clearly low-risk edits and high for a concrete " +
     "security, data, contract, concurrency, or complexity risk. File count, model family, and thinking level alone " +
     "do not justify high. Explicit tool/config review levels win.",
+  FINAL_COUNCIL_GUIDANCE,
   "A scoped/historical pass, inconclusive result, omitted files, truncated input/output, or failed checks cannot certify " +
     "the whole tree. Include new files in a complete unscoped final review; inspect recovery before retrying unchanged input.",
   "Review may already advance the plan: inspect workflow.completedSteps or wai_index({topic:'plan'}) before done. " +

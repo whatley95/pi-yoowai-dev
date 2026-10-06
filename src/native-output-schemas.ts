@@ -40,6 +40,8 @@ const review = object({
 const workflowOutput = object({
   action: optional(Type.String()),
   error: optional(Type.String()),
+  skipped: optional(Type.Boolean()),
+  skipReason: optional(Type.String()),
   plan: optional(PlanResultSchema),
   review: optional(review),
   advisor: optional(object({ advice: Type.String() })),

@@ -94,6 +94,7 @@ async function serverFor(response: (bodies: string[]) => unknown) {
 
 function settings(cwd: string, url: string, extra: Record<string, unknown> = {}) {
   writeSettings(cwd, {
+    judgeCouncil: [{ id: "gpt-4o-mini" }],
     secondary: {
       provider: "openai",
       id: "gpt-4o-mini",

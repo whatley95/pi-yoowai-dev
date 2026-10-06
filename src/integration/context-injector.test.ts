@@ -602,7 +602,16 @@ describe("context-injector", () => {
     assert.ok(lastUser.content.includes("plan step (1/1)"));
   });
 
-  it("nudges judge when the plan is complete but never judged", () => {
+  it("offers final assessment only when council members are configured", () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({
+        "pi-yoowai": {
+          autoJudge: false,
+          judgeCouncil: [{ provider: "test", id: "member" }],
+        },
+      }),
+    );
     setPlan(cwd, {
       summary: "Refactor auth",
       todo: ["Step 1", "Step 2"],
@@ -621,6 +630,21 @@ describe("context-injector", () => {
     assert.ok(typeof lastUser.content === "string");
     assert.ok(lastUser.content.includes("PLAN COMPLETE"));
     assert.ok(lastUser.content.includes("wai({ judge"));
+    assert.ok(lastUser.content.includes("Optionally"));
+  });
+
+  it("does not nudge final assessment for an empty council and completed plan", () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { autoJudge: false, judgeCouncil: [] } }),
+    );
+    setPlan(cwd, { summary: "complete", todo: ["work"], acceptanceCriteria: [] });
+    setPlanProgress(cwd, 1);
+    const { pi, emitContext } = createFakePi();
+    registerContextInjector(pi);
+    const event = makeMessages();
+    emitContext(event, makeContext(cwd));
+    assert.ok(!JSON.stringify(event).includes("wai({ judge"));
   });
 
   it("nudges plan creation when edits pile up with no active plan", () => {

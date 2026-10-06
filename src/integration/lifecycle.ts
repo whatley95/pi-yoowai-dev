@@ -12,7 +12,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { isWriteToolResult, isEditToolResult } from "@earendil-works/pi-coding-agent";
 import { hasSuccessfulFileEdit } from "../file-write-tools.js";
-import { loadYoowaiConfig } from "../config.js";
+import { loadYoowaiConfig, resolveJudgeCouncilMembers } from "../config.js";
 import { setSdkSessionRegistry } from "../backends/sdk-backend.js";
 import { resolveReviewLevel } from "../review-level.js";
 import { clearPromptCache } from "../prompts.js";
@@ -81,7 +81,7 @@ export interface LifecycleDeps {
   actionableBoundaries?: boolean;
 }
 
-/** Trigger auto-judge when the plan is complete and autoJudge is enabled.
+/** Trigger council assessment when the plan is complete, members exist, and autoJudge is enabled.
  *  Safe to call from both /wai-done and agent_settled. */
 export async function triggerAutoJudge(
   ctx: ExtensionContext | ExtensionCommandContext,
@@ -91,7 +91,7 @@ export async function triggerAutoJudge(
   if (judgingCwds.get(ctx.cwd)?.isCurrent()) return undefined;
 
   const config = loadYoowaiConfig(ctx.cwd);
-  if (!config.autoJudge) return undefined;
+  if (!config.autoJudge || resolveJudgeCouncilMembers(config).length === 0) return undefined;
   syncWorkspaceChanges(ctx.cwd);
 
   const state = getState(ctx.cwd);
@@ -218,6 +218,7 @@ export async function triggerAutoReview(
  *  one-liner for a clean pass, otherwise the formatted result (truncated).
  *  Delivered as a boundary draft on Pi 0.87+, or as a steer on older hosts. */
 function autoResultMessage(action: "review" | "judge", result: WaiToolResult, fileCount?: number): string {
+  if (result.skipped) return `Final council assessment skipped: ${result.skipReason ?? "disabled"}`;
   if (result.error) {
     return `Auto-${action} failed: ${result.error}`;
   }
@@ -296,6 +297,7 @@ export function registerLifecycleHandlers(
         state.plan,
         config.autoReviewOnSettle,
         config.autoJudge,
+        config.judgeCouncil,
         config.costBudgetUsd,
         config.secondary,
         config.taskModels,

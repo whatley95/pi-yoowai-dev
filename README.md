@@ -56,7 +56,8 @@ Add to your Pi agent settings file (usually `~/.pi/agent/settings.json`):
       "contextWindow": 64000,
       "maxOutputTokens": 8192
     },
-    "autoJudge": true,
+    "autoJudge": false,
+    "judgeCouncil": [],
     "preReviewCommands": ["npm run typecheck", "npm run lint"],
     "costBudgetUsd": 0.5,
     "reviewFullFileThresholdLines": 300,
@@ -105,7 +106,7 @@ Check `/wai-index cost` (or `.pi/yoowai/cost.json`) first to see where your spen
 ]
 ```
 
-Each entry is a `"provider/model-id"` string or a partial secondary config object (same shape as `secondary`; omitted fields fall back to `secondary`, exactly like `taskModels` overrides). With fewer than 2 valid members the council is skipped and the judge runs single-model as before.
+Each entry is a `"provider/model-id"` string or a partial secondary config object (same shape as `secondary`; omitted fields fall back to `secondary`, exactly like `taskModels` overrides). An empty council disables final assessment. One valid member assesses directly; two or more assess in parallel with synthesis. `/wai judge` and `wai({ judge: "..." })` remain the entry points for this optional assessment.
 
 Structured tools let the secondary model write brief Markdown analysis, but the final machine-readable result must be a fenced JSON block under `## Result`. The configured `thinking` level is passed through unchanged for each tool, including per-tool `taskModels` overrides; wai does not silently cap or turn off thinking after parse failures.
 
@@ -117,9 +118,9 @@ A complete passing review clears pending edits only when it covers the current w
 | -------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `secondary`                      | object                                                 | `{ provider, id, thinking? }` for the base secondary model                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `taskModels`                     | object                                                 | Per-tool model overrides keyed by action (`plan`, `advisor`, `review`, `suggest`, `recommend`, `judge`, `scan`, `test`, `security`, `done`, `explain`, `vision`; the advisor falls back to the `suggest` override, then `secondary`)                                                                                                                                                                                                                                                                                                        |
-| `judgeCouncil`                   | array                                                  | Council of models that judge in parallel — entry shape in [Configuration](#configuration), behavior in [Judge council](#judge-council) (default: `[]`, single-model judge)                                                                                                                                                                                                                                                                                                                                                                  |
+| `judgeCouncil`                   | array                                                  | Council of models that judge in parallel — entry shape in [Configuration](#configuration), behavior in [Judge council](#judge-council) (default: `[]`, final assessment disabled; one member assesses directly; two or more use synthesis)                                                                                                                                                                                                                                                                                                                                                                  |
 | `presets`                        | object                                                 | Named model presets (`{ secondary?, taskModels? }`) applied to the global settings file with `/wai-preset <name>`; preview with `/wai-preset show <name>`                                                                                                                                                                                                                                                                                                                                                                                   |
-| `autoJudge`                      | boolean                                                | Run `wai.judge` automatically when the last plan step passes review, is marked done via `/wai-done`, or when the agent settles after all steps are complete (default: `false`)                                                                                                                                                                                                                                                                                                                                                              |
+| `autoJudge`                      | boolean                                                | With council members configured, run `wai.judge` automatically when the last plan step passes review, is marked done via `/wai-done`, or when the agent settles after all steps are complete (default: `false`)                                                                                                                                                                                                                                                                                                                                                              |
 | `autoReviewOnSettle`             | boolean                                                | Run `wai.review` automatically when the agent settles with unreviewed edits pending, before any auto-judge (default: `true`; set `false` for an explicit review workflow where the agent calls `wai.review` itself — the turn-end reminders and `requireReviewBeforeDone` keep the discipline)                                                                                                                                                                                                                                              |
 | `requireReviewBeforeDone`        | boolean                                                | Block `wai.done` / `/wai-done` while edits await a complete whole-tree passing review or the last whole-tree review failed/inconclusive; override with `force: true` / `--force` (default: `true`)                                                                                                                                                                                                                                                                                                                                                                                    |
 | `steerEscalationThreshold`       | number                                                 | Consecutive turns ending with unreviewed edits pending before the workflow reminder escalates to a stop directive (default: `3`)                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -297,8 +298,8 @@ pi-yoowai also listens to Pi lifecycle events:
 
 - **`tool_result`** — successful file-mutating tool calls increment the internal edit counter and refresh the footer status; failed calls do not. Wai configuration/backend failures set Pi's native error flag while preserving structured details; a review finding is a successful tool result.
 - **`turn_end`** — if unreviewed edits exist, a reminder asks the main agent to call `wai.review` before continuing. On Pi 0.87+, it uses a boundary draft when Pi already has runnable context; otherwise it uses a steer so the reminder still reaches a settled agent. The reminder respects a cooldown and escalates after repeated ignored turns — see [Review enforcement](#review-enforcement).
-- **`agent_before_settle` (Pi 0.87+)** — auto-review runs first when enabled; auto-judge runs only when the plan is complete and no unreviewed edits remain. Verdicts enter the conversation as boundary messages. Findings request a continuation only when Pi permits it; a clean pass adds no extra turn. The same workspace/progress state is attempted once per session generation to prevent repeated continuation without changes.
-- **`agent_settled` (older Pi)** — preserves the review-then-judge workflow and delivers results as steers.
+- **`agent_before_settle` (Pi 0.87+)** — auto-review runs first when enabled; optional council assessment runs only when members are configured, `autoJudge` is enabled, the plan is complete and no unreviewed edits remain. Verdicts enter the conversation as boundary messages. Findings request a continuation only when Pi permits it; a clean pass adds no extra turn. The same workspace/progress state is attempted once per session generation to prevent repeated continuation without changes.
+- **`agent_settled` (older Pi)** — preserves the review-then-optional-council workflow and delivers results as steers.
 - **`model_select`** — the prompt cache is cleared so prompts are rebuilt for the new model.
 - **`session_before_compact`** — if a plan is active, its summary, progress, and current step are added to the compaction custom instructions so they survive context compression.
 - **`session_before_switch`** / **`session_before_fork`** / **`session_before_tree`** / **`session_shutdown`** — cancel outstanding wai work before session navigation or shutdown. Late automatic results cannot publish or update the replacement session.
@@ -395,7 +396,7 @@ The `wai` tool is called by the main agent during development:
 | `wai({ suggest: "...", docs: ["react"] })`                            | When stuck or asked a question | Includes configured docs in the suggestion prompt                                   |
 | `wai({ recommend: "what next" })`                                     | When unsure                    | Recommends next concrete step                                                       |
 | `wai({ recommend: "...", docs: ["pi"] })`                             | When unsure                    | Includes configured docs in the recommendation prompt                               |
-| `wai({ judge: "all done" })`                                          | Final review                   | Holistic review against original plan                                               |
+| `wai({ judge: "all done" })`                                          | Optional council assessment    | Holistic review against original plan                                               |
 | `wai({ scan: true })`                                                 | Once per project               | Learns project conventions and architecture                                         |
 | `wai({ scan: true, scanDeep: true })`                                 | First scan of a project        | Also samples source files and builds the project symbol index                       |
 | `wai({ test: "added payment service" })`                              | After code changes             | Checks for failing tests, missing tests, and test-quality issues                    |
@@ -591,7 +592,7 @@ Image analysis (including scanned PDFs) requires the **sdk backend** and a model
 | `/wai review "wrote verifySession"`           | Review current changes                                                                              |
 | `/wai suggest "redis vs in-memory sessions?"` | Get alternative approaches with pros/cons                                                           |
 | `/wai recommend`                              | Get one concrete next step based on your current situation/plan                                     |
-| `/wai judge "auth refactor complete"`         | Final holistic review                                                                               |
+| `/wai judge "auth refactor complete"`         | Optional final council assessment                                                                               |
 | `/wai scan`                                   | Scan project conventions                                                                            |
 | `/wai scan --deep`                            | Deep scan with code samples and symbol index build                                                  |
 | `/wai-scan-deep`                              | Alias for `/wai scan --deep`                                                                        |
@@ -628,7 +629,7 @@ Some roles are shared or conditional: `plan` also handles plan updates, `suggest
 | `/wai-model`                                     | Interactively pick the base or per-tool model — see the selection flow above                                                                                                                                                             |
 | `/wai-model <provider> [filter]`                 | Pre-select provider and optionally filter the model list                                                                                                                                                                                 |
 | `/wai-model reset [base\|<task>]`                | Clear the base secondary model or a per-tool override (e.g. `reset review`)                                                                                                                                                              |
-| `/wai-council`                                   | Interactively manage the judge council: add/remove members with the `/wai-model` pickers (models already in the council are marked ✓ current, and each member gets a thinking-level pick); fewer than 2 members means single-model judge |
+| `/wai-council`                                   | Interactively manage the judge council: add/remove members with the `/wai-model` pickers (models already in the council are marked ✓ current, and each member gets a thinking-level pick); empty disables assessment; one member assesses directly; two or more use synthesis |
 | `/wai-config`                                    | Show current `pi-yoowai` settings                                                                                                                                                                                                        |
 | `/wai-config get <key>`                          | Read a dotted setting (e.g. `/wai-config get secondary.thinking`)                                                                                                                                                                        |
 | `/wai-config set <key> <value>`                  | Write a dotted setting (e.g. `/wai-config set taskModels.review.id claude-sonnet-4-5`)                                                                                                                                                   |
@@ -737,7 +738,7 @@ pi-yoowai uses several caches to avoid redundant work and cost:
 
 | Cache                | File                           | Purpose                                                                                                                                                                                                                                                                                |
 | -------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Review result cache  | `.pi/yoowai/review-cache.json` | Skip duplicate `wai.review`, `wai.judge`, `wai.test`, and `wai.security` calls for the same diff (24-hour TTL; keyed on every stable prompt input — diff, model, level, conventions, memory, codemap, related context, design rules, tool-loop setting, pre-review/test command lists) |
+| Review result cache  | `.pi/yoowai/review-cache.json` | Skip duplicate `wai.review`, `wai.judge`, `wai.test`, and `wai.security` calls for the same diff (24-hour TTL; keyed on every stable prompt input — diff, model, level, conventions, memory, codemap, related context, design rules, tool-loop setting, pre-review/test command lists, resolved council membership) |
 | OAuth API-key cache  | `.pi/yoowai/oauth-cache.json`  | Avoid re-authenticating OAuth providers across Pi sessions (55-min TTL)                                                                                                                                                                                                                |
 | Project symbol index | `.pi/yoowai/index.json`        | Reuses unchanged files on incremental updates                                                                                                                                                                                                                                          |
 | Review memory        | `.pi/yoowai/memory.json`       | Deduplicated, capped at 20 issues per file / 100 files, 7-day TTL                                                                                                                                                                                                                      |
@@ -806,6 +807,7 @@ sequenceDiagram
         end
     end
 
+    opt Council members configured and assessment requested
     MA->>Wai: wai.judge("...")
     Wai->>SM: holistic final review
     SM-->>Wai: verdict + completedStepIds
@@ -819,9 +821,10 @@ sequenceDiagram
     else needs-work
         Wai-->>MA: fix remaining issues
     end
+    end
 ```
 
-Typical tool sequence:
+Typical tool sequence (the final council block is optional and runs only with configured members):
 
 ```
 wai.plan("refactor auth")
@@ -853,7 +856,7 @@ wai.review("migrated all routes")
   → verdict: "pass" — consensus ✓
   → Progress: 5/5 steps done
 
-wai.judge("auth refactor complete")
+wai.judge("auth refactor complete")                # optional; requires council members
   → final review against plan + review history
   → verdict: "pass" — all work complete ✓
   → Tracker auto-synced to 5/5
@@ -871,7 +874,7 @@ If a single plan step fails review 3 times, wai marks the review as escalated. T
 
 ### Review enforcement
 
-Four layers make it hard to finish work without ever running `wai.review`. The visibility metric is always on, the escalating steer starts gentle, and the done gate is on by default. Auto-review on settle is enabled by default for unattended-safety, but for an **explicit review workflow** (the agent reliably calls `wai.review` after changes and `wai.judge` at completion) set `autoReviewOnSettle: false` (and keep `autoJudge: false`) — the reminders and done gate still keep the discipline, with no duplicate background reviews.
+Four layers make it hard to finish work without ever running `wai.review`. The visibility metric is always on, the escalating steer starts gentle, and the done gate is on by default. Auto-review on settle is enabled by default for unattended-safety, but for an **explicit review workflow** (the agent reliably calls `wai.review` after changes and optionally requests a configured council assessment at completion) set `autoReviewOnSettle: false` (and keep `autoJudge: false`) — the reminders and done gate still keep the discipline, with no duplicate background reviews.
 
 1. **Visibility (always on).** wai tracks turns that end with unreviewed edits pending and the total edits left unreviewed when session state flushes. `/wai-status` shows them (`Unreviewed edits: N (M turns ended with review pending)`), and a session audit entry is appended whenever state flushes with unreviewed edits outstanding.
 2. **Escalating steer.** The `turn_end` workflow reminder escalates from a gentle nudge to an explicit stop directive after `steerEscalationThreshold` (default `3`) consecutive turns end with review still pending. With an active plan the reminder names the current step and its pending edit count; without one it falls back to the plain edit-count message. The streak resets when a review runs.
@@ -1014,10 +1017,10 @@ When `advisorNotes` is enabled (default `true`), the main agent's context is inj
 
 ## Consensus protocol
 
-Both agents agree when:
+Completion still requires the applicable checks and complete whole-tree review. Model agreement is reported when:
 
 1. `wai.review` returns `{ verdict: "pass", consensus: true }` for each step
-2. `wai.judge` returns `{ verdict: "pass", consensus: true }` for the full task
+2. If council members are configured and final assessment is requested, `wai.judge` returns `{ verdict: "pass", consensus: true }` for the full task. This assessment is optional; an empty council reports **skipped**, without a verdict, certification, or progress change.
 
 The secondary model checks:
 
@@ -1031,7 +1034,17 @@ The secondary model checks:
 
 Run `/wai-council` to manage members interactively (it writes `judgeCouncil` to `~/.pi/agent/settings.json` for you); you can also edit the config key directly as shown in [Configuration](#configuration), or set it with `/wai-config set judgeCouncil [...]`.
 
-When `judgeCouncil` has two or more valid members, `wai.judge` sends the same judge prompt to every member in parallel, then asks the configured judge model (`secondary` / `taskModels.judge`) to synthesize their verdicts into one final judgment. On disagreement the failure wins — a single "blocked" or "needs-work" vote beats the majority "pass" unless the synthesizer finds the dissenter clearly wrong — and issues raised by only one member are prefixed with that member's `provider:id` label so dissent stays visible. The result header shows the council tally (e.g. "3 judges — 2 pass / 1 needs-work"). A member that fails or returns unparseable output is recorded and skipped; if every member fails, or the synthesis call itself fails, wai falls back to the single-model judge or a deterministic merge (worst verdict, union of issues) respectively. All member and synthesis calls count against `costBudgetUsd`; a budget-blocked member is treated as failed.
+Council membership controls final assessment:
+
+- **No valid members (default):** assessment is disabled, including when `autoJudge: true`. Clearing `/wai-council` disables it. A manual judge call reports **skipped** before capturing evidence, running checks, or calling a model; it cannot certify work or advance progress.
+- **One valid member:** that member performs the holistic assessment directly. The `taskModels.judge` synthesis setting is unused.
+- **Two or more valid members:** `wai.judge` sends the same prepared evidence to every member in parallel, then asks `taskModels.judge` / `secondary` to synthesize their verdicts. If no synthesis model is configured, the first member also synthesizes.
+
+To retain a direct final assessment after upgrading, add the intended model as one council member. A base secondary model or `taskModels.judge` setting alone does not enable assessment.
+
+On disagreement the failure wins — a single "blocked" or "needs-work" vote beats the majority "pass" unless the synthesizer finds the dissenter clearly wrong — and issues raised by only one member are prefixed with that member's `provider:id` label so dissent stays visible. The result header shows the council tally (e.g. "3 judges — 2 pass / 1 needs-work"). Failed or unparseable members are recorded; if every member fails, assessment reports an error without making a standalone judge call. Synthesis failure uses a deterministic worst-verdict/union-of-issues merge. All member and synthesis calls count against `costBudgetUsd`; a budget-blocked member is treated as failed. Cached results include resolved council membership, so changing members invalidates the previous verdict.
+
+Final assessment remains optional even with members configured. `autoJudge` defaults to `false` and enables automatic assessment of completed plans only when members exist. Required checks, complete whole-tree review, and the review-before-done gate continue to apply independently. Project settings override global settings: if `.pi/settings.json` supplies members, clearing the global council reports that override; set the project's `judgeCouncil` to `[]` to disable it there.
 
 ## Verification
 

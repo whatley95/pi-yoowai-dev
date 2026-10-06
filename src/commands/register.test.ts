@@ -647,6 +647,20 @@ describe("isScopeConfigured", () => {
 });
 
 describe("model role display", () => {
+  it("shows disabled assessment and resolves a single member independently of the synthesis override", () => {
+    const config: YoowaiConfig = {
+      secondary: { provider: "openai", id: "base-model" },
+      taskModels: { judge: { id: "synthesis-model" } },
+      judgeCouncil: [],
+    };
+    const row = () => buildModelScopeOptions(config).find((scope) => scope.task === "judge")!.text;
+    assert.match(row(), /disabled — empty council/);
+    config.judgeCouncil = [{ id: "member-model", thinking: "low" }];
+    assert.match(row(), /openai:member-model.*via judgeCouncil.*synthesis setting unused/);
+    config.judgeCouncil.push({ id: "other-member" });
+    assert.match(row(), /openai:synthesis-model.*council synthesis/);
+  });
+
   it("shows advisor and review fallbacks without marking inherited models as own overrides", () => {
     const config: YoowaiConfig = {
       secondary: { provider: "openai", id: "base-model" },
@@ -681,7 +695,7 @@ describe("effective model requests in commands", () => {
   const originalAgentDir = getAgentDir();
   afterEach(() => setAgentDirForTests(() => originalAgentDir));
 
-  for (const task of ["reviewMin", "REVIEWMED", "reviewhigh", "advisor", "review", ""]) {
+  for (const task of ["reviewMin", "REVIEWMED", "reviewhigh", "advisor", "review", "judge", "judge-disabled", ""]) {
     it(`/wai-test ${task} calls the effective model and endpoint`, async () => {
       const agentDir = mkdtempSync(join(tmpdir(), "wai-routing-agent-"));
       const cwd = mkdtempSync(join(tmpdir(), "wai-routing-cwd-"));
@@ -714,6 +728,7 @@ describe("effective model requests in commands", () => {
                 thinking: "off",
               },
               reviewLevel: "high",
+              judgeCouncil: task === "judge" ? [{ id: "final-member", baseUrl }] : [],
               taskModels: {
                 review: { id: "review-fallback", baseUrl },
                 reviewMed: { id: "medium-review", baseUrl },
@@ -736,7 +751,12 @@ describe("effective model requests in commands", () => {
           cwd,
           ui: { notify: (message: string) => notifications.push(message), setStatus: () => {} },
         } as unknown as ExtensionContext;
-        await commands.get("wai-test")!.handler(task, ctx);
+        await commands.get("wai-test")!.handler(task === "judge-disabled" ? "judge" : task, ctx);
+        if (task === "judge-disabled") {
+          assert.equal(bodies.length, 0);
+          assert.ok(notifications.some((message) => message.includes("disabled") && message.includes("skipped")));
+          return;
+        }
         const expected =
           task === "reviewMin"
             ? "review-fallback"
@@ -744,7 +764,9 @@ describe("effective model requests in commands", () => {
               ? "medium-review"
               : task === "advisor"
                 ? "suggest-fallback"
-                : "deep-review";
+                : task === "judge"
+                  ? "final-member"
+                  : "deep-review";
         assert.deepStrictEqual(
           bodies.map((body) => body.model),
           task ? [expected] : ["base-model", "deep-review", "review-fallback", "medium-review", "suggest-fallback"],
@@ -1319,7 +1341,7 @@ describe("resetModelSelection", () => {
 
     assert.ok(items[0]?.includes("✓ configured"), `base row: ${items[0]}`);
     const reviewRow = items.find((i) => i.startsWith("review ("));
-    const judgeRow = items.find((i) => i.startsWith("judge —"));
+    const judgeRow = items.find((i) => i.startsWith("judge ("));
     assert.ok(reviewRow?.includes("✓ configured"), `review row: ${reviewRow}`);
     assert.ok(judgeRow?.includes("via secondary"), `judge row: ${judgeRow}`);
     assert.ok(!judgeRow?.includes("✓ configured"), `judge row must not be marked configured: ${judgeRow}`);
@@ -1344,7 +1366,12 @@ describe("live thinking levels in model and council commands", () => {
     },
   };
 
-  async function run(command: "wai-model" | "wai-council", cancelThinking = false, unknown = false) {
+  async function run(
+    command: "wai-model" | "wai-council",
+    cancelThinking = false,
+    unknown = false,
+    clear?: "global" | "project",
+  ) {
     const agentDir = mkdtempSync(join(tmpdir(), "wai-thinking-agent-"));
     const cwd = mkdtempSync(join(tmpdir(), "wai-thinking-project-"));
     try {
@@ -1355,9 +1382,17 @@ describe("live thinking levels in model and council commands", () => {
         JSON.stringify({
           "pi-yoowai": {
             secondary: { provider: model.provider, id: model.id, thinking: "medium" },
+            ...(clear ? { judgeCouncil: [{ provider: model.provider, id: model.id }] } : {}),
           },
         }),
       );
+      if (clear === "project") {
+        mkdirSync(join(cwd, ".pi"));
+        writeFileSync(
+          join(cwd, ".pi", "settings.json"),
+          JSON.stringify({ "pi-yoowai": { judgeCouncil: [{ provider: model.provider, id: model.id }] } }),
+        );
+      }
       const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
       const pi = {
         registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
@@ -1384,7 +1419,8 @@ describe("live thinking levels in model and council commands", () => {
           notify: (message: string) => notifications.push(message),
           select: async (title: string, items: string[]) => {
             selections.push({ title, items });
-            if (title.startsWith("Judge council")) return councilPicks++ === 0 ? "Add member…" : "Done";
+            if (title.startsWith("Judge council"))
+              return councilPicks++ === 0 ? (clear ? "Clear council" : "Add member…") : "Done";
             if (title.startsWith("Which wai model role")) return items[0];
             if (title.startsWith("Pick model")) return items[0];
             if (title.startsWith("Pick thinking")) return cancelThinking ? undefined : "max";
@@ -1394,6 +1430,22 @@ describe("live thinking levels in model and council commands", () => {
       } as unknown as ExtensionContext;
       await commands.get(command)!.handler(command === "wai-model" ? model.provider : "", ctx);
       const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))["pi-yoowai"];
+      if (clear) {
+        assert.deepStrictEqual(settings.judgeCouncil, []);
+        assert.ok(
+          notifications.some((message) =>
+            message.includes(clear === "project" ? "project override still supplies" : "final assessment disabled"),
+          ),
+          notifications.join("\n"),
+        );
+        assert.equal(loadYoowaiConfig(cwd).judgeCouncil?.length ?? 0, clear === "project" ? 1 : 0);
+        assert.ok(
+          selections
+            .at(-1)
+            ?.title.includes(clear === "project" ? "final assessment 1 member(s)" : "final assessment disabled"),
+        );
+        return;
+      }
       const thinkingPicker = selections.find((s) => s.title.startsWith("Pick thinking"));
       if (unknown) {
         assert.equal(thinkingPicker, undefined, "unknown model must not offer guessed levels");
@@ -1435,6 +1487,8 @@ describe("live thinking levels in model and council commands", () => {
   it("/wai-council cancel leaves council unchanged", () => run("wai-council", true));
   it("/wai-model unknown metadata leaves settings unchanged", () => run("wai-model", false, true));
   it("/wai-council unknown metadata leaves settings unchanged", () => run("wai-council", false, true));
+  it("/wai-council clear disables final assessment", () => run("wai-council", false, false, "global"));
+  it("/wai-council clear reports a project council override", () => run("wai-council", false, false, "project"));
 });
 
 describe("buildReviewLevelItems", () => {

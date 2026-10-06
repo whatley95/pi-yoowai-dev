@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { captureWorkspace, workspaceMatches } from "../workspace-fingerprint.js";
 import { recordCompletionEvidence } from "../completion-evidence.js";
 import { recordFindingRound, findingGuidance } from "../finding-tracker.js";
-import { loadYoowaiConfig, resolveReviewTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveReviewTaskModel, resolveJudgeCouncilMembers } from "../config.js";
 import { isSafeRelativePath, normalizeReviewPath, resolveProjectPath } from "../path-security.js";
 import { getDiff, splitDiffByFile, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
@@ -1413,6 +1413,7 @@ async function executeReview(
 
     if (
       config.autoJudge &&
+      resolveJudgeCouncilMembers(config).length > 0 &&
       !state.judgeCompleted &&
       planProgress.completed === planProgress.total &&
       planProgress.total > 0

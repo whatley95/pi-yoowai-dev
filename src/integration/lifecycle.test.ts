@@ -321,7 +321,10 @@ describe("lifecycle", () => {
   });
 
   it("triggers auto-judge on agent_settled when plan is complete and autoJudge is enabled", async () => {
-    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { autoJudge: true } }));
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { autoJudge: true, judgeCouncil: [{ provider: "test", id: "member" }] } }),
+    );
     setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
     markStepComplete(cwd);
 
@@ -347,8 +350,33 @@ describe("lifecycle", () => {
     assert.ok(getState(cwd).judgeCompleted);
   });
 
+  it("does not trigger auto-judge with an empty council even when enabled and complete", async () => {
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { autoJudge: true, judgeCouncil: [] } }),
+    );
+    setPlan(cwd, { summary: "Complete", todo: ["Step 1"], acceptanceCriteria: [] });
+    markStepComplete(cwd);
+    let calls = 0;
+    const { pi, emitAgentSettled } = createFakePi();
+    registerLifecycleHandlers(pi, makeLoopStates(cwd), {
+      executeWaiJudge: async () => {
+        calls++;
+        throw new Error("disabled assessment called");
+      },
+    });
+    await emitAgentSettled({ type: "agent_settled" } as AgentSettledEvent, makeContext(cwd));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 0);
+    assert.notEqual(getState(cwd).judgeCompleted, true);
+    assert.equal(getState(cwd).completedSteps, 1);
+  });
+
   it("does not trigger auto-judge when plan is incomplete", async () => {
-    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { autoJudge: true } }));
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { autoJudge: true, judgeCouncil: [{ provider: "test", id: "member" }] } }),
+    );
     setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1", "Step 2"], acceptanceCriteria: [] });
 
     let judgeCalled = false;
@@ -412,7 +440,10 @@ describe("lifecycle", () => {
   });
 
   it("triggerAutoJudge exposes the situation to the judge runner", async () => {
-    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { autoJudge: true } }));
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ "pi-yoowai": { autoJudge: true, judgeCouncil: [{ provider: "test", id: "member" }] } }),
+    );
     setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
     markStepComplete(cwd);
 
@@ -930,7 +961,9 @@ describe("lifecycle", () => {
   it("triggers auto-review before auto-judge on agent_settled when autoReviewOnSettle is enabled", async () => {
     writeFileSync(
       join(cwd, ".pi", "settings.json"),
-      JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: true, autoJudge: true } }),
+      JSON.stringify({
+        "pi-yoowai": { autoReviewOnSettle: true, autoJudge: true, judgeCouncil: [{ provider: "test", id: "member" }] },
+      }),
     );
     setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
     markStepComplete(cwd);
@@ -1062,7 +1095,9 @@ describe("lifecycle", () => {
   it("skips auto-review quietly on a cost-budget error and defers auto-judge while edits remain", async () => {
     writeFileSync(
       join(cwd, ".pi", "settings.json"),
-      JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: true, autoJudge: true } }),
+      JSON.stringify({
+        "pi-yoowai": { autoReviewOnSettle: true, autoJudge: true, judgeCouncil: [{ provider: "test", id: "member" }] },
+      }),
     );
     setPlan(cwd, { summary: "Refactor auth", todo: ["Step 1"], acceptanceCriteria: [] });
     markStepComplete(cwd);

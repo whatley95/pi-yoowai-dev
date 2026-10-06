@@ -1,4 +1,10 @@
 /** Shared main-agent instructions used by tools, reminders, and reports. */
+export const FINAL_COUNCIL_GUIDANCE =
+  "Final council assessment is optional. Use wai({ judge: '<completed work>' }) only when council members are " +
+  "configured for a final assessment. Empty disables it, one member reviews directly, and multiple members assess " +
+  "in parallel. A skipped assessment is not a pass and does not certify or advance progress. Required checks and " +
+  "complete whole-tree review still apply.";
+
 export const PLAN_GUIDANCE =
   "Before requesting a plan, inspect relevant source and include the requested outcome, confirmed constraints, " +
   "existing work, and established decisions. Use only the steps the task needs, each with an observable outcome " +

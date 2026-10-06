@@ -43,6 +43,8 @@ export function formatResultText(result: WaiToolResult): string {
   const recovery = getReviewRecovery(result);
   if (result.error)
     return `wai error: ${result.error}${recovery ? `\n\nRecovery (${recovery.reason}): ${recovery.nextAction}` : ""}`;
+  if (result.skipped)
+    return `## wai ${result.action} — skipped\n\n${result.skipReason ?? "Optional assessment disabled."}`;
 
   const lines: string[] = [];
   if (recovery) {
@@ -213,7 +215,7 @@ export function formatResultText(result: WaiToolResult): string {
       lines.push(
         result.review.scopeLimited
           ? "**Workflow:** Use this result as feedback for the requested scope. Run a complete whole-tree review before certifying the step or calling done."
-          : `**Workflow:** ${REVIEW_PROGRESS_GUIDANCE} Run \`wai.judge\` after completing all plan steps.`,
+          : `**Workflow:** ${REVIEW_PROGRESS_GUIDANCE} Final council assessment is optional and requires configured council members.`,
       );
     } else if (result.review.verdict === "needs-work" || result.review.verdict === "blocked") {
       if (result.review.inconclusive) {
@@ -390,7 +392,7 @@ export function formatResultText(result: WaiToolResult): string {
       const parts = [...counts.entries()].map(([v, n]) => `${n} ${v}`);
       if (failed > 0) parts.push(`${failed} failed`);
       lines.push(
-        `**Council:** ${council.members.length} judges — ${parts.join(" / ")}${council.synthesized ? "" : " (deterministic merge; synthesis failed)"}`,
+        `**Council:** ${council.members.length} judges — ${parts.join(" / ")}${council.members.length === 1 ? " (single member; no synthesis)" : council.synthesized ? "" : " (deterministic merge; synthesis failed)"}`,
       );
       // Surface dissent: list each member's verdict when the council disagreed or a member failed.
       if (counts.size > 1 || failed > 0) {
@@ -437,7 +439,7 @@ export function formatResultText(result: WaiToolResult): string {
     }
     lines.push("");
     lines.push(
-      "**Workflow:** Tracker auto-synced by judge. Implement the next step above, then run `wai.review` when ready and `wai.judge` after the final step. Use `wai.done` or `wai.planUpdate` only if the tracker needs a manual correction.",
+      "**Workflow:** Tracker auto-synced by council assessment. Implement the next step above, then run `wai.review` when ready. Final council assessment is optional. Use `wai.done` or `wai.planUpdate` only if the tracker needs a manual correction.",
     );
   }
 
@@ -461,7 +463,9 @@ export function formatResultText(result: WaiToolResult): string {
       lines.push(`**Next step:** ${result.done.nextStep}`);
     }
     if (result.done.allDone) {
-      lines.push("All steps are complete. Run `/wai judge` for a final review.");
+      lines.push(
+        "All steps are complete. Final council assessment is optional; an empty council disables it. Required checks and complete whole-tree review still apply.",
+      );
     }
     lines.push("");
   }

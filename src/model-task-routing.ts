@@ -1,4 +1,10 @@
-import { resolveAdvisorTaskModel, resolveReviewTaskModel, resolveTaskModel, REVIEW_LEVEL_TASKS } from "./config.js";
+import {
+  resolveAdvisorTaskModel,
+  resolveReviewTaskModel,
+  resolveTaskModel,
+  resolveJudgeCouncilMembers,
+  REVIEW_LEVEL_TASKS,
+} from "./config.js";
 import { resolveReviewLevel } from "./review-level.js";
 import type { SecondaryModelConfig, WaiModelTask, YoowaiConfig } from "./types.js";
 
@@ -6,7 +12,14 @@ import type { SecondaryModelConfig, WaiModelTask, YoowaiConfig } from "./types.j
 export function resolveModelTask(
   config: YoowaiConfig,
   task: WaiModelTask,
-): { model: SecondaryModelConfig; source: WaiModelTask | "secondary" } {
+): { model: SecondaryModelConfig; source: WaiModelTask | "secondary" | "judgeCouncil" } {
+  if (task === "judge") {
+    const members = resolveJudgeCouncilMembers(config);
+    const synthesizer = resolveTaskModel(config, "judge");
+    if (members.length === 1 || (members.length > 1 && (!synthesizer.provider || !synthesizer.id))) {
+      return { model: members[0], source: "judgeCouncil" };
+    }
+  }
   if (task === "advisor") {
     const own = config.taskModels?.advisor;
     return {
@@ -52,6 +65,8 @@ export function modelTaskLabel(task: WaiModelTask): string {
       return "suggest (also advisor fallback)";
     case "done":
       return "done (completion verification when enabled)";
+    case "judge":
+      return "judge (optional council assessment/synthesis)";
     case "explain":
       return "explain (also deep fact verification)";
     default:

@@ -4,6 +4,8 @@ import { Value } from "@sinclair/typebox/value";
 import { getNativeOutputSchema } from "./native-output-schemas.js";
 
 it("exposes typed structured fields for every registered tool, including error-only results", () => {
+  assert.ok(Value.Check(getNativeOutputSchema("wai"), { action: "judge", skipped: true, skipReason: "Empty council" }));
+  assert.equal(Value.Check(getNativeOutputSchema("wai"), { skipped: "true" }), false);
   const examples: Record<string, unknown> = {
     wai: {
       action: "review",

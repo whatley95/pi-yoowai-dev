@@ -254,6 +254,11 @@ export function renderResult(
     return text;
   }
 
+  if (r.skipped) {
+    text.setText(theme.fg("dim", `wai ${r.action} skipped\n  ${r.skipReason ?? "Optional assessment disabled."}`));
+    return text;
+  }
+
   const lines: string[] = [];
   const costLine = formatCostLine(r);
   if (costLine) {

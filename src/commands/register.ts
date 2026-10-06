@@ -299,7 +299,13 @@ export function buildModelScopeOptions(config: YoowaiConfig): Array<{ task?: Wai
       const fallback =
         task === "review"
           ? `; active depth: ${resolveReviewLevel(config)}; fallback setting: ${display(resolveTaskModel(config, "review"))}`
-          : "";
+          : task === "judge"
+            ? resolveJudgeCouncilMembers(config).length === 0
+              ? "; disabled — empty council"
+              : resolveJudgeCouncilMembers(config).length === 1
+                ? "; single council member; synthesis setting unused"
+                : "; council synthesis"
+            : "";
       return {
         task,
         text: `${modelTaskLabel(task)} — ${display(model)} (via ${source})${fallback}${configured ? " ✓ configured" : ""}`,
@@ -511,7 +517,8 @@ async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
       : "  Base model: not configured",
     `  Backend: ${config.secondary.backend ?? "sdk"}`,
     `  Review level: ${resolveReviewLevel(config)}${config.riskBasedReview && !config.reviewLevel ? " (risk routing enabled)" : ""}`,
-    `  Auto-judge: ${config.autoJudge ? "enabled" : "disabled"}`,
+    `  Final council assessment: ${resolveJudgeCouncilMembers(config).length > 0 ? `${resolveJudgeCouncilMembers(config).length} member(s)` : "disabled — empty council"}`,
+    `  Automatic council assessment: ${config.autoJudge && resolveJudgeCouncilMembers(config).length > 0 ? "enabled" : "disabled"}`,
     config.preReviewCommands && config.preReviewCommands.length > 0
       ? `  Pre-review commands: ${config.preReviewCommands.join(", ")}`
       : "  Pre-review commands: none",
@@ -1301,8 +1308,8 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         const current: unknown[] = Array.isArray(waiSettings.judgeCouncil)
           ? [...(waiSettings.judgeCouncil as unknown[])]
           : [];
-        const status =
-          current.length === 0 ? "empty — judge uses a single model" : current.map(formatCouncilMember).join(", ");
+        const effectiveMembers = resolveJudgeCouncilMembers(loadYoowaiConfig(ctx.cwd)).length;
+        const status = `${current.length === 0 ? "empty globally" : current.map(formatCouncilMember).join(", ")}; final assessment ${effectiveMembers > 0 ? `${effectiveMembers} member(s)` : "disabled"}`;
         const menu = ["Add member…"];
         if (current.length > 0) menu.push("Remove member…", "Clear council");
         menu.push("Done");
@@ -1312,7 +1319,13 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         if (picked === "Clear council") {
           waiSettings.judgeCouncil = [];
           await persist();
-          ctx.ui.notify("Judge council cleared — judge uses a single model.", "info");
+          const remainingMembers = resolveJudgeCouncilMembers(loadYoowaiConfig(ctx.cwd)).length;
+          ctx.ui.notify(
+            remainingMembers > 0
+              ? `Global council cleared, but a project override still supplies ${remainingMembers} member(s). Set judgeCouncil: [] in .pi/settings.json to disable final assessment here.`
+              : "Council cleared — final assessment disabled. Required checks and whole-tree review still apply.",
+            "info",
+          );
           continue;
         }
 
@@ -1385,7 +1398,10 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         }
         waiSettings.judgeCouncil = list;
         await persist();
-        const hint = list.length < 2 ? " Add at least 2 members to enable the council." : "";
+        const hint =
+          list.length === 1
+            ? " This member performs final assessment directly; add more for parallel council opinions."
+            : "";
         ctx.ui.notify(
           `Added ${provider}:${modelId} (${thinking}) to the judge council (${list.length} member${list.length === 1 ? "" : "s"}).${hint}`,
           "info",
@@ -1398,7 +1414,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-council", {
     description:
-      "Interactively manage the judge council (multi-model final verdict): add/remove members with the /wai-model pickers, including a thinking level per member. Fewer than 2 members means single-model judge.",
+      "Manage optional final council assessment: empty disables it; one member reviews directly; multiple members assess in parallel. Add/remove members and choose their thinking levels.",
     handler: councilHandler,
   });
 
@@ -1798,7 +1814,10 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     // request and must be allowed even when all steps are complete.
     const isRegression = target !== undefined && /^\d+$/.test(target) && Number(target) < planProgress.completed;
     if (planProgress.completed >= planProgress.total && !isRegression) {
-      ctx.ui.notify("All plan steps are already complete. Run /wai judge for a final review.", "info");
+      ctx.ui.notify(
+        "All plan steps are already complete. Final council assessment is optional and requires configured members; required checks and whole-tree review still apply.",
+        "info",
+      );
       return;
     }
     const doneResult = await executeWaiDone(ctx.cwd, target, signal, force);
@@ -1891,6 +1910,13 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         ),
       );
     if (task) {
+      if (task === "judge" && resolveJudgeCouncilMembers(config).length === 0) {
+        ctx.ui.notify(
+          "Final council assessment is disabled: no members configured. Connectivity check skipped.",
+          "info",
+        );
+        return;
+      }
       const { model } = resolveModelTask(config, task);
       tests.push({ task, model, label: secondaryModelLabel(model) });
     } else {
@@ -1899,6 +1925,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       }
       const seen = new Set(tests.map(({ model }) => profileKey(model)));
       for (const action of WAI_MODEL_TASKS) {
+        if (action === "judge" && resolveJudgeCouncilMembers(config).length === 0) continue;
         const { model } = resolveModelTask(config, action);
         const key = profileKey(model);
         if (seen.has(key)) continue;

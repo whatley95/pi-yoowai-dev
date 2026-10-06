@@ -258,7 +258,7 @@ describe("runJudgeCouncil", () => {
     assert.equal(outcome.judge.verdict, "pass");
   });
 
-  it("returns null when all members fail, so the caller falls back to the single judge", async () => {
+  it("returns no verdict when all members fail, with no synthesizer call", async () => {
     const cwd = makeTempDir("wai-council-allfail-");
     writeSettings(cwd, ["alpha/model-a", "beta/model-b"]);
     const config = loadYoowaiConfig(cwd);

@@ -223,8 +223,133 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
   });
 
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
-    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
+    const secondary = piYoowai.secondary as Record<string, unknown> | undefined;
+    const judge = (piYoowai.taskModels as Record<string, Record<string, unknown>> | undefined)?.judge;
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({
+        "pi-yoowai": { judgeCouncil: [{ ...secondary, ...judge }], ...piYoowai },
+      }),
+      "utf-8",
+    );
   }
+
+  it("empty council skips before model, VCS, checks, or plan mutation", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "judge-disabled-"));
+    tmpDirs.push(cwd);
+    mkdirSync(join(cwd, ".pi"));
+    writeSettings(cwd, {
+      judgeCouncil: [],
+      costBudgetUsd: 0,
+      preReviewCommands: ["node check.js"],
+    });
+    writeFileSync(join(cwd, "check.js"), "throw new Error('checks must not run');");
+    setPlan(cwd, { summary: "disabled", todo: ["work"], acceptanceCriteria: ["criterion"] });
+    const before = JSON.stringify(getState(cwd));
+    const result = await executeWaiJudge(cwd, "optional", undefined, () => {
+      throw new Error("no progress work");
+    });
+    assert.equal(result.skipped, true);
+    assert.match(result.skipReason!, /disabled/);
+    assert.equal(result.judge, undefined);
+    assert.equal(result.error, undefined);
+    assert.equal(result.cost, undefined);
+    assert.equal(JSON.stringify(getState(cwd)), before);
+    assert.equal(getState(cwd).judgeCompleted, false);
+    assert.equal(result.model, undefined);
+  });
+
+  it("one explicit member works without a base model or synthesis", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("member-only\n");
+    const { url, bodies } = await startStubServer();
+    writeSettings(cwd, {
+      secondary: { provider: "", id: "" },
+      judgeCouncil: [
+        { provider: "openai", id: "member-model", backend: "http", baseUrl: url, apiKey: "test", thinking: "off" },
+      ],
+      preReviewCommands: [],
+    });
+    const result = await executeWaiJudge(cwd, "one member", undefined, () => {});
+    assert.equal(result.judge?.verdict, "pass");
+    assert.equal(result.model?.id, "member-model");
+    assert.equal(result.judge?.council?.members.length, 1);
+    assert.equal(bodies.length, 1);
+    assert.equal(JSON.parse(bodies[0]).model, "member-model");
+  });
+
+  it("all failed members produce an error without a standalone model call or progress", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("all-members-failed\n");
+    const { url, bodies } = await startStubServer("   \n  ");
+    writeSettings(cwd, {
+      secondary: {
+        provider: "openai",
+        id: "standalone-model",
+        backend: "http",
+        baseUrl: url,
+        apiKey: "test",
+        thinking: "off",
+      },
+      judgeCouncil: [{ id: "member-a" }, { id: "member-b" }],
+      preReviewCommands: [],
+    });
+    setPlan(cwd, { summary: "Work", todo: ["Work"], acceptanceCriteria: [] });
+    const result = await executeWaiJudge(cwd, "failed council", undefined, () => {});
+    assert.match(result.error!, /No council verdict/);
+    assert.equal(result.judge, undefined);
+    assert.deepEqual(bodies.map((body) => JSON.parse(body).model).sort(), ["member-a", "member-b"]);
+    assert.equal(getState(cwd).completedSteps, 0);
+    assert.notEqual(getState(cwd).judgeCompleted, true);
+  });
+
+  it("explicit members provide synthesis when no base model exists", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("council-without-base\n");
+    const { url, bodies } = await startStubServer();
+    const member = { provider: "openai", backend: "http", baseUrl: url, apiKey: "test", thinking: "off" };
+    writeSettings(cwd, {
+      secondary: { provider: "", id: "" },
+      judgeCouncil: [
+        { ...member, id: "member-a" },
+        { ...member, id: "member-b" },
+      ],
+      preReviewCommands: [],
+    });
+    const result = await executeWaiJudge(cwd, "explicit members", undefined, () => {});
+    assert.equal(result.judge?.verdict, "pass");
+    assert.equal(result.judge?.council?.synthesized, true);
+    assert.equal(bodies.length, 3);
+    assert.equal(JSON.parse(bodies[2]).model, "member-a");
+  });
+
+  it(
+    "membership changes invalidate cached council results, and clearing cannot reuse a pass",
+    { skip: !hasGit },
+    async () => {
+      const cwd = makeRepoWithChange("council-cache\n");
+      const { url, bodies } = await startStubServer();
+      const settings = {
+        secondary: {
+          provider: "openai",
+          id: "synth-model",
+          backend: "http",
+          baseUrl: url,
+          apiKey: "test",
+          thinking: "off",
+        },
+        preReviewCommands: [],
+      };
+      writeSettings(cwd, { ...settings, judgeCouncil: [{ id: "member-a" }, { id: "member-b" }] });
+      assert.equal((await executeWaiJudge(cwd, "same description", undefined, () => {})).judge?.verdict, "pass");
+      assert.equal(bodies.length, 3);
+      writeSettings(cwd, { ...settings, judgeCouncil: [{ id: "member-a" }, { id: "member-c" }] });
+      assert.equal((await executeWaiJudge(cwd, "same description", undefined, () => {})).judge?.verdict, "pass");
+      assert.equal(bodies.length, 6);
+      writeSettings(cwd, { ...settings, judgeCouncil: [] });
+      const cleared = await executeWaiJudge(cwd, "same description", undefined, () => {});
+      assert.equal(cleared.skipped, true);
+      assert.equal(cleared.judge, undefined);
+      assert.equal(bodies.length, 6);
+    },
+  );
 
   it("judge fails closed on an over-budget diff before any model call", { skip: !hasGit }, async () => {
     const bigLine = "x".repeat(200);

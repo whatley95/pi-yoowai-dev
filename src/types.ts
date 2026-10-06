@@ -59,12 +59,13 @@ export interface YoowaiConfig {
   /** Council of models that judge in parallel when `wai.judge` runs; their verdicts are synthesized into one final judgment.
    *  Each entry is a partial secondary config (a "provider/model-id" string in settings is normalized to `{ provider, id }`),
    *  merged over `secondary` the same way `taskModels` overrides resolve. Prefer different model families per member.
-   *  Fewer than 2 valid members disables the council. Default: empty (single-model judge). */
+   *  Empty disables final assessment; one uses that member; two or more run in parallel with synthesis. */
   judgeCouncil?: Array<Partial<import("./types/secondary-model.js").SecondaryModelConfig>>;
   /** Named model presets applied via `/wai-preset <name>`. */
   presets?: Record<string, YoowaiPreset>;
   /** Fallback secondary models to try if the primary model fails. Each fallback is tried in order. */
   secondaryFallback?: import("./types/secondary-model.js").SecondaryModelConfig[];
+  /** Automatically assess a completed plan with configured council members. Empty council disables it. Default false. */
   autoJudge?: boolean;
   preReviewCommands?: string[];
   /** Custom command to run for wai.test analysis (e.g. "npm test"). If omitted, wai.test will auto-detect or fall back to static diff analysis. */
@@ -259,7 +260,7 @@ export interface JudgeCouncilMemberOutcome {
 
 export interface JudgeCouncilSummary {
   members: JudgeCouncilMemberOutcome[];
-  /** True when a synthesizer model merged the verdicts; false when the deterministic fallback merge was used. */
+  /** True when a model synthesized multiple verdicts; false for a direct member or deterministic fallback merge. */
   synthesized: boolean;
 }
 
@@ -407,6 +408,9 @@ export interface WaiToolResult {
   security?: SecurityResult;
   done?: DoneResult;
   error?: string;
+  /** Disabled optional assessment; no verdict, certification, or progress change. */
+  skipped?: boolean;
+  skipReason?: string;
   /** Effective review level (min/med/high) when the action is a review.
    *  Drives the level marker in TUI call titles, progress lines, and verdicts. */
   level?: ReviewLevel;

@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ContextEvent } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { formatLanguageDirective, loadYoowaiConfig } from "../config.js";
+import { formatLanguageDirective, loadYoowaiConfig, resolveJudgeCouncilMembers } from "../config.js";
 import { loadConventions } from "../conventions.js";
 import { selectLearnedFacts, formatLearnedContext } from "../wai-learn.js";
 import type { YoowaiConfig } from "../types.js";
@@ -158,20 +158,20 @@ function buildContextBlock(cwd: string, config: YoowaiConfig, query: string): st
     );
   }
 
-  // Judge-pending nudge: the plan is fully marked done but never judged, and
-  // autoJudge (off by default) will not run it. Without this the workflow
-  // silently stops one step early.
+  // A configured council offers an optional final assessment. An empty
+  // council must not make a completed, reviewed plan look unfinished.
   const planState = getState(cwd);
   if (
     planState.plan &&
     planState.totalSteps > 0 &&
     planState.completedSteps >= planState.totalSteps &&
     !planState.judgeCompleted &&
+    resolveJudgeCouncilMembers(config).length > 0 &&
     config.autoJudge !== true
   ) {
     parts.push(
       `PLAN COMPLETE: all ${planState.totalSteps} plan steps are marked done. ` +
-        `Call \`wai({ judge: "..." })\` for a final holistic review before declaring the work complete.`,
+        `Council members are configured. Optionally call \`wai({ judge: "..." })\` for a final holistic council assessment.`,
     );
   }
 

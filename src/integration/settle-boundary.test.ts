@@ -16,7 +16,9 @@ function fixture(deps: LifecycleDeps) {
   mkdirSync(join(cwd, ".pi"));
   writeFileSync(
     join(cwd, ".pi", "settings.json"),
-    JSON.stringify({ "pi-yoowai": { autoReviewOnSettle: true, autoJudge: true } }),
+    JSON.stringify({
+      "pi-yoowai": { autoReviewOnSettle: true, autoJudge: true, judgeCouncil: [{ provider: "test", id: "member" }] },
+    }),
   );
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
   const steers: unknown[] = [];
@@ -211,6 +213,36 @@ const boundary = (canContinue = true) => ({
   entries: [{ type: "custom", customType: "other", data: 1 }],
   context: { canContinue },
   outcome: "completed",
+});
+
+it("skips an empty council and notices newly configured members on an unchanged completed plan", async () => {
+  let judges = 0;
+  const f = fixture({
+    executeWaiJudge: async () => {
+      judges++;
+      return {
+        action: "judge",
+        judge: { verdict: "pass", issues: [], suggestions: [], consensus: true, summary: "ok" },
+      };
+    },
+  });
+  try {
+    setPlan(f.cwd, { summary: "Complete", todo: ["Work"], acceptanceCriteria: [] });
+    getState(f.cwd).completedSteps = 1;
+    const settingsPath = join(f.cwd, ".pi", "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ "pi-yoowai": { autoJudge: true, judgeCouncil: [] } }));
+    await f.emit("agent_before_settle", boundary());
+    assert.equal(judges, 0);
+    assert.notEqual(getState(f.cwd).judgeCompleted, true);
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ "pi-yoowai": { autoJudge: true, judgeCouncil: [{ provider: "test", id: "member" }] } }),
+    );
+    await f.emit("agent_before_settle", boundary());
+    assert.equal(judges, 1);
+  } finally {
+    f.cleanup();
+  }
 });
 
 it("delivers workflow reminders as boundary drafts without starting a new user turn", async () => {

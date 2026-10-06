@@ -575,7 +575,7 @@ export default async function (pi: ExtensionAPI) {
     name: "wai",
     label: "Wai — Pair Programmer Advisor",
     description:
-      "Mandatory second-opinion workflow powered by a secondary model. Always use wai.plan before implementing, wai.advisor for quick judgment calls (cheap, conversational — call it often), wai.review after every change, wai.scan when opening a new project, wai.suggest for structured alternative comparisons, wai.recommend when deciding next steps, and wai.judge before declaring work complete. Optionally use wai.test to check test coverage and failures, and wai.security to audit for vulnerabilities.",
+      "Second-opinion workflow powered by a secondary model. Use wai.plan before non-trivial implementation, wai.advisor for quick judgment calls, wai.review after cohesive changes, wai.scan when opening a new project, wai.suggest for structured alternatives, and wai.recommend for next steps. Final council assessment through wai.judge is optional and disabled when the council is empty. Use wai.test for test assessment and wai.security for security-sensitive changes; execute required checks and obtain complete whole-tree review before completion.",
     promptSnippet:
       "wai: always get a second opinion from the secondary model before acting on code or making architectural decisions",
     promptGuidelines: WAI_TOOL_GUIDANCE.wai,
@@ -611,7 +611,7 @@ export default async function (pi: ExtensionAPI) {
       judge: Type.Optional(
         Type.String({
           description:
-            "Provide a description of all completed work for a final holistic review against the original plan. Summarize what was actually built per step — files, behavior, edge cases handled — not just the goal.",
+            "Compatibility entry for optional final council assessment. Empty council returns skipped; one member reviews directly; multiple members assess in parallel. Describe completed work and actual behavior per step.",
         }),
       ),
       scan: Type.Optional(

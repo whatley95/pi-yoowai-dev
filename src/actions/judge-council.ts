@@ -99,8 +99,8 @@ function mergeCouncilVerdicts(successes: Array<{ label: string; result: JudgeRes
 
 /** Fan the judge prompt out to every configured council member in parallel, then
  *  synthesize their verdicts into one final judgment with the configured judge model.
- *  Returns null when the council should not run (fewer than 2 valid members, or every
- *  member failed) so the caller falls back to the standard single-model judge. */
+ *  Returns null when no multi-member verdict is available. The caller handles
+ *  one member directly and reports all-member failure without a standalone fallback. */
 export async function runJudgeCouncil(options: {
   cwd: string;
   config: YoowaiConfig;
@@ -159,7 +159,7 @@ export async function runJudgeCouncil(options: {
 
   const successes = outcomes.filter((o): o is MemberOutcome & { result: JudgeResult } => Boolean(o.result));
   if (successes.length === 0) {
-    logEvent(cwd, "warn", "All judge council members failed; falling back to single-model judge", {
+    logEvent(cwd, "warn", "All judge council members failed; no final assessment available", {
       members: outcomes.map((o) => o.label),
     });
     return null;
@@ -190,6 +190,7 @@ export async function runJudgeCouncil(options: {
         cwd,
         sessionManager,
         task: "judge",
+        secondaryOverride: synthesizer,
         structuredOutput: true,
       },
     );

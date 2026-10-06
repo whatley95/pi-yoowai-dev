@@ -92,6 +92,14 @@ test("formatResultText renders done verification failure", () => {
   assert.ok(text.includes("missing styles"));
 });
 
+test("disabled council renders skipped without a passing verdict", () => {
+  const text = formatResultText({ action: "judge", skipped: true, skipReason: "Council is empty." });
+  assert.match(text, /skipped/);
+  assert.match(text, /Council is empty/);
+  assert.ok(!text.includes("✓"));
+  assert.ok(!text.includes("pass"));
+});
+
 test("formatResultText renders judge unreviewed-edits warning", () => {
   const text = formatResultText({
     action: "judge",

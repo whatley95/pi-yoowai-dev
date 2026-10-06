@@ -967,6 +967,34 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     },
   );
 
+  it("a completing review with an empty council skips automatic final assessment", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("completed routing\n");
+    const stub = await startStubServer({ stepComplete: true });
+    setPlan(cwd, { summary: "routing", todo: ["Implement routing"], acceptanceCriteria: [] });
+    writeSettings(cwd, {
+      reviewLevel: "min",
+      autoJudge: true,
+      judgeCouncil: [],
+      secondary: { provider: "openai", id: "gpt-4o-mini", backend: "http", baseUrl: stub.url, apiKey: "test" },
+    });
+    const progress: string[] = [];
+    const result = await executeWaiReview(
+      cwd,
+      "routing change",
+      { cwd } as ExtensionContext,
+      {},
+      undefined,
+      (_stage, _total, message) => progress.push(message),
+    );
+    assert.equal(result.review?.verdict, "pass");
+    assert.equal(getState(cwd).completedSteps, 1);
+    assert.equal(result.judge, undefined);
+    assert.notEqual(result.review?.autoJudged, true);
+    assert.notEqual(getState(cwd).judgeCompleted, true);
+    assert.equal(stub.bodies.length, 1);
+    assert.ok(progress.every((message) => !message.includes("Auto-judging")));
+  });
+
   for (const stepComplete of [false, undefined, true]) {
     it(
       `a passing whole-tree review with stepComplete=${stepComplete} handles progress explicitly`,

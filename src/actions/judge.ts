@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { captureWorkspace, workspaceMatches } from "../workspace-fingerprint.js";
 import { recordCompletionEvidence } from "../completion-evidence.js";
-import { loadYoowaiConfig, resolveTaskModel } from "../config.js";
+import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
 import { loadConventions, formatConventions } from "../conventions.js";
 import { DEFAULT_MAX_DIFF_CHARS, getDiff, getVcsInfo, resolveGitCommit, resolveGitTree } from "../diff-grabber.js";
 import { buildCodemap } from "../codemap.js";
@@ -57,10 +57,19 @@ export async function executeWaiJudge(
 ): Promise<WaiToolResult> {
   signal?.throwIfAborted();
   const config = loadYoowaiConfig(cwd);
-  let modelConfig = resolveTaskModel(config, "judge");
-  if (!modelConfig.provider || !modelConfig.id) {
-    return { action: "judge", error: "No secondary model configured. Set pi-yoowai.secondary in settings.json." };
+  const members = resolveJudgeCouncilMembers(config);
+  if (members.length === 0) {
+    return {
+      action: "judge",
+      skipped: true,
+      skipReason:
+        "Final council assessment is disabled: no council members are configured. Required checks and complete whole-tree review still apply. Add members with /wai-council to enable it.",
+    };
   }
+  // One member is the reviewer. With multiple members the judge role is only
+  // the synthesizer; an explicit council also works without a base model.
+  const synthesizer = resolveTaskModel(config, "judge");
+  let modelConfig = members.length === 1 || !synthesizer.provider || !synthesizer.id ? members[0] : synthesizer;
   modelConfig = await resolveBudgetModel(modelConfig, config.modelInfo);
   const modelProfile = {
     provider: modelConfig.provider,
@@ -191,6 +200,7 @@ export async function executeWaiJudge(
   // lookup so changed execution outcomes cannot be hidden behind a pass.
   // Session context is intentionally excluded (changes every turn).
   const cacheKey = buildCacheKey("judge", {
+    councilMembers: members,
     workspaceFingerprint,
     diff,
     description,
@@ -349,22 +359,26 @@ export async function executeWaiJudge(
   let rounds: number | undefined;
   let finalTruncated: boolean | undefined;
 
-  // When a judge council is configured (>= 2 valid members), fan the same prompt
-  // out to all members and synthesize their verdicts. Returns null when the
-  // council cannot run, falling through to the standard single-model judge.
-  const councilOutcome = await runJudgeCouncil({
-    cwd,
-    config,
-    description,
-    system,
-    user,
-    synthesizer: modelConfig,
-    signal,
-    sessionManager,
-    progress,
-  });
-
-  if (councilOutcome) {
+  if (members.length >= 2) {
+    const councilOutcome = await runJudgeCouncil({
+      cwd,
+      config,
+      description,
+      system,
+      user,
+      synthesizer: modelConfig,
+      signal,
+      sessionManager,
+      progress,
+    });
+    if (!councilOutcome) {
+      return {
+        action: "judge",
+        error:
+          "No council verdict could be produced. Inspect member failures in /wai-logs; there is no standalone judge fallback.",
+        model: modelProfile,
+      };
+    }
     judge = councilOutcome.judge;
     cost = councilOutcome.cost;
   } else {
@@ -380,6 +394,7 @@ export async function executeWaiJudge(
       cwd,
       sessionManager,
       task: "judge",
+      secondaryOverride: modelConfig,
       structuredOutput: true,
       onStreamProgress: createStreamProgressCallback(progress, 3, STAGES.judge),
       ...context.options,
@@ -399,6 +414,12 @@ export async function executeWaiJudge(
         suggestionCount: salvaged.suggestions.length,
       }),
     });
+    if (judge) {
+      judge.council = {
+        synthesized: false,
+        members: [{ model: `${modelConfig.provider}:${modelConfig.id}`, verdict: judge.verdict }],
+      };
+    }
   }
   if (!judge) {
     return {

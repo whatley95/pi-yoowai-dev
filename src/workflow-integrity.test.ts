@@ -71,6 +71,7 @@ function settings(cwd: string, overrides: Record<string, unknown>): void {
         verifyDoneClaims: false,
         preReviewCommands: [],
         autoJudge: false,
+        judgeCouncil: [{ id: "gpt-4o-mini" }],
         ...overrides,
       },
     }),
