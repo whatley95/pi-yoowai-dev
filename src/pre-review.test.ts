@@ -116,6 +116,47 @@ describe("pre-review", () => {
     }
   });
 
+  it("honors a configured per-command timeout instead of the built-in default", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "pre-review-timeout-"));
+    // Prints ONLY if it is allowed to run to completion.
+    writeFileSync(join(tmpDir, "wait.js"), "setTimeout(() => console.log('finished'), 3000);\n");
+    try {
+      // (1) A short budget TERMINATES it well before the fixture can finish.
+      // The elapsed bound is the decisive assertion: if the configured timeout
+      // were ignored, this call would take ~3s.
+      const startedAt = Date.now();
+      const [killed] = await runPreReviewCommands(tmpDir, ["node wait.js"], { preReviewTimeoutMs: 400 });
+      const elapsed = Date.now() - startedAt;
+      assert.notEqual(killed.exitCode, 0, "a command exceeding preReviewTimeoutMs must fail the gate");
+      assert.doesNotMatch(killed.output, /finished/);
+      assert.ok(elapsed < 2500, `the 400ms budget should have fired, but the call took ${elapsed}ms`);
+      assert.match(killed.output, /process terminated/, "a terminated command must be reported, not left blank");
+
+      // (2) The SAME command with a generous budget COMPLETES. This is what
+      // makes (1) meaningful: a missing executable, a parse failure or a broken
+      // fixture would also satisfy (1)'s assertions on their own.
+      const [completed] = await runPreReviewCommands(tmpDir, ["node wait.js"], { preReviewTimeoutMs: 20000 });
+      assert.equal(completed.exitCode, 0);
+      assert.match(completed.output, /finished/);
+    } finally {
+      try {
+        rmSync(tmpDir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+      } catch {
+        // Windows may retain the killed child's cwd briefly; cleanup is best-effort.
+      }
+    }
+  });
+
+  it("falls back to the default when the configured timeout is unusable", async () => {
+    // A fractional value is invalid for execFile, so it must be normalized away
+    // rather than passed through - which would make the command itself fail.
+    const [fractional] = await runPreReviewCommands(process.cwd(), ["npm --version"], {
+      preReviewTimeoutMs: 1.5,
+    });
+    assert.equal(fractional.exitCode, 0, "a fractional timeout must fall back, not reach execFile");
+    assert.ok(fractional.output.length > 0);
+  });
+
   it("formatPreReviewOutput returns empty string for no results", () => {
     assert.equal(formatPreReviewOutput([]), "");
   });

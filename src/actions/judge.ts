@@ -247,7 +247,10 @@ export async function executeWaiJudge(
   let checks: Array<{ command: string; exitCode: number }> = [];
   if (effectivePreReviewCommands.length > 0) {
     progress(2, STAGES.judge, "Running pre-review commands…");
-    const results = await runPreReviewCommands(cwd, effectivePreReviewCommands, { signal });
+    const results = await runPreReviewCommands(cwd, effectivePreReviewCommands, {
+      signal,
+      preReviewTimeoutMs: config.preReviewTimeoutMs,
+    });
     signal?.throwIfAborted();
     checks = results.map(({ command, exitCode }) => ({ command, exitCode }));
     preReviewOutput = formatPreReviewOutput(results);

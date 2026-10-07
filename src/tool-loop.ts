@@ -257,6 +257,11 @@ async function runCommandTool(cwd: string, command: string, signal?: AbortSignal
   try {
     // Model-generated commands are restricted to read-only subcommands;
     // user-configured preReviewCommands run without this restriction.
+    // DELIBERATE: this workflow keeps the DEFAULT timeout and does NOT read
+    // `preReviewTimeoutMs`. Config is not in scope here, and the budget's
+    // purpose differs: it bounds ONE model-issued read-only command rather than
+    // a project's whole analyze-and-test gate. Raising the gate's timeout must
+    // not silently widen how long a model can pin a tool call.
     const [result] = await runPreReviewCommands(cwd, [command], { restrictSubcommands: true, signal });
     return {
       output: truncateCommandOutput(result.output),

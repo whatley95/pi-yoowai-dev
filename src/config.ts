@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir, getProjectConfigPath } from "./pi-paths.js";
 import { logEvent } from "./logger.js";
+import { isValidTimeoutMs } from "./pre-review.js";
 import type {
   YoowaiConfig,
   YoowaiPreset,
@@ -255,6 +256,7 @@ const KNOWN_CONFIG_KEYS = new Set([
   "modelInfo",
   "processTimeoutMs",
   "testTimeoutMs",
+  "preReviewTimeoutMs",
   "verifyDoneClaims",
   "reviewReminderEdits",
   "autoInjectContext",
@@ -303,6 +305,15 @@ function validateConfig(config: YoowaiConfig, cwd: string): YoowaiConfig {
   }
   if (config.processTimeoutMs !== undefined && config.processTimeoutMs <= 0) {
     warnings.push(`processTimeoutMs=${config.processTimeoutMs} is invalid, using default`);
+  }
+  // Stricter than processTimeoutMs on purpose: this value reaches execFile
+  // directly, where a fractional or timer-overflowing value misbehaves instead
+  // of simply failing.
+  if (config.preReviewTimeoutMs !== undefined && !isValidTimeoutMs(config.preReviewTimeoutMs)) {
+    warnings.push(`preReviewTimeoutMs=${config.preReviewTimeoutMs} is invalid, using default`);
+  }
+  if (config.preReviewTimeoutMs !== undefined && config.preReviewTimeoutMs <= 0) {
+    warnings.push(`preReviewTimeoutMs=${config.preReviewTimeoutMs} is invalid, using default`);
   }
   if (config.costBudgetUsd !== undefined && config.costBudgetUsd < 0) {
     warnings.push(`costBudgetUsd=${config.costBudgetUsd} is negative, budget disabled`);
@@ -540,6 +551,7 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
     deepScan: mergeFlag(base.deepScan, o.deepScan),
     modelInfo: mergeModelInfo(base.modelInfo, o.modelInfo),
     processTimeoutMs: pickOptionalNumber(o.processTimeoutMs, base.processTimeoutMs),
+    preReviewTimeoutMs: isValidTimeoutMs(o.preReviewTimeoutMs) ? o.preReviewTimeoutMs : base.preReviewTimeoutMs,
     testTimeoutMs: pickOptionalNumber(o.testTimeoutMs, base.testTimeoutMs),
     maxContinuations:
       typeof o.maxContinuations === "number" && Number.isFinite(o.maxContinuations) && o.maxContinuations >= 0

@@ -100,6 +100,12 @@ export interface YoowaiConfig {
   processTimeoutMs?: number;
   /** Timeout in ms per model in /wai test (default 120000 = 2 min). */
   testTimeoutMs?: number;
+  /** Timeout in ms for EACH pre-review command (default 60000 = 1 min). A
+   *  project check that runs an analyzer plus a test suite can legitimately
+   *  exceed a minute, and a killed check is reported as a failed gate. This
+   *  bounds the PROJECT GATE only; the tool loop's model-issued read-only
+   *  commands intentionally keep their own default budget. */
+  preReviewTimeoutMs?: number;
   /** Maximum continuation calls when a secondary-model response is length-truncated (default 3). */
   maxContinuations?: number;
   /** Verify wai.done claims against the diff before advancing the tracker. Default true. */

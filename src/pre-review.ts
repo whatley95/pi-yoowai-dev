@@ -320,6 +320,31 @@ export function validateGitHelpFlags(program: string, args: string[]): void {
   }
 }
 
+/** Upper bound for a command timeout: Node's timers overflow above 2^31-1 ms,
+ *  where the timeout fires almost immediately instead of after the intended
+ *  delay. A fractional or non-positive value is rejected outright by execFile. */
+export const MAX_PRE_REVIEW_TIMEOUT_MS = 2_147_483_647;
+
+/** Fallback per-command timeout when `preReviewTimeoutMs` is not configured.
+ *  A project check can legitimately run an analyzer AND a test suite, which
+ *  easily exceeds a minute; when the child is killed the check is reported as
+ *  failed, so this cap must stay clear of a real check's runtime. */
+export const DEFAULT_PRE_REVIEW_TIMEOUT_MS = 60000;
+
+/** True for a timeout override that execFile can actually honour. Config
+ *  validation and the execution boundary share THIS predicate so a value cannot
+ *  be accepted in one place and rejected/misapplied in the other. */
+export function isValidTimeoutMs(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= MAX_PRE_REVIEW_TIMEOUT_MS;
+}
+
+/** Normalize an override, falling back when it is unusable. Applied at the
+ *  execution boundary because a direct PreReviewOptions caller (and the tool
+ *  loop) never passes through config validation. */
+function normalizeTimeoutMs(value: number | undefined): number {
+  return isValidTimeoutMs(value) ? value : DEFAULT_PRE_REVIEW_TIMEOUT_MS;
+}
+
 export interface PreReviewOptions {
   /** Restrict subcommands (git/svn/npm/...) to read-only ones. Used for
    *  model-generated commands in the tool loop; user-configured pre-review
@@ -327,6 +352,9 @@ export interface PreReviewOptions {
   restrictSubcommands?: boolean;
   /** Abort a running validation command when its owning action is cancelled. */
   signal?: AbortSignal;
+  /** Per-command timeout in ms, from config `preReviewTimeoutMs`. Falls back to
+   *  [DEFAULT_PRE_REVIEW_TIMEOUT_MS] when unset or unusable. */
+  preReviewTimeoutMs?: number;
 }
 
 export async function runPreReviewCommands(
@@ -351,20 +379,42 @@ export async function runPreReviewCommands(
           validateSubcommand(program, args);
           validateGitHelpFlags(program, args);
         }
-        const output = await execProgram(program, args, cwd, options.signal);
+        const output = await execProgram(program, args, cwd, options.signal, options.preReviewTimeoutMs);
         return { command, output: truncateOutput(output), exitCode: 0 };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        const execErr = err as {
+          stdout?: string;
+          stderr?: string;
+          status?: number;
+          code?: number;
+          killed?: boolean;
+          signal?: string;
+        };
+        // A TERMINATED child is the original symptom of this check: the gate
+        // reported a failure with no explanation, which made a killed command
+        // look like a mysterious project defect. Say so explicitly, and log the
+        // configured budget so a too-small timeout is identifiable.
+        // NOTE: termination is NOT proof of a timeout - a maxBuffer overflow
+        // terminates the child too, so this reports what happened, not why.
+        const killed = execErr.killed === true;
+        const termSignal = typeof execErr.signal === "string" ? execErr.signal : "";
+        const terminated = killed || termSignal.length > 0;
+        const budgetMs = normalizeTimeoutMs(options.preReviewTimeoutMs);
         logEvent(cwd, "warn", "Pre-review command failed", {
           command,
           error: message,
+          timeoutMs: budgetMs,
+          ...(terminated ? { terminated: true, signal: termSignal || "unknown" } : {}),
         });
-        const execErr = err as { stdout?: string; stderr?: string; status?: number; code?: number };
         const output = typeof execErr.stdout === "string" ? execErr.stdout : "";
         const stderr = typeof execErr.stderr === "string" ? execErr.stderr : "";
         const status =
           typeof execErr.status === "number" ? execErr.status : typeof execErr.code === "number" ? execErr.code : 1;
-        return { command, output: truncateOutput(`${message}\n${output}\n${stderr}`), exitCode: status };
+        const note = terminated
+          ? `[process terminated${termSignal.length > 0 ? ` by ${termSignal}` : ""}; configured timeout budget ${budgetMs}ms]\n`
+          : "";
+        return { command, output: truncateOutput(`${note}${message}\n${output}\n${stderr}`), exitCode: status };
       }
     }),
   );
@@ -381,13 +431,22 @@ export function formatPreReviewOutput(results: PreReviewOutput[]): string {
   return lines.join("\n");
 }
 
-async function execProgram(program: string, args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
+async function execProgram(
+  program: string,
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+  timeoutMs?: number,
+): Promise<string> {
   signal?.throwIfAborted();
   const options: ExecFileOptionsWithStringEncoding = {
     cwd,
     encoding: "utf-8",
     maxBuffer: 1024 * 1024,
-    timeout: 60000,
+    // Normalized at the execution boundary as well as in config validation: a
+    // direct PreReviewOptions caller never passes through config, and an
+    // unusable value must fall back rather than reach execFile.
+    timeout: normalizeTimeoutMs(timeoutMs),
     windowsHide: true,
     signal,
   };
