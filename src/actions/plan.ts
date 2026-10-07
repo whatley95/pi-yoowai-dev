@@ -7,6 +7,7 @@ import { resolveBackendType } from "../backends/backend-resolver.js";
 import { buildPlanPrompt, validatePlanResult, getPlanValidationErrors, salvagePlanFromMarkdown } from "../prompts.js";
 import type { PlanUpdateContext } from "../prompts.js";
 import { setPlan } from "../session-state.js";
+import { identifyPlan } from "../plan-editor.js";
 import { capActionInstructions } from "../instructions.js";
 import {
   STAGES,
@@ -32,6 +33,7 @@ export async function executeWaiPlan(
    *  can steer regenerated plans differently from the initial plan. */
   instructionsAction: string = "plan",
   updateContext?: PlanUpdateContext,
+  options: { persist?: boolean } = {},
 ): Promise<WaiToolResult> {
   const config = loadYoowaiConfig(cwd);
   const modelConfig = resolveTaskModel(config, modelTask);
@@ -85,11 +87,18 @@ export async function executeWaiPlan(
 
   progress(3, STAGES.plan, "Parsing plan…");
   const cost = recordCostWithBudget(cwd, usage);
+  if (finalTruncated)
+    return {
+      action: "plan",
+      error: "Plan response was incomplete; the existing plan was preserved. Retry with a smaller requested change.",
+      cost,
+      model: modelProfile,
+    };
   const plan = parseStructuredResult(cwd, raw, {
     label: "Plan",
     validate: validatePlanResult,
     validationErrors: getPlanValidationErrors,
-    salvage: (text) => salvagePlanFromMarkdown(text, task),
+    salvage: updateContext ? undefined : (text) => salvagePlanFromMarkdown(text, task),
     salvageDetails: (salvaged) => ({
       todoCount: salvaged.todo.length,
       summary: salvaged.summary.slice(0, 100),
@@ -110,10 +119,11 @@ export async function executeWaiPlan(
   }
 
   signal?.throwIfAborted();
-  setPlan(cwd, plan);
+  const identified = options.persist === false ? plan : identifyPlan(plan);
+  if (options.persist !== false) setPlan(cwd, identified);
   return {
     action: "plan",
-    plan,
+    plan: identified,
     cost,
     model: modelProfile,
     continuation: continuationMeta(rounds, finalTruncated ?? false),

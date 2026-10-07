@@ -1,7 +1,7 @@
 import { formatCost } from "./cost-tracker.js";
 import type { PlanTodoItem } from "./types.js";
 import type { YoowaiSessionState } from "./types.js";
-import { planStepDescription } from "./types.js";
+import { planStepLabel } from "./types.js";
 
 /** Minimal structural view of the session cost (from cost-tracker.ts's
  *  CostLog) so plan-view.ts does not need to import the tracker. */
@@ -118,7 +118,7 @@ export function buildPlanView(state: YoowaiSessionState, cost: PlanViewCost, opt
   // unit so no line exceeds the wrap width.
   for (let i = 0; i < plan.todo.length; i++) {
     const item: PlanTodoItem = plan.todo[i]!;
-    const description = planStepDescription(item);
+    const description = planStepLabel(item);
     const indent = "  ";
     const glyph = stepGlyph(state, i);
     let suffix = "";
@@ -138,6 +138,7 @@ export function buildPlanView(state: YoowaiSessionState, cost: PlanViewCost, opt
     for (const line of indentedWrap(`${description}${suffix}`, base, " ".repeat(base.length))) {
       lines.push(line);
     }
+    if (typeof item !== "string" && item.id) lines.push(`     id: ${item.id}`);
   }
   lines.push("");
 

@@ -403,7 +403,8 @@ The `wai` tool is called by the main agent during development:
 | `wai({ test: "added payment service" })`                              | After code changes             | Checks for failing tests, missing tests, and test-quality issues                    |
 | `wai({ security: "auth changes" })`                                   | Security-sensitive changes     | Audits diff for secrets, injection, auth, and other vulnerabilities                 |
 | `wai({ done: true })`                                                 | After completing a step        | Mark the current plan step complete; use a number or `"all"` to mark multiple steps |
-| `wai({ planUpdate: "changed decision and remaining work" })`          | When the plan needs revision   | Update the existing plan; retain progress for unchanged completed leading steps      |
+| `wai({ planUpdate: "changed decision and remaining work" })`          | When the plan needs revision   | Model-assisted revision; preserve unchanged outcomes and their review records      |
+| `wai({ planUpdate: { operations: [{ op: "edit", step: 2, title: "Implementation" }] } })` | A small plan edit | Apply locally without a model call; label changes preserve the required outcome |
 | `wai({ review: "...", verify: true })`                                | Any high-stakes result         | Asks the main agent to confirm or refute the finding with evidence                  |
 
 > **Diff scope:** by default `review`, `judge`, and `done` diff against `HEAD` and include untracked files, so they see staged, unstaged, and new files without you running `git add` first. Pass `revision`/`since` to scope to a commit range, or `untracked: false` to limit to tracked changes.
@@ -602,7 +603,12 @@ Image analysis (including scanned PDFs) requires the **sdk backend** and a model
 | `/wai-done 3`                                 | Mark steps 1–3 complete (lower number regresses the tracker, `0` resets)                            |
 | `/wai-done all`                               | Mark all steps complete                                                                             |
 | `/wai-done --force`                           | Override the `requireReviewBeforeDone` gate; the step is recorded as manually marked (not reviewed) |
-| `/wai-plan-update <changed decision and remaining work>` | Update the existing plan; retain progress for unchanged completed leading steps                     |
+| `/wai-plan-update <changed decision and remaining work>` | Model-assisted plan revision; preserve unchanged completion and review records                     |
+| `/wai-plan-update label 2 Implementation` | Change step 2's display label, preserving its required outcome and review history |
+| `/wai-plan-update edit 2 <required outcome>` | Change step 2's required outcome; affected and later progress needs verification again |
+| `/wai-plan-update add 2 <required outcome>` | Insert a step after step 2 (`0` inserts first) |
+| `/wai-plan-update remove 3` / `move 4 3` | Remove step 3 / move step 4 to final position 3; dependencies must remain valid |
+| `/wai-plan-update undo` | Undo the last applied update; restore reviewed completion only when source evidence still matches |
 
 **`/wai-model` selection flow.** Recent model choices are shown first so you can re-select a model in one click. For providers with a huge catalog (e.g. OpenRouter), `/wai-model` opens a real-time searchable picker with fuzzy matching (the same matcher as Pi's own search — `dsr1` finds `deepseek-r1`): type to narrow the list as you type, use ↑↓ to navigate, and press Enter to select — no Enter-to-submit query needed. If you cancel the search or it matches nothing, it falls back to a family-grouped menu. In environments without interactive terminal input (e.g. RPC/print mode), it falls back to a text prompt + list. The final selection is saved to a recent-models list scoped to the project.
 
@@ -867,7 +873,22 @@ Plans describe outcomes with completion checks, sized to the task rather than a 
 
 Review/judge prompts require positive evidence for staleness: the conflicting plan text, observed code, and reason an assumption or tracker position has been superseded. A partial/per-file/incremental diff, unfinished step, unchanged preservation check, or equivalent implementation is not itself stale. Explicit developer requirements remain authoritative; internally consistent code that violates them still needs fixing. A reviewer can pass correct partial work while keeping its plan step open.
 
-When a stale warning appears, inspect `/wai-plan` and the cited evidence first. Correct an incorrect current step with `/wai-done N`; for a confirmed plan change use `wai({ planUpdate: "<changed decision and remaining work>" })` or `/wai-plan-update`. Plan updates receive the existing plan and progress, and retain progress only through unchanged completed leading steps (matching descriptions and dependencies). New, changed, removed, or reordered steps cannot reuse an old completion count; affected work needs verification again. Restored completion is marked manual rather than inventing a review of the regenerated plan. A review surfaces its update suggestion at most once per step/review round; the plan is never changed automatically. Creating a fresh plan resets progress.
+When a stale warning appears, inspect `/wai-plan` and the cited evidence first. Correct an incorrect progress count with `/wai-done N` (this marks preceding steps complete; it is not a focus/jump command). For a confirmed plan change, prefer a targeted update for a small edit, or use `wai({ planUpdate: "<changed decision and remaining work>" })` for a model-assisted revision. A review surfaces its update suggestion at most once per step/review round; the plan is never changed automatically. Creating a fresh plan resets progress.
+
+Targeted updates apply locally, without a secondary-model request:
+
+```js
+wai({ planUpdate: { operations: [{ op: "edit", step: 2, title: "Implementation" }] } });
+wai({ planUpdate: { operations: [{ op: "add", after: 3, description: "Verify the new routing behavior" }] } });
+wai({ planUpdate: { operations: [{ op: "move", step: 4, to: 3 }] } });
+wai({ planUpdate: { undo: true } });
+```
+
+Each operation can use the current 1-based step number or a stable step ID from `/wai-plan` / `wai_index({topic:'plan'})`. Numeric references resolve against the list **at that operation**, so use stable IDs for batches that insert, remove, or move steps. `move.to` is the final 1-based position. `add.after` defaults to the end; `0` inserts first. An `edit` can change `description`, `title`, `priority`, or `dependsOn`; `dependsOn` accepts current numbers or stable IDs. Dependencies follow their step identities and are renumbered after the batch. Removing a prerequisite requires updating its dependents in that batch, and dependencies must always point to earlier steps.
+
+Steps have a stable `id`, an outcome/completion-check `description`, and an optional display `title`. Label/priority changes and unchanged outcomes keep genuine prior review flags and round counts. Changing an outcome or its prerequisite identities reopens affected progress. Acceptance criteria apply to the whole plan, so changing them conservatively reopens completed work. The tracker still requires a completed leading sequence: inserting unfinished work before completed work cannot silently certify the inserted step or later steps. Reordering independent completed leading steps can retain their actual records by identity; this does not enable executing unfinished steps out of order.
+
+Every update returns a change summary and saves one undo snapshot. Candidates are validated before one atomic save; failed, cancelled, incomplete, or concurrently outdated updates preserve the active plan. Undo restores the previous plan, but never restores old edit counters, review gates, or VCS baselines. Reviewed completion is restored only when the workspace fingerprint still matches; changed or unverifiable source evidence requires verification again. Update/undo preserve the original task diff base and pending whole-tree review obligations.
 
 ### Review escalation
 

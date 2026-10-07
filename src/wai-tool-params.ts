@@ -1,4 +1,6 @@
-import type { WaiToolParams, WaiAction, WaiModelTask } from "./types.js";
+import type { WaiToolParams, WaiAction, WaiModelTask, PlanUpdateRequest } from "./types.js";
+import { Value } from "@sinclair/typebox/value";
+import { PlanUpdateRequestSchema } from "./schemas.js";
 
 export const WAI_ACTIONS: WaiAction[] = [
   "plan",
@@ -58,7 +60,13 @@ export function validateWaiToolParams(params: unknown): ValidationResult {
   const active = WAI_ACTIONS.filter((a) => {
     const value = p[a];
     if (a === "scan") return value === true;
-    if (a === "done" || a === "planUpdate") {
+    if (a === "planUpdate")
+      return (
+        value === true ||
+        (typeof value === "string" && value.length > 0) ||
+        (value !== null && typeof value === "object" && !Array.isArray(value))
+      );
+    if (a === "done") {
       return value === true || typeof value === "number" || (typeof value === "string" && value.length > 0);
     }
     return typeof value === "string" && value.length > 0;
@@ -76,6 +84,17 @@ export function validateWaiToolParams(params: unknown): ValidationResult {
   }
 
   const action = active[0];
+  if (
+    action === "planUpdate" &&
+    typeof p.planUpdate === "object" &&
+    !Value.Check(PlanUpdateRequestSchema, p.planUpdate)
+  ) {
+    return {
+      ok: false,
+      error:
+        "Invalid planUpdate: use targeted edit/add/remove/move operations, {undo:true}, or a description of the requested change.",
+    };
+  }
 
   const stringArray = (value: unknown): string[] | undefined => {
     if (value === undefined) return undefined;
@@ -97,7 +116,8 @@ export function validateWaiToolParams(params: unknown): ValidationResult {
     test: action === "test" ? (p.test as string) : undefined,
     security: action === "security" ? (p.security as string) : undefined,
     done: action === "done" ? (p.done === true ? "" : (p.done as string | number)) : undefined,
-    planUpdate: action === "planUpdate" ? (p.planUpdate === true ? "" : (p.planUpdate as string)) : undefined,
+    planUpdate:
+      action === "planUpdate" ? (p.planUpdate === true ? "" : (p.planUpdate as string | PlanUpdateRequest)) : undefined,
     force: action === "done" && p.force === true ? true : undefined,
     files: stringArray(p.files),
     exclude: stringArray(p.exclude),

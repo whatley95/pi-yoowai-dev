@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { WaiToolResult, WaiModelTask, ReviewLevel } from "./types.js";
+import type { WaiToolResult, WaiModelTask, ReviewLevel, PlanUpdateRequest } from "./types.js";
 import { Type } from "@sinclair/typebox";
+import { PlanUpdateRequestSchema } from "./schemas.js";
 import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
 import { resolveReviewLevel } from "./review-level.js";
 import { setPiSessionId, clearPiSessionId } from "./secondary-model.js";
@@ -351,7 +352,7 @@ export default async function (pi: ExtensionAPI) {
       } else if (p.planUpdate !== undefined) {
         const outcome = await executeWaiPlanUpdate(
           ctx.cwd,
-          p.planUpdate as string,
+          p.planUpdate as string | PlanUpdateRequest,
           signal,
           progress,
           ctx.sessionManager,
@@ -649,9 +650,9 @@ export default async function (pi: ExtensionAPI) {
         }),
       ),
       planUpdate: Type.Optional(
-        Type.Union([Type.Boolean(), Type.String()], {
+        Type.Union([Type.Boolean(), Type.String(), PlanUpdateRequestSchema], {
           description:
-            "Update the existing plan with a confirmed changed decision and remaining work. Preserve explicit user requirements; retain progress only for unchanged completed leading steps.",
+            "Update the active plan with targeted operations (edit/add/remove/move), {undo:true}, or a natural-language change. Step references are current 1-based numbers or stable IDs. edit.title changes a display label; edit.description changes the required outcome and reopens affected progress. add.after:0 inserts first; move.to is the final 1-based position. Preserve explicit user requirements and unchanged review records.",
         }),
       ),
       force: Type.Optional(

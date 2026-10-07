@@ -43,6 +43,19 @@ it("renders a skipped council assessment visibly without a passing verdict", () 
 });
 
 describe("renderCall review level", () => {
+  it("renders plan updates and tolerates invalid arguments while validation reports the error", () => {
+    assert.equal(
+      textOf(renderCall({ planUpdate: { operations: [{ op: "remove", step: 2 }] } }, theme, {})),
+      "wai plan update: 1 targeted operation(s)",
+    );
+    assert.equal(textOf(renderCall({ planUpdate: { undo: true } }, theme, {})), "wai plan update: undo");
+    assert.doesNotThrow(() =>
+      renderCall({ planUpdate: null } as unknown as Parameters<typeof renderCall>[0], theme, {}),
+    );
+    assert.doesNotThrow(() =>
+      renderCall({ planUpdate: { bad: true } } as unknown as Parameters<typeof renderCall>[0], theme, {}),
+    );
+  });
   it("shows the explicit level in the review call title", () => {
     const title = textOf(renderCall({ review: "check the retry loop" }, theme, {}, "med"));
     assert.equal(title, "wai review (med): check the retry loop");

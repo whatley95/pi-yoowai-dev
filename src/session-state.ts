@@ -40,6 +40,7 @@ export function getState(cwd: string): YoowaiSessionState {
 export function setPlan(cwd: string, plan: PlanResult): void {
   const state = getState(cwd);
   state.plan = plan;
+  state.planUndo = undefined;
   state.totalSteps = plan.todo.length;
   state.completedSteps = 0;
   state.reviewRounds = new Array(plan.todo.length).fill(0);
@@ -410,6 +411,21 @@ export function getReviewedFiles(cwd: string): Record<string, { verdict: ReviewV
 
 export function dropSessionState(cwd: string): void {
   sessionStates.delete(cwd);
+}
+
+export function planStateToken(cwd: string): string {
+  return JSON.stringify(getState(cwd));
+}
+
+/** Persist exactly one validated replacement before making it visible to the session. */
+export function commitPlanUpdate(cwd: string, expectedToken: string, next: YoowaiSessionState): void {
+  const state = getState(cwd);
+  if (JSON.stringify(state) !== expectedToken)
+    throw new Error(
+      "Plan or tracking changed while the update was being prepared. Inspect /wai-plan and retry the update.",
+    );
+  saveState(cwd, next, true);
+  Object.assign(state, next);
 }
 
 /** Round-trip branch snapshots through the same validation used for persisted state. */

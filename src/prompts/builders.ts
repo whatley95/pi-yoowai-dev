@@ -68,7 +68,11 @@ function buildPlanPromptImpl(
   const updateRules = updateContext
     ? `\n- Update the existing plan using the requested change; retain the original task goals and acceptance criteria unless the developer explicitly supersedes them.
 - Preserve the already-completed leading steps verbatim and in order, including their dependencies, unless the requested change invalidates them. Revise the remaining steps to reflect the evidence and requested change.
-- Never place new or unfinished work inside the completed prefix to reuse its progress. Changed or reordered completed steps will need verification again.`
+- Never place new or unfinished work inside the completed prefix to reuse its progress. Changed outcomes or newly incomplete prerequisites require verification again.
+- Preserve every existing step's id when retaining that step. Omit id for new work; Wai assigns new identities. Do not reuse an existing id for a different outcome.
+- Make the smallest requested edit. Do not reword unchanged outcome descriptions, remove unrelated steps, or regenerate completed work. Use the optional title for a cosmetic label change; description remains the required outcome/completion check.
+- Keep dependency numbers pointing to the same prerequisites after any insertion/removal/reorder. Only earlier steps may be dependencies.
+- Return the complete updated plan as JSON; partial plans and truncated output are not applied.`
     : "";
 
   return {
@@ -89,6 +93,7 @@ ${finalJsonBlock(`{
 Rules:
 - todo items must be concrete, verifiable, and ordered (what to do, not how to think about it)
 - Use objects when priorities or dependencies matter; plain strings are also accepted
+- An optional title is a short display label. The description defines the required outcome and completion check; renaming the title does not change that requirement.
 - priority must be one of: high, medium, low. Omit when unclear.
 - dependsOn is a 1-based list of earlier step numbers this step cannot start until after
 - acceptance criteria must be testable (specific checks, not vague goals)

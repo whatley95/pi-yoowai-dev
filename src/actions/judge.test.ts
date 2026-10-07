@@ -195,12 +195,19 @@ describe("executeWaiJudge fail-closed budget guard + result caching", () => {
     const oldPlan = JSON.parse(user.match(/<existing_plan>\n([\s\S]*?)\n<\/existing_plan>/)![1]);
     assert.equal(oldPlan.completedSteps, 1);
     assert.equal(oldPlan.plan.summary, "original");
-    assert.deepEqual(oldPlan.plan.todo, ["first", "second"]);
+    assert.deepEqual(
+      oldPlan.plan.todo.map((step: { description: string }) => step.description),
+      ["first", "second"],
+    );
+    assert.ok(
+      oldPlan.plan.todo.every((step: { id?: string }) => step.id),
+      "planner receives stable step identities",
+    );
     assert.deepEqual(oldPlan.plan.acceptanceCriteria, ["Keep original behavior"]);
     dropSessionState(cwd);
     assert.equal(getState(cwd).planBaseCommit, originalBase);
     assert.equal(getState(cwd).completedSteps, 1);
-    assert.equal(getState(cwd).reviewedSteps[0], false, "restored work is not falsely certified as reviewed");
+    assert.equal(getState(cwd).reviewedSteps[0], true, "unchanged work keeps its actual prior review record");
   });
 
   it("a plan update cannot inherit progress for newly inserted work", { skip: !hasGit }, async () => {

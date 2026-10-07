@@ -1,4 +1,5 @@
 import { Value } from "@sinclair/typebox/value";
+import { planIntegrityErrors } from "../plan-integrity.js";
 import type {
   PlanResult,
   ReviewResult,
@@ -284,7 +285,9 @@ function castOrNull<T>(schema: Parameters<typeof Value.Cast>[0], data: unknown):
 }
 
 export function validatePlanResult(data: unknown): PlanResult | null {
-  return castOrNull<PlanResult>(PlanResultSchema, data);
+  if (planIntegrityErrors(data).length) return null;
+  const result = castOrNull<PlanResult>(PlanResultSchema, data);
+  return result && !planIntegrityErrors(result).length ? result : null;
 }
 
 // The secondary model sometimes returns null or descriptive text for issue fields.
@@ -440,7 +443,7 @@ export function getJudgeValidationErrors(data: unknown): Array<{ path: string; m
 }
 
 export function getPlanValidationErrors(data: unknown): Array<{ path: string; message: string; value: unknown }> {
-  return formatValidationErrors(PlanResultSchema, data);
+  return [...formatValidationErrors(PlanResultSchema, data), ...planIntegrityErrors(data)];
 }
 
 export function getTestValidationErrors(data: unknown): Array<{ path: string; message: string; value: unknown }> {

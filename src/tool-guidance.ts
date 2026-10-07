@@ -38,7 +38,7 @@ export const WAI_TOOL_GUIDANCE = {
     COMMIT_GUIDANCE,
     GIT_COMMIT_GUIDANCE,
     COMPLETION_EVIDENCE_GUIDANCE,
-    "Use wai with planUpdate:'<changed decision and remaining work>' when the plan needs revision. It receives the existing plan; progress is retained only for unchanged completed leading steps. Changed or reordered steps need verification again.",
+    "For small plan edits use planUpdate:{operations:[...]} with edit/add/remove/move operations, using current 1-based step numbers or stable IDs from wai_index({topic:'plan'}). edit.title changes only a display label; edit.description/dependencies changes the required outcome and reopens affected progress. add.after:0 inserts first; move.to is the final position. References resolve against the current list at each operation. Unchanged completed work retains review records. Use planUpdate:'<changed decision and remaining work>' for a model-assisted revision, or planUpdate:{undo:true} to undo the last update. Changed acceptance criteria conservatively reopen completed work; switching focus never marks skipped work done.",
     "Enable autoJudge with configured council members to automatically run final council assessment when the last plan step completes. Empty council disables it even when autoJudge is true.",
 
     "Configure preReviewCommands in settings.json to run lint/test/typecheck before each review and include output in the prompt.",

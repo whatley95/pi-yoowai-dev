@@ -153,6 +153,10 @@ export interface YoowaiConfig {
 }
 
 export interface PlanStep {
+  /** Stable identity, assigned by Wai. Numbers remain the display/dependency positions. */
+  id?: string;
+  /** Optional display label; changing it does not change the required outcome. */
+  title?: string;
   description: string;
   priority?: "high" | "medium" | "low";
   dependsOn?: number[];
@@ -166,12 +170,50 @@ export interface PlanResult {
   summary: string;
 }
 
+export type PlanStepRef = number | string;
+
+export type PlanUpdateOperation =
+  | {
+      op: "edit";
+      step: PlanStepRef;
+      description?: string;
+      title?: string;
+      priority?: PlanStep["priority"];
+      dependsOn?: PlanStepRef[];
+    }
+  | {
+      op: "add";
+      after?: PlanStepRef;
+      description: string;
+      title?: string;
+      priority?: PlanStep["priority"];
+      dependsOn?: PlanStepRef[];
+    }
+  | { op: "remove"; step: PlanStepRef }
+  | { op: "move"; step: PlanStepRef; to: number };
+
+export type PlanUpdateRequest =
+  { operations: PlanUpdateOperation[]; summary?: string; acceptanceCriteria?: string[] } | { undo: true };
+
+export interface PlanUndoSnapshot {
+  plan: PlanResult;
+  completedSteps: number;
+  reviewRounds: number[];
+  reviewedSteps: boolean[];
+  workspaceFingerprint?: string;
+  completionEvidence?: YoowaiSessionState["completionEvidence"];
+}
+
 export function isPlanStep(item: PlanTodoItem): item is PlanStep {
   return typeof item === "object" && item !== null && typeof item.description === "string";
 }
 
 export function planStepDescription(item: PlanTodoItem): string {
   return isPlanStep(item) ? item.description : item;
+}
+
+export function planStepLabel(item: PlanTodoItem): string {
+  return isPlanStep(item) && item.title ? `${item.title}: ${item.description}` : planStepDescription(item);
 }
 
 export interface ReviewIssue {
@@ -320,6 +362,8 @@ export interface SecurityResult {
 
 export interface YoowaiSessionState {
   plan?: PlanResult;
+  /** One bounded undo snapshot; never restores edit counters or whole-tree certification. */
+  planUndo?: PlanUndoSnapshot;
   completedSteps: number;
   totalSteps: number;
   reviewRounds: number[];
@@ -383,7 +427,7 @@ export interface WaiToolParams {
   test?: string;
   security?: string;
   done?: string | number | boolean;
-  planUpdate?: string | boolean;
+  planUpdate?: string | boolean | PlanUpdateRequest;
   /** For done: override the requireReviewBeforeDone gate and mark the step complete without a review. */
   force?: boolean;
   files?: string[];
@@ -581,6 +625,9 @@ export interface VisionResult {
 
 export interface DoneResult {
   error?: string;
+  /** Applied plan edits, with completion invalidations explained. */
+  changes?: string[];
+  undoAvailable?: boolean;
   completedStep: number;
   totalSteps: number;
   nextStep?: string;

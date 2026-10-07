@@ -1,8 +1,10 @@
 # Plan update instruction template (edit then place at .pi/yoowai/instructions/planUpdate.md)
 
 - Use the existing plan and completed-step count supplied in the prompt. Preserve the original task goals and criteria unless the developer has explicitly changed them.
-- Keep unchanged completed leading steps verbatim and in order, including dependencies. Revise the remaining steps using the changed decision and code evidence.
-- If a completed step has actually changed, revise it honestly; its progress will require verification again. Never insert unfinished work into the completed prefix to reuse its count.
+- Make the smallest requested change. Preserve stable step IDs, unchanged outcome descriptions, and prerequisite identities. Prefer targeted edit/add/remove/move operations for small changes; use the model-assisted update for broader revisions.
+- Use `title` for cosmetic labels and `description` for required outcomes/completion checks. Label/priority changes keep existing review history; changed outcomes and dependencies need verification again. Changing whole-plan acceptance criteria conservatively reopens completed work.
+- Revise remaining work using the requested decision and code evidence. Renumber dependencies after reordering; dependencies must always reference earlier steps. Never remove a prerequisite without updating its dependents.
+- If a completed step has actually changed, revise it honestly; affected progress will require verification again. Never insert unfinished work into the completed prefix to reuse its count. A completed leading sequence is still required; this update is not an out-of-order focus command.
 - Distinguish a superseded assumption from an unfinished step or a tracker error. A partial diff or unchanged preservation check is not a reason to redesign the plan.
 - Keep the revised steps focused on outcomes and completion checks; avoid a fixed number of steps or implementation details unsupported by the code.
 

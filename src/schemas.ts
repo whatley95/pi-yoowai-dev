@@ -2,12 +2,60 @@ import { Type } from "@sinclair/typebox";
 
 export const PlanStepSchema = Type.Object(
   {
+    id: Type.Optional(Type.String({ minLength: 1, maxLength: 80, pattern: "^[\\w-]+$" })),
+    title: Type.Optional(Type.String()),
     description: Type.String(),
     priority: Type.Optional(Type.Union([Type.Literal("high"), Type.Literal("medium"), Type.Literal("low")])),
     dependsOn: Type.Optional(Type.Array(Type.Number())),
   },
   { additionalProperties: false },
 );
+
+const StepRefSchema = Type.Union([Type.Integer({ minimum: 1 }), Type.String({ minLength: 1, maxLength: 80 })]);
+const PlanEditFields = {
+  title: Type.Optional(Type.String()),
+  priority: PlanStepSchema.properties.priority,
+  dependsOn: Type.Optional(Type.Array(StepRefSchema, { uniqueItems: true })),
+};
+
+export const PlanUpdateRequestSchema = Type.Union([
+  Type.Object({ undo: Type.Literal(true) }, { additionalProperties: false }),
+  Type.Object(
+    {
+      operations: Type.Array(
+        Type.Union([
+          Type.Object(
+            {
+              op: Type.Literal("edit"),
+              step: StepRefSchema,
+              description: Type.Optional(Type.String({ minLength: 1 })),
+              ...PlanEditFields,
+            },
+            { additionalProperties: false },
+          ),
+          Type.Object(
+            {
+              op: Type.Literal("add"),
+              after: Type.Optional(Type.Union([Type.Literal(0), StepRefSchema])),
+              description: Type.String({ minLength: 1 }),
+              ...PlanEditFields,
+            },
+            { additionalProperties: false },
+          ),
+          Type.Object({ op: Type.Literal("remove"), step: StepRefSchema }, { additionalProperties: false }),
+          Type.Object(
+            { op: Type.Literal("move"), step: StepRefSchema, to: Type.Integer({ minimum: 1 }) },
+            { additionalProperties: false },
+          ),
+        ]),
+        { maxItems: 100 },
+      ),
+      summary: Type.Optional(Type.String()),
+      acceptanceCriteria: Type.Optional(Type.Array(Type.String())),
+    },
+    { additionalProperties: false },
+  ),
+]);
 
 export const PlanResultSchema = Type.Object(
   {

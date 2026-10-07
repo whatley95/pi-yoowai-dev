@@ -116,7 +116,18 @@ export function renderCall(args: WaiToolParams, theme: Theme, context?: ToolRend
   }
   let label: string;
   if (p.plan) label = `wai plan: ${truncate(String(p.plan), 80)}`;
-  else if (p.review)
+  else if (p.planUpdate !== undefined) {
+    const update = p.planUpdate;
+    const description =
+      update && typeof update === "object"
+        ? "undo" in update
+          ? "undo"
+          : Array.isArray(update.operations)
+            ? `${update.operations.length} targeted operation(s)`
+            : "invalid update"
+        : String(update);
+    label = `wai plan update: ${truncate(description, 80)}`;
+  } else if (p.review)
     label = `wai review${dynamicRiskReview ? " (auto)" : level ? ` (${level})` : ""}: ${truncate(String(p.review), 80)}`;
   else if (p.suggest) label = `wai suggest: ${truncate(String(p.suggest), 80)}`;
   else if (p.recommend) label = `wai recommend: ${truncate(String(p.recommend), 80)}`;

@@ -448,6 +448,12 @@ export function formatResultText(result: WaiToolResult): string {
     lines.push(`## ${header}${formatModelSuffix(result.model)}`);
     lines.push("");
     lines.push(result.done.message);
+    if (result.done.changes?.length) {
+      lines.push("", "### Changes", "");
+      for (const change of result.done.changes) lines.push(`- ${change}`);
+    }
+    if (result.done.undoAvailable)
+      lines.push("", "Undo the last update with `/wai-plan-update undo` or `wai({planUpdate:{undo:true}})`.");
     if (result.done.blocked) {
       lines.push("🚫 **Blocked:** completion is gated on review — run `wai.review` first, or override with force.");
     } else if (result.done.verified === false) {

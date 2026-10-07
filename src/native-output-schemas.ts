@@ -59,6 +59,8 @@ const workflowOutput = object({
       totalSteps: Type.Integer(),
       allDone: Type.Boolean(),
       message: Type.String(),
+      changes: optional(strings()),
+      undoAvailable: optional(Type.Boolean()),
       blocked: optional(Type.Boolean()),
       verified: optional(Type.Boolean()),
       verificationReason: optional(Type.String()),

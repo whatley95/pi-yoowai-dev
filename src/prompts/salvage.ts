@@ -590,6 +590,8 @@ export function salvageSecurityFromMarkdown(raw: string): import("../types.js").
 export function salvagePlanFromMarkdown(raw: string, fallbackTask: string): import("../types.js").PlanResult | null {
   const text = raw.trim();
   if (!text) return null;
+  // Invalid structured plans must not be reinterpreted as prose and lose their dependencies.
+  if (parseJsonResponse(raw) !== null) return null;
 
   // Summary: first H1/H2 heading or first non-empty paragraph.
   const headingMatch = text.match(/^#+\s+(.+)$/m);

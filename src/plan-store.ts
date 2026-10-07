@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { Value } from "@sinclair/typebox/value";
 import { getSessionConfigDir, getSessionConfigPath } from "./session-scope.js";
 import { logEvent } from "./logger.js";
-import type { YoowaiSessionState, PlanResult, ReviewVerdict } from "./types.js";
+import type { YoowaiSessionState, PlanResult, ReviewVerdict, PlanUndoSnapshot } from "./types.js";
 import { validatePlanResult } from "./prompts.js";
 import { PlanResultSchema } from "./schemas.js";
 import { normalizeCompletionEvidence } from "./completion-evidence.js";
@@ -65,6 +66,7 @@ export function loadState(cwd: string): YoowaiSessionState | null {
     const reviewedFiles = normalizeReviewedFiles(rawReviewedFiles);
     const state: YoowaiSessionState = {
       plan: plan || undefined,
+      planUndo: normalizePlanUndo(data.planUndo),
       completedSteps: typeof data.completedSteps === "number" ? data.completedSteps : 0,
       totalSteps: typeof data.totalSteps === "number" ? data.totalSteps : 0,
       reviewRounds: Array.isArray(data.reviewRounds) ? data.reviewRounds : [],
@@ -127,20 +129,53 @@ function salvagePlan(raw: unknown): PlanResult | undefined {
     : [];
   const summary = typeof r.summary === "string" ? r.summary : "";
   if (todo.length > 0 || summary.length > 0) {
-    return { todo, acceptanceCriteria, summary };
+    return validatePlanResult({ todo, acceptanceCriteria, summary }) ?? undefined;
   }
   return undefined;
 }
 
-export function saveState(cwd: string, state: YoowaiSessionState): void {
+function normalizePlanUndo(raw: unknown): PlanUndoSnapshot | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const data = raw as Record<string, unknown>;
+  const plan = validatePlanResult(data.plan);
+  if (
+    !plan ||
+    typeof data.completedSteps !== "number" ||
+    !Number.isInteger(data.completedSteps) ||
+    data.completedSteps < 0 ||
+    data.completedSteps > plan.todo.length
+  )
+    return undefined;
+  const completed = data.completedSteps;
+  return {
+    plan,
+    completedSteps: completed,
+    reviewRounds: plan.todo.map((_, i) =>
+      Array.isArray(data.reviewRounds) && Number.isInteger(data.reviewRounds[i]) && data.reviewRounds[i] >= 0
+        ? data.reviewRounds[i]
+        : 0,
+    ),
+    reviewedSteps: plan.todo.map(
+      (_, i) => i < completed && Array.isArray(data.reviewedSteps) && data.reviewedSteps[i] === true,
+    ),
+    workspaceFingerprint: typeof data.workspaceFingerprint === "string" ? data.workspaceFingerprint : undefined,
+    completionEvidence: normalizeCompletionEvidence(data.completionEvidence),
+  };
+}
+
+/** Strict saves are used by plan transactions: failure leaves the in-memory plan untouched. */
+export function saveState(cwd: string, state: YoowaiSessionState, strict = false): void {
+  let temporaryPath: string | undefined;
   try {
     const dir = getStateDir(cwd);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    temporaryPath = `${getPlanPath(cwd)}.${randomUUID()}.tmp`;
     writeFileSync(
-      getPlanPath(cwd),
+      temporaryPath,
       JSON.stringify(
         {
           plan: state.plan,
+          planUndo: state.planUndo,
           completedSteps: state.completedSteps,
           totalSteps: state.totalSteps,
           reviewRounds: state.reviewRounds,
@@ -168,10 +203,20 @@ export function saveState(cwd: string, state: YoowaiSessionState): void {
       ),
       { encoding: "utf-8", mode: 0o600 },
     );
+    renameSync(temporaryPath, getPlanPath(cwd));
   } catch (err) {
     logEvent(cwd, "error", "Failed to save wai plan state", {
       error: err instanceof Error ? err.message : String(err),
     });
+    if (strict) throw err;
+  } finally {
+    if (temporaryPath && existsSync(temporaryPath)) {
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        /* Best-effort cleanup of this transaction's temporary file. */
+      }
+    }
   }
 }
 

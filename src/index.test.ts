@@ -2,7 +2,7 @@ import { describe, it, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import type { SearchResults } from "duck-duck-scrape";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { validateWaiToolParams } from "./wai-tool-params.js";
@@ -31,6 +31,19 @@ function writeProjectSettings(cwd: string, settings: Record<string, unknown>): v
 }
 
 describe("validateWaiToolParams", () => {
+  it("accepts targeted updates and undo while rejecting malformed operations and combined actions", () => {
+    const request = { operations: [{ op: "edit", step: 2, title: "New label" }] };
+    const valid = validateWaiToolParams({ planUpdate: request });
+    assert.equal(valid.ok, true);
+    if (valid.ok) assert.deepEqual(valid.params.planUpdate, request);
+    assert.equal(validateWaiToolParams({ planUpdate: { undo: true } }).ok, true);
+    assert.equal(validateWaiToolParams({ planUpdate: { operations: [{ op: "move", step: 1, to: 0 }] } }).ok, false);
+    assert.equal(
+      validateWaiToolParams({ planUpdate: { operations: [{ op: "remove", step: 1, unexpected: true }] } }).ok,
+      false,
+    );
+    assert.equal(validateWaiToolParams({ planUpdate: { undo: true }, review: "review" }).ok, false);
+  });
   it("accepts scan refresh only for the scan action", () => {
     const scan = validateWaiToolParams({ scan: true, scanRefresh: true });
     assert.ok(scan.ok);
@@ -308,7 +321,9 @@ describe("wai extension registration", () => {
     assert.match(guidance, /acceptance criteria verified or still unverified/);
     assert.match(guidance, /report the blocker/);
     assert.match(guidance, /Before requesting a plan, inspect relevant source/);
-    assert.match(guidance, /progress is retained only for unchanged completed leading steps/);
+    assert.match(guidance, /Unchanged completed work retains review records/);
+    assert.match(guidance, /edit.title changes only a display label/);
+    assert.match(guidance, /planUpdate:\{undo:true\}/);
     assert.match(guidance, /do not rewrite them just to obtain a pass/);
     assert.doesNotMatch(guidance, /Scope reviews.*not the whole repo|never auto-commit|then done:true/);
     assert.doesNotMatch(guidance, /\b(?:plan|review|advisor|suggest|recommend|judge|test|security):\s*true\b/);
@@ -489,6 +504,27 @@ describe("wai extension registration", () => {
     assert.match(result.details.error ?? "", /budget/i);
     assert.equal(result.structuredContent.error, result.details.error);
     assert.equal(getState(cwd).plan?.summary, "Keep original");
+  });
+
+  it("exposes targeted updates and undo summaries through native structured results", async (t) => {
+    const cwd = makeTempDir("wai-plan-update-native-");
+    t.after(() => {
+      assert.equal(dirname(resolve(cwd)).toLowerCase(), resolve(tmpdir()).toLowerCase());
+      assert.ok(basename(cwd).startsWith("wai-plan-update-native-"));
+      rmSync(cwd, { recursive: true, force: true });
+    });
+    setPlan(cwd, { summary: "Original", todo: ["Inspect", "Implement"], acceptanceCriteria: [] });
+    const execute = await getToolExecutor("wai");
+    const result = (await execute(
+      "plan-label",
+      { planUpdate: { operations: [{ op: "edit", step: 1, title: "Inspection" }] } },
+      undefined,
+      undefined,
+      progressCtx(cwd, []),
+    )) as { isError: boolean; structuredContent: { done: { changes: string[]; undoAvailable: boolean } } };
+    assert.equal(result.isError, false);
+    assert.ok(result.structuredContent.done.changes.some((change) => /label/.test(change)));
+    assert.equal(result.structuredContent.done.undoAvailable, true);
   });
 
   it("exposes bounded design pages and continuation metadata through the registered tool", async (t) => {

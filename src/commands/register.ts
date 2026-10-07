@@ -1841,7 +1841,10 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     const signal = undefined;
     const description = args.trim();
     if (!description) {
-      ctx.ui.notify("Usage: /wai-plan-update <new task description>", "warning");
+      ctx.ui.notify(
+        "Usage: /wai-plan-update <change | edit N outcome | label N title | add N outcome | remove N | move N position | undo>. add N inserts after N; 0 inserts first. JSON operation batches are also accepted.",
+        "warning",
+      );
       return;
     }
     const progress = createProgressReporter("plan", ctx);
@@ -1861,7 +1864,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-plan-update", {
     description:
-      "Update the active wai plan using a changed decision and remaining work. Retains unchanged completed leading steps.",
+      "Update the active plan with a requested change or targeted edit/label/add/remove/move operation. Preserve unchanged review records. Usage: /wai-plan-update <change|edit N outcome|label N title|add N outcome|remove N|move N position|undo>; add N inserts after N (0 first).",
     handler: planUpdateHandler,
   });
 
