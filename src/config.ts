@@ -202,7 +202,7 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
       const global = JSON.parse(readFileSync(globalPath, "utf-8"));
       if (global["pi-yoowai"]) {
         checkUnknownKeys(global["pi-yoowai"], "global", cwd);
-        config = mergeConfig(config, global["pi-yoowai"]);
+        config = mergeYoowaiConfig(config, global["pi-yoowai"]);
       }
     } catch (err) {
       logEvent(cwd, "warn", "Failed to parse global wai settings", {
@@ -217,7 +217,7 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
       const project = JSON.parse(readFileSync(projectPath, "utf-8"));
       if (project["pi-yoowai"]) {
         checkUnknownKeys(project["pi-yoowai"], "project", cwd);
-        config = mergeConfig(config, project["pi-yoowai"]);
+        config = mergeYoowaiConfig(config, project["pi-yoowai"]);
       }
     } catch (err) {
       logEvent(cwd, "warn", "Failed to parse project wai settings", {
@@ -515,7 +515,8 @@ function mergeDocs(base: DocsConfig | undefined, override: unknown): DocsConfig 
   };
 }
 
-function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
+/** Apply a settings layer using the same rules as the disk configuration loader. */
+export function mergeYoowaiConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
   if (!override || typeof override !== "object" || Array.isArray(override)) {
     return base;
   }

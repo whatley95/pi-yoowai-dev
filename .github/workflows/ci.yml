@@ -21,6 +21,11 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - name: Install native grep dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
@@ -42,6 +47,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install native grep dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
       - name: Stage disposable Pi ${{ matrix.pi }} tree
         run: |
           mkdir -p "$RUNNER_TEMP/pi-yoowai-latest"

@@ -39,7 +39,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "node --import tsx --test src/**/*.test.ts",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "benchmark": "node --import tsx scripts/review-benchmark.ts",
     "format": "prettier --write src",
     "format:check": "prettier --check src",

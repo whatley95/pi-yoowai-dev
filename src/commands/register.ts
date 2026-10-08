@@ -1,9 +1,10 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { VERSION, HOMEPAGE } from "../version.js";
 import { dismissFinding, formatFindings, clearFindings } from "../finding-tracker.js";
-import { getAgentDir } from "../pi-paths.js";
+import { getAgentDir, getProjectConfigPath } from "../pi-paths.js";
 import { formatSkillDiagnostics } from "../integration/skills.js";
 import { formatResultText } from "../format.js";
 import { clearPromptCache } from "../prompts.js";
@@ -42,7 +43,13 @@ import { executeWaiExplain } from "../wai-explain.js";
 import { executeWaiVision } from "../wai-vision.js";
 import { handleWaiSearchCommand } from "../wai-search.js";
 import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
-import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
+import {
+  loadYoowaiConfig,
+  mergeYoowaiConfig,
+  resolveTaskModel,
+  resolveReviewTaskModel,
+  resolveJudgeCouncilMembers,
+} from "../config.js";
 import { describeReviewLevelMode, hasFixedReviewLevel, resolveReviewLevel } from "../review-level.js";
 import { modelTaskLabel, resolveModelTask } from "../model-task-routing.js";
 import type { YoowaiConfig } from "../types.js";
@@ -103,6 +110,77 @@ function isReviewModelTask(task: string): boolean {
 
 function isGeneralModelTask(task: WaiModelTask): boolean {
   return task !== "judge" && !isReviewModelTask(task);
+}
+
+const ALL_GENERAL_MODELS_OPTION = "Reset all listed roles to one model… (keeps reviews and council)";
+
+/** Pin excluded effective profiles only when replacing the base would change them.
+ *  Preserve project inheritance in its own settings layer, never in global credentials. */
+export function buildAllGeneralModelSettings(
+  globalSettings: Record<string, unknown>,
+  projectSettings: Record<string, unknown>,
+  next: { provider: string; id: string; thinking: string },
+): { global: Record<string, unknown>; project: Record<string, unknown> } {
+  const defaults: YoowaiConfig = { secondary: { provider: "", id: "", thinking: "xhigh" } };
+  const oldGlobal = mergeYoowaiConfig(defaults, globalSettings);
+  const oldProject = mergeYoowaiConfig(oldGlobal, projectSettings);
+  const global = structuredClone(globalSettings);
+  const project = structuredClone(projectSettings);
+  const taskModels = { ...((global.taskModels as Record<string, unknown>) ?? {}) };
+  global.secondary = buildModelConfigEntry(global.secondary as Record<string, unknown> | undefined, next);
+  for (const task of WAI_MODEL_TASKS.filter(isGeneralModelTask)) {
+    const previous = (taskModels[task] as Record<string, unknown> | undefined) ?? {};
+    taskModels[task] = buildModelConfigEntry({ provider: oldGlobal.secondary.provider, ...previous }, next);
+  }
+  global.taskModels = taskModels;
+
+  function preserveExcluded(before: YoowaiConfig, layer: Record<string, unknown>, base: YoowaiConfig): void {
+    const resolve = () => mergeYoowaiConfig(base, layer);
+    const overrides = { ...((layer.taskModels as Record<string, unknown>) ?? {}) };
+    // Shared fallback first: absent/ignored depth overrides can keep inheriting it.
+    for (const task of ["review", "judge", "reviewMin", "reviewMed", "reviewHigh"] as const) {
+      const profile = (config: YoowaiConfig) =>
+        task === "reviewMin"
+          ? resolveReviewTaskModel(config, "min")
+          : task === "reviewMed"
+            ? resolveReviewTaskModel(config, "med")
+            : task === "reviewHigh"
+              ? resolveReviewTaskModel(config, "high")
+              : task === "judge"
+                ? resolveCouncilSynthesisModel(config)
+                : resolveTaskModel(config, task);
+      const previous = profile(before);
+      if (isDeepStrictEqual(previous, profile(resolve()))) continue;
+      if (!previous.provider || !previous.id) {
+        throw new Error(
+          "Set a base model first before resetting all roles; the existing review/council profiles are not configured.",
+        );
+      }
+      overrides[task] = { ...((overrides[task] as Record<string, unknown>) ?? {}), ...previous };
+      layer.taskModels = overrides;
+    }
+    const previousMembers = resolveJudgeCouncilMembers(before);
+    if (!isDeepStrictEqual(previousMembers, resolveJudgeCouncilMembers(resolve()))) {
+      layer.judgeCouncil = previousMembers.map((member) => ({ ...member }));
+    }
+  }
+
+  preserveExcluded(oldGlobal, global, defaults);
+  const newGlobal = mergeYoowaiConfig(defaults, global);
+  preserveExcluded(oldProject, project, newGlobal);
+  const excluded = (config: YoowaiConfig) => [
+    resolveTaskModel(config, "review"),
+    ...(["min", "med", "high"] as const).map((level) => resolveReviewTaskModel(config, level)),
+    resolveCouncilSynthesisModel(config),
+    resolveJudgeCouncilMembers(config),
+  ];
+  if (
+    !isDeepStrictEqual(excluded(oldGlobal), excluded(newGlobal)) ||
+    !isDeepStrictEqual(excluded(oldProject), excluded(mergeYoowaiConfig(newGlobal, project)))
+  ) {
+    throw new Error("Cannot preserve the existing review/council profiles; no model settings were changed.");
+  }
+  return { global, project };
 }
 
 function resolveCouncilSynthesisModel(config: YoowaiConfig): SecondaryModelConfig {
@@ -1211,16 +1289,18 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
       // 1. Select a model role. Keep identities separate from human-readable labels.
       let action: WaiModelTask | undefined = dedicatedTask;
+      let allGeneralModels = false;
       if (!dedicatedTask) {
         const scopes = buildModelScopeOptions(currentConfig);
-        const scopePicked = await ctx.ui.select(
-          "Which wai model role should use this model?",
-          scopes.map((scope) => scope.text),
-        );
+        const scopePicked = await ctx.ui.select("Which wai model role should use this model?", [
+          ...scopes.map((scope) => scope.text),
+          ALL_GENERAL_MODELS_OPTION,
+        ]);
         if (!scopePicked) return;
         const scope = scopes.find((scope) => scope.text === scopePicked);
-        if (!scope) return;
-        action = scope.task;
+        allGeneralModels = scopePicked === ALL_GENERAL_MODELS_OPTION;
+        if (!scope && !allGeneralModels) return;
+        action = scope?.task;
       }
       // The direct shared-review picker edits the fallback, so mark that model
       // as current even when a depth-specific override is the active reviewer.
@@ -1332,7 +1412,39 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       if (!settings["pi-yoowai"]) settings["pi-yoowai"] = {};
       const waiSettings = settings["pi-yoowai"] as Record<string, unknown>;
 
-      if (!action) {
+      if (allGeneralModels) {
+        const projectPath = getProjectConfigPath(ctx.cwd, "settings.json");
+        const originalProjectText = existsSync(projectPath) ? readFileSync(projectPath, "utf-8") : undefined;
+        const projectSettings = originalProjectText ? JSON.parse(originalProjectText) : {};
+        const previousProjectWai = projectSettings["pi-yoowai"] ?? {};
+        const updated = buildAllGeneralModelSettings(waiSettings, previousProjectWai, {
+          provider,
+          id: modelId,
+          thinking,
+        });
+        settings["pi-yoowai"] = updated.global;
+        const projectChanged = !isDeepStrictEqual(previousProjectWai, updated.project);
+        // Project-only preservation pins must be in place before replacing the global base.
+        // Both writes are synchronous; restore the project if the global write fails.
+        if (projectChanged) {
+          projectSettings["pi-yoowai"] = updated.project;
+          writeFileSync(projectPath, JSON.stringify(projectSettings, null, 2) + "\n", "utf-8");
+        }
+        try {
+          writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+        } catch (error) {
+          if (projectChanged && originalProjectText !== undefined)
+            writeFileSync(projectPath, originalProjectText, "utf-8");
+          throw error;
+        }
+        saveRecentModel(ctx.cwd, { provider, id: modelId, thinking, scope: "base" });
+        ctx.ui.notify(
+          `Base and all ${WAI_MODEL_TASKS.filter(isGeneralModelTask).length} general roles set to ${provider}:${modelId} (${thinking}). Review and council profiles preserved.${projectChanged ? " Inherited project review/council profiles were pinned in project settings." : ""} Project overrides for general roles still take priority.`,
+          "info",
+        );
+        await refreshWaiProvider(pi, ctx.cwd);
+        return;
+      } else if (!action) {
         // Merge into the existing secondary config instead of replacing it, so
         // provider-specific fields (baseUrl, style, backend, apiKey, cacheRetention,
         // transport, authHeader, authPrefix, contextWindow, maxOutputTokens) are
@@ -1381,7 +1493,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-model", {
     description:
-      "Pick the base secondary or a general task model. Reviews use /wai-review-model; council synthesis uses /wai-council. Use /wai-model reset [base|<task>] to clear the base or a general task override. Usage: /wai-model [provider] [filter]",
+      "Pick the base secondary or a general task model, or use the bottom Reset all listed roles option to apply one model to all of them while preserving reviews and council. Use /wai-model reset [base|<task>] to clear one override. Usage: /wai-model [provider] [filter]",
     handler: modelHandler,
   });
 

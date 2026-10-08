@@ -13,6 +13,7 @@ import {
   pickRecentModel,
   promptSearchModels,
   buildModelConfigEntry,
+  buildAllGeneralModelSettings,
   buildReviewLevelItems,
   buildReviewModelItems,
   formatCouncilSynthesisModel,
@@ -25,7 +26,13 @@ import {
   registerWaiCommands,
   type ModelRef,
 } from "./register.js";
-import { loadYoowaiConfig } from "../config.js";
+import {
+  loadYoowaiConfig,
+  mergeYoowaiConfig,
+  resolveTaskModel,
+  resolveReviewTaskModel,
+  resolveJudgeCouncilMembers,
+} from "../config.js";
 import { setSdkGetModelOverride } from "../backends/sdk-backend.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import { setPlan, dropSessionState, getState } from "../session-state.js";
@@ -916,6 +923,9 @@ describe("/wai-model dedicated menu separation", () => {
             select: async (title: string, items: string[]) => {
               if (title.startsWith("Which wai model role") || title === "Reset which model selection?") {
                 rolesShown = true;
+                if (title === "Reset which model selection?") {
+                  assert.ok(!items.some((item) => item.startsWith("Reset all listed roles")));
+                }
                 assert.ok(!items.some((item) => /^review(?:Min|Med|High)?\s*\(/.test(item)), items.join("\n"));
                 assert.ok(!items.some((item) => item.startsWith("judge (")), items.join("\n"));
                 assert.ok(items.some((item) => item.startsWith("Base secondary model")));
@@ -1478,6 +1488,247 @@ describe("buildModelConfigEntry", () => {
     const entry = buildModelConfigEntry(undefined, { provider: "openai", id: "gpt-4o", thinking: "xhigh" });
     assert.deepStrictEqual(entry, { provider: "openai", id: "gpt-4o", thinking: "xhigh" });
   });
+});
+
+describe("/wai-model reset all listed roles", () => {
+  const excludedProfiles = (config: YoowaiConfig) => ({
+    shared: resolveTaskModel(config, "review"),
+    depths: (["min", "med", "high"] as const).map((level) => resolveReviewTaskModel(config, level)),
+    synthesis: resolveTaskModel(config, "judge"),
+    council: resolveJudgeCouncilMembers(config),
+  });
+
+  it("leaves independent review/council settings and unrelated keys byte-equivalent", () => {
+    const profile = { provider: "independent", id: "stable", thinking: "off" };
+    const initial = {
+      secondary: { provider: "old", id: "base", thinking: "high" },
+      taskModels: Object.fromEntries(
+        ["review", "reviewMin", "reviewMed", "reviewHigh", "judge"].map((role) => [role, profile]),
+      ),
+      judgeCouncil: [profile, { ...profile, id: "second" }],
+      reviewMaxDiffChars: 400000,
+      language: "French",
+      presets: { custom: { secondary: profile } },
+    };
+    const result = buildAllGeneralModelSettings(initial, {}, { provider: "new", id: "selected", thinking: "off" });
+    for (const role of Object.keys(initial.taskModels)) {
+      assert.deepStrictEqual((result.global.taskModels as Record<string, unknown>)[role], initial.taskModels[role]);
+    }
+    for (const key of ["judgeCouncil", "reviewMaxDiffChars", "language", "presets"] as const) {
+      assert.deepStrictEqual(result.global[key], initial[key]);
+    }
+    assert.deepStrictEqual(result.project, {});
+  });
+
+  for (const scenario of ["same provider", "switch provider", "project inheritance", "disabled council"] as const) {
+    it(`preserves excluded full profiles: ${scenario}`, () => {
+      const initial = {
+        secondary: {
+          provider: "old",
+          id: "base",
+          thinking: "high",
+          backend: "http",
+          baseUrl: "https://old.example/v1",
+          apiKey: "global-test-key",
+          maxRetries: 0,
+          timeoutMs: 12345,
+          authHeader: false,
+        },
+        taskModels: {
+          review: { id: "reviewer", thinking: "medium" },
+          reviewMin: { thinking: "low", baseUrl: "https://ignored.example/v1" },
+          reviewMed: { provider: "other", id: "balanced", maxOutputTokens: 2048 },
+          reviewHigh: { id: "deep" },
+          judge: { id: "synth" },
+          suggest: { id: "advisor", baseUrl: "https://task.example/v1", apiKey: "task-test-key" },
+          futureRole: { id: "keep" },
+        },
+        judgeCouncil: scenario === "disabled council" ? [] : ["member-one", { provider: "other", id: "member-two" }],
+        reviewLevel: "auto",
+        riskBasedReview: true,
+        autoJudge: false,
+        docs: { sources: { test: { url: "https://docs.example" } } },
+      };
+      const project =
+        scenario === "project inheritance"
+          ? {
+              secondary: { provider: "project", id: "project-base", thinking: "low", apiKey: "project-test-key" },
+              taskModels: {
+                review: { id: "project-review" },
+                reviewMin: { thinking: "off" },
+                suggest: { id: "project-advisor" },
+              },
+              judgeCouncil: ["project-member", { id: "second-project-member", thinking: "off" }],
+              language: "French",
+            }
+          : {};
+      const original = structuredClone({ initial, project });
+      const defaults: YoowaiConfig = { secondary: { provider: "", id: "", thinking: "xhigh" } };
+      const before = mergeYoowaiConfig(defaults, initial);
+      const beforeProject = mergeYoowaiConfig(before, project);
+      const next = { provider: scenario === "same provider" ? "old" : "new", id: "selected", thinking: "off" };
+      const result = buildAllGeneralModelSettings(initial, project, next);
+      // Exercise persisted JSON, including omitted undefined fields, with the actual config resolver.
+      const persisted = JSON.parse(JSON.stringify(result));
+      const after = mergeYoowaiConfig(defaults, persisted.global);
+      const afterProject = mergeYoowaiConfig(after, persisted.project);
+      assert.deepStrictEqual(excludedProfiles(after), excludedProfiles(before));
+      assert.deepStrictEqual(excludedProfiles(afterProject), excludedProfiles(beforeProject));
+      for (const { task } of buildModelScopeOptions(before)) {
+        const model = task ? resolveTaskModel(after, task) : after.secondary;
+        assert.equal(model.provider, next.provider);
+        assert.equal(model.id, next.id);
+        assert.equal(model.thinking, next.thinking);
+      }
+      if (next.provider !== "old") {
+        assert.equal(resolveTaskModel(after, "suggest").apiKey, undefined);
+        assert.equal(resolveTaskModel(after, "suggest").baseUrl, undefined);
+      } else {
+        assert.equal(resolveTaskModel(after, "suggest").apiKey, "task-test-key");
+      }
+      assert.deepStrictEqual(
+        (persisted.global.taskModels as Record<string, unknown>).futureRole,
+        initial.taskModels.futureRole,
+      );
+      for (const key of ["reviewLevel", "riskBasedReview", "autoJudge", "docs"] as const) {
+        assert.deepStrictEqual(persisted.global[key], initial[key]);
+      }
+      assert.deepStrictEqual({ initial, project }, original, "do not mutate input settings");
+      assert.ok(!JSON.stringify(persisted.global).includes("project-test-key"), "keep project credentials local");
+      if (scenario === "project inheritance") {
+        assert.equal(resolveTaskModel(afterProject, "suggest").id, "project-advisor");
+        assert.equal(persisted.project.language, "French");
+      } else {
+        assert.deepStrictEqual(persisted.project, {});
+      }
+      if (scenario === "disabled council") assert.deepStrictEqual(persisted.global.judgeCouncil, []);
+    });
+  }
+
+  for (const scenario of [
+    "save",
+    "project",
+    "cancel model",
+    "cancel thinking",
+    "concurrent settings",
+    "unconfigured",
+  ] as const) {
+    it(`runs the registered command safely: ${scenario}`, async () => {
+      const agentDir = mkdtempSync(join(tmpdir(), "wai-all-model-agent-"));
+      const cwd = mkdtempSync(join(tmpdir(), "wai-all-model-cwd-"));
+      const previousAgentDir = getAgentDir();
+      try {
+        setAgentDirForTests(() => agentDir);
+        const path = join(agentDir, "settings.json");
+        const initial = {
+          other: { untouched: true },
+          "pi-yoowai": {
+            secondary: scenario === "unconfigured" ? {} : { provider: "old", id: "base", thinking: "high" },
+            reviewLevel: "high",
+            judgeCouncil: [],
+            taskModels: { suggest: { id: "previous" } },
+          },
+        };
+        const initialText = JSON.stringify(initial);
+        writeFileSync(path, initialText);
+        const projectPath = join(cwd, ".pi", "settings.json");
+        const projectText = JSON.stringify({ other: 2, "pi-yoowai": { secondary: { id: "project-base" } } });
+        if (scenario === "project") {
+          mkdirSync(dirname(projectPath));
+          writeFileSync(projectPath, projectText);
+        }
+        const before = loadYoowaiConfig(cwd);
+        let expected = excludedProfiles(before);
+        const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+        registerWaiCommands(
+          {
+            registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+              commands.set(name, def),
+          } as unknown as ExtensionAPI,
+          new Map(),
+        );
+        const model = { provider: "new", id: "selected", reasoning: false };
+        const notifications: string[] = [];
+        let selectionCount = 0;
+        const ctx = {
+          cwd,
+          modelRegistry: {
+            getAll: () => [model],
+            getAvailable: () => [model],
+            getProviderAuthStatus: () => ({ configured: true }),
+            find: () => model,
+          },
+          ui: {
+            notify: (text: string) => notifications.push(text),
+            select: async (title: string, items: string[]) => {
+              selectionCount++;
+              if (title.startsWith("Which wai model role")) {
+                assert.ok(items.at(-1)?.startsWith("Reset all listed roles"), "bulk option is last");
+                assert.equal(items.filter((item) => item.startsWith("Reset all listed roles")).length, 1);
+                return items.at(-1);
+              }
+              if (title.startsWith("Pick model")) return scenario === "cancel model" ? undefined : items[0];
+              if (title.startsWith("Pick thinking")) {
+                if (scenario === "concurrent settings") {
+                  const latest = JSON.parse(readFileSync(path, "utf8"));
+                  latest.other.newSetting = 99;
+                  latest["pi-yoowai"].taskModels.review = { provider: "fresh", id: "fresh-review", thinking: "low" };
+                  latest["pi-yoowai"].judgeCouncil = ["fresh/member"];
+                  writeFileSync(path, JSON.stringify(latest));
+                  expected = excludedProfiles(loadYoowaiConfig(cwd));
+                }
+                return scenario === "cancel thinking" ? undefined : items[0];
+              }
+              throw new Error(`Unexpected picker: ${title}`);
+            },
+          },
+        } as unknown as ExtensionContext;
+        await commands.get("wai-model")!.handler("new", ctx);
+        const saved = JSON.parse(readFileSync(path, "utf8"));
+        if (scenario.startsWith("cancel") || scenario === "unconfigured") {
+          assert.equal(readFileSync(path, "utf8"), initialText);
+          if (scenario === "unconfigured")
+            assert.ok(
+              notifications.some((text) => text.includes("Set a base model first")),
+              notifications.join("\n"),
+            );
+        } else {
+          const after = loadYoowaiConfig(cwd);
+          assert.deepStrictEqual(excludedProfiles(after), expected);
+          assert.equal(saved["pi-yoowai"].secondary.id, "selected");
+          for (const { task } of buildModelScopeOptions(before)) {
+            if (task) assert.equal(saved["pi-yoowai"].taskModels[task].id, "selected");
+          }
+          if (scenario !== "concurrent settings") assert.deepStrictEqual(saved["pi-yoowai"].judgeCouncil, []);
+          else {
+            assert.equal(saved["pi-yoowai"].judgeCouncil.length, 1);
+            assert.equal(after.judgeCouncil?.[0].id, "member");
+            assert.equal(after.judgeCouncil?.[0].provider, "fresh");
+          }
+          assert.equal(saved["pi-yoowai"].reviewLevel, "high");
+          assert.equal(saved.other.untouched, true);
+          if (scenario === "concurrent settings") assert.equal(saved.other.newSetting, 99);
+          assert.ok(
+            notifications.some((text) => text.includes("Review and council profiles preserved")),
+            notifications.join("\n"),
+          );
+          assert.equal(selectionCount, 3, "choose one role, one model and one thinking level");
+          if (scenario === "project") {
+            assert.equal(JSON.parse(readFileSync(projectPath, "utf8")).other, 2);
+            assert.equal(after.secondary.id, "project-base", "project base override keeps priority");
+          } else {
+            assert.equal(existsSync(projectPath), false);
+          }
+        }
+      } finally {
+        setAgentDirForTests(() => previousAgentDir);
+        for (const dir of [agentDir, cwd]) {
+          assert.equal(dirname(realpathSync(dir)), realpathSync(tmpdir()));
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
+  }
 });
 
 describe("model picker helpers", () => {
