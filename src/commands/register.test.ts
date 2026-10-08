@@ -14,6 +14,7 @@ import {
   promptSearchModels,
   buildModelConfigEntry,
   buildReviewLevelItems,
+  buildReviewModelItems,
   parseReviewLevelItem,
   isScopeConfigured,
   buildModelScopeOptions,
@@ -842,7 +843,7 @@ describe("effective model requests in commands", () => {
             },
           },
         } as unknown as ExtensionContext;
-        await commands.get(command)!.handler(task === "reviewMin" ? "min" : "", ctx);
+        await commands.get(command)!.handler(task === "reviewMin" ? "min" : task === "review" ? "all" : "", ctx);
         assert.ok(providers.some((item) => item.startsWith("selected-provider") && item.includes("✓ current")));
         assert.ok(modelItems.includes("selected-model ✓ current"));
         assert.equal(readFileSync(settingsPath, "utf-8"), settings, "cancelling must preserve settings");
@@ -1005,7 +1006,7 @@ describe("review picker automatic mode", () => {
             },
           },
         } as unknown as ExtensionContext;
-        await commands.get("wai-review-model")!.handler("picker", ctx);
+        await commands.get("wai-review-model")!.handler("all picker", ctx);
         const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
         assert.equal(saved.unrelated, 42);
         assert.equal(saved["pi-yoowai"].reviewLevel, scenario === "cancel" ? "high" : "auto", notifications.join("\n"));
@@ -1033,6 +1034,7 @@ describe("/wai-review-model", () => {
     "min",
     "med",
     "high",
+    "max",
     "provider filter",
     "cancel model",
     "cancel thinking",
@@ -1126,9 +1128,9 @@ describe("/wai-review-model", () => {
                   ? "all reset base"
                   : scenario === "provider filter"
                     ? 'all picker "next"'
-                    : ["min", "med", "high"].includes(scenario)
+                    : ["min", "med", "high", "max"].includes(scenario)
                       ? `${scenario} picker`
-                      : "";
+                      : "all";
         await commands.get("wai-review-model")!.handler(args, ctx);
         assert.ok(!titles.some((title) => title.includes("Which wai model role")), "must skip the general role menu");
         const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
@@ -1165,7 +1167,7 @@ describe("/wai-review-model", () => {
               ? "reviewMin"
               : scenario === "med"
                 ? "reviewMed"
-                : scenario === "high"
+                : scenario === "high" || scenario === "max"
                   ? "reviewHigh"
                   : "review";
           assert.equal(wai.taskModels[task].id, "next", notifications.join("\n"));
@@ -1196,6 +1198,201 @@ describe("/wai-review-model", () => {
           notifications.some((text) => text.includes("Effective review models")),
           notifications.join("\n"),
         );
+      } finally {
+        setAgentDirForTests(() => previousAgentDir);
+        for (const dir of [agentDir, cwd]) {
+          assert.equal(dirname(realpathSync(dir)), realpathSync(tmpdir()));
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
+  }
+});
+
+describe("review model overview", () => {
+  it("shows three effective depths first, then shared fallback, mode, and reset", () => {
+    const items = buildReviewModelItems({
+      secondary: { provider: "picker", id: "base", thinking: "off" },
+      reviewLevel: "auto",
+      taskModels: { review: { id: "shared" }, reviewHigh: { id: "deep", thinking: "high" } },
+    });
+    assert.deepStrictEqual(
+      items.map((item) => item.target),
+      ["reviewMin", "reviewMed", "reviewHigh", "review", "level", "reset"],
+    );
+    assert.match(items[0].text, /^review-min: picker:shared.*off.*via review/);
+    assert.match(items[1].text, /^review-med: picker:shared.*via review/);
+    assert.match(items[2].text, /^review-max \(high\): picker:deep.*high.*via reviewHigh.*✓ configured/);
+    assert.match(items[3].text, /^Shared fallback: picker:shared/);
+    assert.match(items[4].text, /automatic.*med default/);
+    assert.ok(!items[0].text.includes("✓ configured"), "inherited models have no own override marker");
+  });
+
+  it("shows unset reviewers without requiring a registry", () => {
+    const items = buildReviewModelItems({ secondary: { provider: "", id: "" } });
+    assert.ok(items.slice(0, 4).every((item) => item.text.includes("not configured")));
+  });
+
+  for (const scenario of [
+    "cancel",
+    "min",
+    "med",
+    "high",
+    "shared",
+    "mode",
+    "mode cancel",
+    "reset med",
+    "reset cancel",
+    "project",
+    "provider filter",
+    "no registry",
+  ] as const) {
+    it(`opens the depth overview and refreshes after changes: ${scenario}`, async () => {
+      const agentDir = mkdtempSync(join(tmpdir(), "wai-overview-agent-"));
+      const cwd = mkdtempSync(join(tmpdir(), "wai-overview-cwd-"));
+      const previousAgentDir = getAgentDir();
+      try {
+        setAgentDirForTests(() => agentDir);
+        const settingsPath = join(agentDir, "settings.json");
+        const initial = {
+          unrelated: 42,
+          "pi-yoowai": {
+            secondary: { provider: "picker", id: "base", thinking: "off" },
+            reviewLevel: "high",
+            riskBasedReview: true,
+            judgeCouncil: ["picker/council"],
+            taskModels: {
+              review: { provider: "picker", id: "shared" },
+              reviewMin: { provider: "picker", id: "quick" },
+              reviewMed: { provider: "picker", id: "medium" },
+              reviewHigh: { provider: "picker", id: "deep" },
+              plan: { provider: "picker", id: "planner" },
+            },
+          },
+        };
+        const initialText = JSON.stringify(initial);
+        writeFileSync(settingsPath, initialText);
+        const projectText = JSON.stringify({
+          "pi-yoowai": { taskModels: { reviewMed: { id: "project" } }, reviewLevel: "high" },
+        });
+        if (scenario === "project") {
+          mkdirSync(join(cwd, ".pi"));
+          writeFileSync(join(cwd, ".pi", "settings.json"), projectText);
+        }
+        const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+        registerWaiCommands(
+          {
+            registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+              commands.set(name, def),
+          } as unknown as ExtensionAPI,
+          new Map(),
+        );
+        const models = ["base", "shared", "quick", "medium", "deep", "next", "project"].map((id) => ({
+          provider: "picker",
+          id,
+          reasoning: false,
+        }));
+        const notifications: string[] = [];
+        const titles: string[] = [];
+        const snapshots: string[][] = [];
+        const ctx = {
+          cwd,
+          modelRegistry:
+            scenario === "no registry"
+              ? undefined
+              : {
+                  getAll: () => models,
+                  getAvailable: () => models,
+                  getProviderAuthStatus: () => ({ configured: true }),
+                  find: (provider: string, id: string) =>
+                    models.find((model) => model.provider === provider && model.id === id),
+                },
+          ui: {
+            notify: (text: string) => notifications.push(text),
+            select: async (title: string, items: string[]) => {
+              titles.push(title);
+              if (title.startsWith("Review models (")) {
+                snapshots.push(items);
+                assert.ok(items[0].startsWith("review-min:"));
+                assert.ok(items[1].startsWith("review-med:"));
+                assert.ok(items[2].startsWith("review-max (high):"));
+                if (snapshots.length > 1 || scenario === "cancel" || scenario === "no registry") return undefined;
+                const prefix = scenario.startsWith("reset")
+                  ? "Reset a review"
+                  : scenario.startsWith("mode") || scenario === "project"
+                    ? "Review mode:"
+                    : scenario === "shared"
+                      ? "Shared fallback:"
+                      : scenario === "min"
+                        ? "review-min:"
+                        : scenario === "high"
+                          ? "review-max (high):"
+                          : "review-med:";
+                return items.find((item) => item.startsWith(prefix));
+              }
+              if (title === "Reset which review model override?")
+                return scenario === "reset cancel" ? undefined : items.find((item) => item.startsWith("review-med:"));
+              if (title.startsWith("Pick model")) return items.find((item) => item.startsWith("next"));
+              if (title.startsWith("Pick thinking")) return items[0];
+              if (title === "Pick default review level:")
+                return scenario === "mode cancel" ? undefined : items.find((item) => item.startsWith("Automatic"));
+              throw new Error(`Unexpected picker: ${title}`);
+            },
+          },
+        } as unknown as ExtensionContext;
+        await commands.get("wai-review-model")!.handler(scenario === "provider filter" ? 'picker "next"' : "", ctx);
+        const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
+        const wai = saved["pi-yoowai"];
+        assert.equal(saved.unrelated, 42);
+        assert.deepStrictEqual(wai.secondary, initial["pi-yoowai"].secondary);
+        assert.deepStrictEqual(wai.judgeCouncil, initial["pi-yoowai"].judgeCouncil);
+        assert.deepStrictEqual(wai.taskModels.plan, initial["pi-yoowai"].taskModels.plan);
+        assert.equal(wai.riskBasedReview, true);
+        assert.equal(wai.taskModels.reviewMax, undefined, "max maps to the existing high depth");
+        assert.ok(!titles.some((title) => title.startsWith("Which wai model role")));
+        if (["cancel", "no registry", "mode cancel", "reset cancel"].includes(scenario)) {
+          assert.equal(readFileSync(settingsPath, "utf8"), initialText, notifications.join("\n"));
+          assert.equal(snapshots.length, scenario === "cancel" || scenario === "no registry" ? 1 : 2);
+          if (scenario === "no registry") assert.deepStrictEqual(notifications, []);
+          return;
+        }
+        assert.equal(snapshots.length, 2, "return to the fresh overview after editing");
+        if (scenario === "mode" || scenario === "project") {
+          assert.deepStrictEqual(wai.taskModels, initial["pi-yoowai"].taskModels);
+          assert.equal(wai.reviewLevel, "auto");
+          assert.ok(!titles.some((title) => title.startsWith("Pick model") || title.startsWith("Pick thinking")));
+          assert.ok(
+            snapshots[1]
+              .find((item) => item.startsWith("Review mode:"))
+              ?.includes(scenario === "project" ? "high" : "automatic"),
+          );
+          if (scenario === "project") {
+            assert.ok(snapshots[0][1].includes("picker:project"));
+            assert.ok(notifications.some((text) => text.includes("project-level review mode override")));
+            assert.equal(readFileSync(join(cwd, ".pi", "settings.json"), "utf8"), projectText);
+          }
+        } else if (scenario === "reset med") {
+          assert.equal(wai.taskModels.reviewMed, undefined);
+          assert.deepStrictEqual(wai.taskModels.reviewHigh, initial["pi-yoowai"].taskModels.reviewHigh);
+          assert.equal(wai.reviewLevel, "high");
+          assert.ok(snapshots[1][1].includes("picker:shared") && snapshots[1][1].includes("via review"));
+        } else {
+          const task =
+            scenario === "min"
+              ? "reviewMin"
+              : scenario === "high"
+                ? "reviewHigh"
+                : scenario === "shared"
+                  ? "review"
+                  : "reviewMed";
+          assert.equal(wai.taskModels[task].id, "next", notifications.join("\n"));
+          for (const other of ["review", "reviewMin", "reviewMed", "reviewHigh"] as const) {
+            if (other !== task) assert.deepStrictEqual(wai.taskModels[other], initial["pi-yoowai"].taskModels[other]);
+          }
+          assert.equal(wai.reviewLevel, scenario === "shared" ? "auto" : "high");
+          assert.ok(snapshots[1].some((item) => item.includes("picker:next")));
+          assert.equal(titles.includes("Pick default review level:"), scenario === "shared");
+        }
       } finally {
         setAgentDirForTests(() => previousAgentDir);
         for (const dir of [agentDir, cwd]) {

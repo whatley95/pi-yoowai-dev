@@ -101,6 +101,33 @@ function isReviewModelTask(task: string): boolean {
   return REVIEW_MODEL_TASKS.some((role) => role.toLowerCase() === task.toLowerCase());
 }
 
+export function buildReviewModelItems(config: YoowaiConfig): Array<{
+  target: ReviewModelTask | "level" | "reset";
+  text: string;
+}> {
+  const models = [
+    { target: "reviewMin", label: "review-min" },
+    { target: "reviewMed", label: "review-med" },
+    { target: "reviewHigh", label: "review-max (high)" },
+    { target: "review", label: "Shared fallback" },
+  ] as const;
+  return [
+    ...models.map(({ target, label }) => {
+      const { model, source } =
+        target === "review"
+          ? { model: resolveTaskModel(config, "review"), source: config.taskModels?.review ? "review" : "secondary" }
+          : resolveModelTask(config, target);
+      const display = model.provider && model.id ? modelStatusLine(model) : "not configured";
+      return {
+        target,
+        text: `${label}: ${display} (via ${source})${isScopeConfigured(target, config) ? " ✓ configured" : ""}`,
+      };
+    }),
+    { target: "level", text: `Review mode: ${describeReviewLevelMode(config)}` },
+    { target: "reset", text: "Reset a review model…" },
+  ];
+}
+
 /** Parsed /wai-language argument. */
 export type LanguageCommandArgs = { kind: "usage" } | { kind: "set"; language: string } | { kind: "reset" };
 
@@ -1333,7 +1360,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-review-model", {
     description:
-      "Pick the shared review model directly, or a depth-specific override. Usage: /wai-review-model [all|min|med|high] [provider] [filter]; /wai-review-model reset [all|min|med|high]",
+      "Show review models by depth and edit a model, review mode, or override. Usage: /wai-review-model [all|min|med|high] [provider] [filter]; /wai-review-model reset [all|min|med|high]. max is an alias for high.",
     handler: async (args, ctx) => {
       try {
         const targets: Record<string, ReviewModelTask> = {
@@ -1341,6 +1368,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           min: "reviewMin",
           med: "reviewMed",
           high: "reviewHigh",
+          max: "reviewHigh",
         };
         const trimmed = args.trim();
         const [first, ...rest] = trimmed.split(/\s+/);
@@ -1358,9 +1386,46 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           return;
         }
         const hasTarget = Object.hasOwn(targets, first.toLowerCase());
-        const task = hasTarget ? targets[first.toLowerCase()] : "review";
-        const pickerArgs = hasTarget ? trimmed.slice(first.length).trim() : trimmed;
-        await modelHandler(pickerArgs, ctx, task);
+        if (hasTarget) {
+          await modelHandler(trimmed.slice(first.length).trim(), ctx, targets[first.toLowerCase()]);
+          return;
+        }
+        for (;;) {
+          const items = buildReviewModelItems(loadYoowaiConfig(ctx.cwd));
+          const picked = await ctx.ui.select(
+            "Review models (project settings take priority):",
+            items.map((item) => item.text),
+          );
+          const item = items.find((entry) => entry.text === picked);
+          if (!item) return;
+          if (item.target === "level") {
+            const levelPicked = await ctx.ui.select(
+              "Pick default review level:",
+              buildReviewLevelItems(loadYoowaiConfig(ctx.cwd).reviewLevel),
+            );
+            const level = levelPicked ? parseReviewLevelItem(levelPicked) : undefined;
+            if (level !== undefined) {
+              await configHandler(`set reviewLevel ${level}`, ctx);
+              if (loadYoowaiConfig(ctx.cwd).reviewLevel !== level) {
+                ctx.ui.notify("A project-level review mode override remains active.", "info");
+              }
+              notifyReviewModels(ctx);
+            }
+          } else if (item.target === "reset") {
+            const models = items.filter((entry) => isReviewModelTask(entry.target));
+            const resetPicked = await ctx.ui.select(
+              "Reset which review model override?",
+              models.map((entry) => entry.text),
+            );
+            const target = models.find((entry) => entry.text === resetPicked)?.target;
+            if (target) {
+              await resetModelSelection(ctx, target, () => refreshWaiProvider(pi, ctx.cwd));
+              notifyReviewModels(ctx);
+            }
+          } else {
+            await modelHandler(trimmed, ctx, item.target);
+          }
+        }
       } catch (err) {
         ctx.ui.notify(`wai-review-model failed: ${err instanceof Error ? err.message : String(err)}`, "error");
       }
