@@ -662,7 +662,7 @@ describe("model role display", () => {
     assert.match(row(), /openai:synthesis-model.*council synthesis/);
   });
 
-  it("shows advisor and review fallbacks without marking inherited models as own overrides", () => {
+  it("keeps non-review roles and omits every review role even with saved review overrides", () => {
     const config: YoowaiConfig = {
       secondary: { provider: "openai", id: "base-model" },
       reviewLevel: "high",
@@ -677,13 +677,13 @@ describe("model role display", () => {
     const row = (task: string) => scopes.find((scope) => scope.task === task)!.text;
     assert.match(row("advisor"), /openai:advice-model.*low.*via suggest/);
     assert.ok(!row("advisor").includes("✓ configured"));
-    assert.match(
-      row("review"),
-      /openai:deep-review.*via reviewHigh.*active depth: high.*fallback setting: openai:general-review/,
+    assert.ok(scopes.every((scope) => !scope.task?.startsWith("review")));
+    assert.ok(
+      scopes.some((scope) => !scope.task),
+      "keep the base model option",
     );
-    assert.match(row("reviewMin"), /openai:general-review.*via review/);
-    assert.ok(!row("reviewMin").includes("✓ configured"));
-    assert.ok(row("reviewHigh").includes("✓ configured"));
+    assert.deepStrictEqual(config.taskModels?.review, { id: "general-review" });
+    assert.deepStrictEqual(config.taskModels?.reviewHigh, { id: "deep-review" });
     assert.ok(row("test").includes("✓ configured"), "thinking-only overrides must be visible and resettable");
     assert.match(row("plan"), /also plan updates/);
     assert.match(row("explain"), /also deep fact verification/);
@@ -785,7 +785,8 @@ describe("effective model requests in commands", () => {
   }
 
   for (const task of ["advisor", "reviewMin", "review"]) {
-    it(`/wai-model preselects the effective ${task} model`, async () => {
+    const command = task === "advisor" ? "wai-model" : "wai-review-model";
+    it(`/${command} preselects the effective ${task} model`, async () => {
       const agentDir = mkdtempSync(join(tmpdir(), "wai-picker-routing-"));
       const cwd = mkdtempSync(join(tmpdir(), "wai-picker-cwd-"));
       try {
@@ -841,13 +842,111 @@ describe("effective model requests in commands", () => {
             },
           },
         } as unknown as ExtensionContext;
-        await commands.get("wai-model")!.handler("", ctx);
+        await commands.get(command)!.handler(task === "reviewMin" ? "min" : "", ctx);
         assert.ok(providers.some((item) => item.startsWith("selected-provider") && item.includes("✓ current")));
         assert.ok(modelItems.includes("selected-model ✓ current"));
         assert.equal(readFileSync(settingsPath, "utf-8"), settings, "cancelling must preserve settings");
       } finally {
         rmSync(agentDir, { recursive: true, force: true });
         rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+describe("/wai-model review menu separation", () => {
+  for (const args of [
+    "",
+    "reset",
+    "reset REVIEW",
+    "reset REVIEWMIN",
+    "reset REVIEWMED",
+    "reset REVIEWHIGH",
+    "save base",
+  ]) {
+    it(`keeps review settings in the dedicated command: ${args || "picker"}`, async () => {
+      const agentDir = mkdtempSync(join(tmpdir(), "wai-separated-picker-agent-"));
+      const cwd = mkdtempSync(join(tmpdir(), "wai-separated-picker-cwd-"));
+      const previousAgentDir = getAgentDir();
+      try {
+        setAgentDirForTests(() => agentDir);
+        const settingsPath = join(agentDir, "settings.json");
+        const initial = {
+          "pi-yoowai": {
+            secondary: { provider: "picker", id: "base", thinking: "off" },
+            reviewLevel: "auto",
+            riskBasedReview: true,
+            taskModels: {
+              review: { id: "shared" },
+              reviewMin: { id: "quick" },
+              reviewMed: { id: "balanced" },
+              reviewHigh: { id: "deep" },
+              suggest: { id: "advisor" },
+            },
+          },
+        };
+        const initialText = JSON.stringify(initial);
+        writeFileSync(settingsPath, initialText);
+        const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+        registerWaiCommands(
+          {
+            registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+              commands.set(name, def),
+          } as unknown as ExtensionAPI,
+          new Map(),
+        );
+        const model = { provider: "picker", id: "next", reasoning: false };
+        const notifications: string[] = [];
+        let rolesShown = false;
+        const ctx = {
+          cwd,
+          modelRegistry: {
+            getAll: () => [model],
+            getAvailable: () => [model],
+            getProviderAuthStatus: () => ({ configured: true }),
+            find: () => model,
+          },
+          ui: {
+            notify: (text: string) => notifications.push(text),
+            select: async (title: string, items: string[]) => {
+              if (title.startsWith("Which wai model role") || title === "Reset which model selection?") {
+                rolesShown = true;
+                assert.ok(!items.some((item) => /^review(?:Min|Med|High)?\s*\(/.test(item)), items.join("\n"));
+                assert.ok(items.some((item) => item.startsWith("Base secondary model")));
+                assert.ok(items.some((item) => item.startsWith("suggest (")));
+                return args === "save base" ? items.find((item) => item.startsWith("Base secondary model")) : undefined;
+              }
+              if (title.startsWith("Pick model") || title.startsWith("Pick thinking")) return items[0];
+              throw new Error(`Unexpected picker: ${title}`);
+            },
+          },
+        } as unknown as ExtensionContext;
+        await commands.get("wai-model")!.handler(args === "save base" ? "picker" : args, ctx);
+        const saved = JSON.parse(readFileSync(settingsPath, "utf8"))["pi-yoowai"];
+        assert.deepStrictEqual(saved.taskModels, initial["pi-yoowai"].taskModels);
+        assert.equal(saved.reviewLevel, "auto");
+        assert.equal(saved.riskBasedReview, true);
+        if (args === "save base") {
+          assert.equal(saved.secondary.id, "next", notifications.join("\n"));
+        } else {
+          assert.equal(readFileSync(settingsPath, "utf8"), initialText);
+        }
+        if (args === "" || args === "reset" || args === "save base") {
+          assert.ok(rolesShown, "exercise the real registered picker");
+        } else {
+          assert.equal(rolesShown, false);
+          const target = args === "reset REVIEW" ? "all" : args.slice("reset REVIEW".length).toLowerCase();
+          assert.ok(
+            notifications.some((text) => text.includes(`/wai-review-model reset ${target}`)),
+            notifications.join("\n"),
+          );
+        }
+      } finally {
+        setAgentDirForTests(() => previousAgentDir);
+        for (const dir of [agentDir, cwd]) {
+          assert.equal(dirname(realpathSync(dir)), realpathSync(tmpdir()));
+          rmSync(dir, { recursive: true, force: true });
+        }
       }
     });
   }
@@ -899,7 +998,6 @@ describe("review picker automatic mode", () => {
           ui: {
             notify: (text: string) => notifications.push(text),
             select: async (title: string, items: string[]) => {
-              if (title.startsWith("Which wai model role")) return items.find((item) => item.startsWith("review ("));
               if (title.startsWith("Pick model") || title.startsWith("Pick thinking")) return items[0];
               if (title === "Pick default review level:")
                 return scenario === "cancel" ? undefined : items.find((item) => item.startsWith("Automatic"));
@@ -907,7 +1005,7 @@ describe("review picker automatic mode", () => {
             },
           },
         } as unknown as ExtensionContext;
-        await commands.get("wai-model")!.handler("picker", ctx);
+        await commands.get("wai-review-model")!.handler("picker", ctx);
         const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
         assert.equal(saved.unrelated, 42);
         assert.equal(saved["pi-yoowai"].reviewLevel, scenario === "cancel" ? "high" : "auto", notifications.join("\n"));
@@ -1578,7 +1676,10 @@ describe("resetModelSelection", () => {
     setAgentDirForTests(() => agentDir);
     writeSettings(agentDir, {
       secondary: { provider: "openai", id: "gpt-4o" },
-      taskModels: { review: { provider: "deepseek", id: "deepseek-v4-pro" } },
+      taskModels: {
+        review: { provider: "deepseek", id: "deepseek-v4-pro" },
+        suggest: { provider: "deepseek", id: "deepseek-v4-pro" },
+      },
     });
 
     let items: string[] = [];
@@ -1597,9 +1698,10 @@ describe("resetModelSelection", () => {
     await resetModelSelection(ctx, undefined, async () => {});
 
     assert.ok(items[0]?.includes("✓ configured"), `base row: ${items[0]}`);
-    const reviewRow = items.find((i) => i.startsWith("review ("));
+    assert.ok(!items.some((i) => i.startsWith("review")));
+    const suggestRow = items.find((i) => i.startsWith("suggest ("));
     const judgeRow = items.find((i) => i.startsWith("judge ("));
-    assert.ok(reviewRow?.includes("✓ configured"), `review row: ${reviewRow}`);
+    assert.ok(suggestRow?.includes("✓ configured"), `suggest row: ${suggestRow}`);
     assert.ok(judgeRow?.includes("via secondary"), `judge row: ${judgeRow}`);
     assert.ok(!judgeRow?.includes("✓ configured"), `judge row must not be marked configured: ${judgeRow}`);
   });

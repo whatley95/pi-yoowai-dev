@@ -94,6 +94,13 @@ import { planStepDescription } from "../types.js";
 import type { SecondaryModelConfig, WaiToolResult, WaiModelTask, WaiAction, ReviewLevel } from "../types.js";
 import type { LoopDetectionState } from "../loop-detector.js";
 
+const REVIEW_MODEL_TASKS = ["review", "reviewMin", "reviewMed", "reviewHigh"] as const;
+type ReviewModelTask = (typeof REVIEW_MODEL_TASKS)[number];
+
+function isReviewModelTask(task: string): boolean {
+  return REVIEW_MODEL_TASKS.some((role) => role.toLowerCase() === task.toLowerCase());
+}
+
 /** Parsed /wai-language argument. */
 export type LanguageCommandArgs = { kind: "usage" } | { kind: "set"; language: string } | { kind: "reset" };
 
@@ -300,19 +307,17 @@ export function buildModelScopeOptions(config: YoowaiConfig): Array<{ task?: Wai
     {
       text: `Base secondary model — ${display(config.secondary)}${isScopeConfigured("Base secondary model", config) ? " ✓ configured" : ""}`,
     },
-    ...WAI_MODEL_TASKS.map((task) => {
+    ...WAI_MODEL_TASKS.filter((task) => !isReviewModelTask(task)).map((task) => {
       const { model, source } = resolveModelTask(config, task);
       const configured = isScopeConfigured(task, config);
       const fallback =
-        task === "review"
-          ? `; active depth: ${resolveReviewLevel(config)}${config.riskBasedReview && !hasFixedReviewLevel(config) ? " baseline (automatic risk routing)" : ""}; fallback setting: ${display(resolveTaskModel(config, "review"))}`
-          : task === "judge"
-            ? resolveJudgeCouncilMembers(config).length === 0
-              ? "; disabled — empty council"
-              : resolveJudgeCouncilMembers(config).length === 1
-                ? "; single council member; synthesis setting unused"
-                : "; council synthesis"
-            : "";
+        task === "judge"
+          ? resolveJudgeCouncilMembers(config).length === 0
+            ? "; disabled — empty council"
+            : resolveJudgeCouncilMembers(config).length === 1
+              ? "; single council member; synthesis setting unused"
+              : "; council synthesis"
+          : "";
       return {
         task,
         text: `${modelTaskLabel(task)} — ${display(model)} (via ${source})${fallback}${configured ? " ✓ configured" : ""}`,
@@ -631,7 +636,7 @@ export async function resetModelSelection(
       target = WAI_MODEL_TASKS.find((task) => task.toLowerCase() === directTarget.toLowerCase())!;
     } else {
       ctx.ui.notify(
-        `Invalid reset target "${directTarget}". Use "base" or one of: ${WAI_MODEL_TASKS.join(", ")}.`,
+        `Invalid reset target "${directTarget}". Use "base" or one of: ${WAI_MODEL_TASKS.filter((task) => !isReviewModelTask(task)).join(", ")}. Review models use /wai-review-model.`,
         "warning",
       );
       return;
@@ -1094,7 +1099,6 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     handler: languageHandler,
   });
 
-  type ReviewModelTask = "review" | "reviewMin" | "reviewMed" | "reviewHigh";
   const notifyReviewModels = (ctx: ExtensionContext) => {
     const config = loadYoowaiConfig(ctx.cwd);
     const lines = (["min", "med", "high"] as const).map((level) => {
@@ -1144,6 +1148,14 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         return;
       }
       if (requestedProvider === "reset") {
+        if (filterQuery && isReviewModelTask(filterQuery)) {
+          const target = filterQuery === "review" ? "all" : filterQuery.slice("review".length);
+          ctx.ui.notify(
+            `Review settings are managed with /wai-review-model. Use /wai-review-model reset ${target}.`,
+            "info",
+          );
+          return;
+        }
         await resetModelSelection(ctx, filterQuery, () => refreshWaiProvider(pi, ctx.cwd));
         return;
       }
@@ -1242,15 +1254,13 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       if (!thinkingPicked) return;
       const thinking = thinkingPicked.replace(" ✓ current", "");
 
-      // 4. Pick review level — a global default consumed by the review action
-      //    regardless of task model. Only the review-only scope asks for it:
-      //    the base-model flow must not redirect into an unrelated question
-      //    (and Esc there used to discard the whole model selection). The
+      // 4. The dedicated shared-review picker also configures the review mode.
+      //    The base and other task-model flows never ask for review settings. The
       //    mode stays editable via `/wai-config set reviewLevel <auto|min|med|high>`
-      //    or the review-only scope. The effective current level (config value
+      //    or `/wai-review-model`. The effective current level (config value
       //    ?? balanced default) is listed first so a blind Enter keeps it.
       let reviewLevel: YoowaiConfig["reviewLevel"];
-      if (action === "review") {
+      if (reviewTask === "review") {
         const currentLevel = currentConfig.reviewLevel;
         const levelItems = buildReviewLevelItems(currentLevel);
         const levelPicked = await ctx.ui.select("Pick default review level:", levelItems);
@@ -1317,7 +1327,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-model", {
     description:
-      "Interactively pick the secondary model for wai, optionally per tool, and set the default review level. Use /wai-model reset [base|<task>] to clear the base or a task override. Usage: /wai-model [provider] [filter]",
+      "Pick the base secondary or a non-review task model. Configure review models with /wai-review-model. Use /wai-model reset [base|<task>] to clear the base or a non-review task override. Usage: /wai-model [provider] [filter]",
     handler: modelHandler,
   });
 
