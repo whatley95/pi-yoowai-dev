@@ -929,6 +929,186 @@ describe("review picker automatic mode", () => {
   }
 });
 
+describe("/wai-review-model", () => {
+  for (const scenario of [
+    "shared",
+    "min",
+    "med",
+    "high",
+    "provider filter",
+    "cancel model",
+    "cancel thinking",
+    "cancel level",
+    "project override",
+    "reset shared",
+    "reset med",
+    "reset invalid",
+    "nested reset",
+  ] as const) {
+    it(`manages review settings directly: ${scenario}`, async () => {
+      const agentDir = mkdtempSync(join(tmpdir(), "wai-review-picker-agent-"));
+      const cwd = mkdtempSync(join(tmpdir(), "wai-review-picker-cwd-"));
+      const previousAgentDir = getAgentDir();
+      try {
+        setAgentDirForTests(() => agentDir);
+        const settingsPath = join(agentDir, "settings.json");
+        const initial = {
+          unrelated: 42,
+          "pi-yoowai": {
+            secondary: { provider: "picker", id: "base", thinking: "off" },
+            reviewLevel: "high",
+            riskBasedReview: true,
+            judgeCouncil: ["picker/council"],
+            taskModels: {
+              review: { provider: "picker", id: "shared", backend: "http", baseUrl: "https://example.invalid" },
+              reviewMed: { provider: "picker", id: "medium" },
+              reviewHigh: { provider: "picker", id: "deep" },
+              plan: { provider: "picker", id: "planner" },
+            },
+          },
+        };
+        const initialText = JSON.stringify(initial);
+        writeFileSync(settingsPath, initialText);
+        const projectSettings = JSON.stringify({ "pi-yoowai": { taskModels: { review: { id: "project" } } } });
+        if (scenario === "project override") {
+          mkdirSync(join(cwd, ".pi"));
+          writeFileSync(join(cwd, ".pi", "settings.json"), projectSettings);
+        }
+        const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+        registerWaiCommands(
+          {
+            registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+              commands.set(name, def),
+          } as unknown as ExtensionAPI,
+          new Map(),
+        );
+        const models = ["base", "shared", "medium", "deep", "next", "project"].map((id) => ({
+          provider: "picker",
+          id,
+          reasoning: false,
+        }));
+        const notifications: string[] = [];
+        const titles: string[] = [];
+        let modelItems: string[] = [];
+        const ctx = {
+          cwd,
+          // Reset must work even without the registry or provider credentials.
+          modelRegistry: scenario.startsWith("reset")
+            ? undefined
+            : {
+                getAll: () => models,
+                getAvailable: () => models,
+                getProviderAuthStatus: () => ({ configured: true }),
+                find: (provider: string, id: string) =>
+                  models.find((model) => model.provider === provider && model.id === id),
+              },
+          ui: {
+            notify: (text: string) => notifications.push(text),
+            select: async (title: string, items: string[]) => {
+              titles.push(title);
+              if (title.startsWith("Pick model")) {
+                modelItems = items;
+                return scenario === "cancel model" ? undefined : items.find((item) => item.startsWith("next"));
+              }
+              if (title.startsWith("Pick thinking")) return scenario === "cancel thinking" ? undefined : items[0];
+              if (title === "Pick default review level:")
+                return scenario === "cancel level" ? undefined : items.find((item) => item.startsWith("Automatic"));
+              throw new Error(`Unexpected picker: ${title}`);
+            },
+          },
+        } as unknown as ExtensionContext;
+        const args =
+          scenario === "reset shared"
+            ? "reset"
+            : scenario === "reset med"
+              ? "reset MED"
+              : scenario === "reset invalid"
+                ? "reset base"
+                : scenario === "nested reset"
+                  ? "all reset base"
+                  : scenario === "provider filter"
+                    ? 'all picker "next"'
+                    : ["min", "med", "high"].includes(scenario)
+                      ? `${scenario} picker`
+                      : "";
+        await commands.get("wai-review-model")!.handler(args, ctx);
+        assert.ok(!titles.some((title) => title.includes("Which wai model role")), "must skip the general role menu");
+        const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
+        const wai = saved["pi-yoowai"];
+        assert.equal(saved.unrelated, 42);
+        assert.deepStrictEqual(wai.secondary, initial["pi-yoowai"].secondary);
+        assert.deepStrictEqual(wai.judgeCouncil, initial["pi-yoowai"].judgeCouncil);
+        assert.deepStrictEqual(wai.taskModels.plan, initial["pi-yoowai"].taskModels.plan);
+        assert.equal(wai.riskBasedReview, true);
+        if (
+          scenario === "cancel model" ||
+          scenario === "cancel thinking" ||
+          scenario === "reset invalid" ||
+          scenario === "nested reset"
+        ) {
+          assert.equal(readFileSync(settingsPath, "utf8"), initialText, notifications.join("\n"));
+          if (scenario === "reset invalid" || scenario === "nested reset")
+            assert.ok(notifications.some((text) => text.startsWith("Usage:")));
+          return;
+        }
+        if (scenario.startsWith("reset")) {
+          const task = scenario === "reset med" ? "reviewMed" : "review";
+          assert.equal(wai.taskModels[task], undefined);
+          assert.equal(wai.reviewLevel, "high");
+          assert.ok(notifications.some((text) => text.includes("Global task model override")));
+          assert.ok(
+            notifications.some((text) =>
+              text.includes(scenario === "reset med" ? "med: picker:shared" : "min: picker:base"),
+            ),
+          );
+        } else {
+          const task =
+            scenario === "min"
+              ? "reviewMin"
+              : scenario === "med"
+                ? "reviewMed"
+                : scenario === "high"
+                  ? "reviewHigh"
+                  : "review";
+          assert.equal(wai.taskModels[task].id, "next", notifications.join("\n"));
+          for (const other of ["review", "reviewMed", "reviewHigh"] as const) {
+            if (other !== task) assert.deepStrictEqual(wai.taskModels[other], initial["pi-yoowai"].taskModels[other]);
+          }
+          const isShared = task === "review";
+          assert.equal(titles.includes("Pick default review level:"), isShared);
+          assert.equal(wai.reviewLevel, isShared && scenario !== "cancel level" ? "auto" : "high");
+          if (isShared) {
+            assert.equal(wai.taskModels.review.baseUrl, "https://example.invalid");
+            assert.equal(wai.taskModels.review.backend, "http");
+          }
+          if (scenario === "shared") {
+            assert.ok(modelItems.includes("shared ✓ current"), "mark the edited fallback, not the high override");
+            assert.ok(
+              notifications.some((text) => text.includes("high: picker:deep") && text.includes("via reviewHigh")),
+            );
+          }
+          if (scenario === "provider filter") assert.ok(!modelItems.some((item) => item.startsWith("shared")));
+          if (scenario === "project override") {
+            assert.ok(modelItems.includes("project ✓ current"));
+            assert.ok(notifications.some((text) => text.includes("min: picker:project")));
+            assert.equal(readFileSync(join(cwd, ".pi", "settings.json"), "utf8"), projectSettings);
+          }
+        }
+        assert.ok(
+          notifications.some((text) => text.includes("Effective review models")),
+          notifications.join("\n"),
+        );
+      } finally {
+        setAgentDirForTests(() => previousAgentDir);
+        for (const dir of [agentDir, cwd]) {
+          assert.equal(dirname(realpathSync(dir)), realpathSync(tmpdir()));
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
+  }
+});
+
 describe("buildModelConfigEntry", () => {
   it("preserves existing provider-specific fields when re-selecting the same provider", () => {
     const prev = {

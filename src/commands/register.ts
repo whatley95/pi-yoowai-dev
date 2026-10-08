@@ -1094,7 +1094,21 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     handler: languageHandler,
   });
 
-  const modelHandler = async (_args: string, ctx: ExtensionContext) => {
+  type ReviewModelTask = "review" | "reviewMin" | "reviewMed" | "reviewHigh";
+  const notifyReviewModels = (ctx: ExtensionContext) => {
+    const config = loadYoowaiConfig(ctx.cwd);
+    const lines = (["min", "med", "high"] as const).map((level) => {
+      const task = `review${level[0].toUpperCase()}${level.slice(1)}` as ReviewModelTask;
+      const { model, source } = resolveModelTask(config, task);
+      return `${level}: ${modelStatusLine(model)} (via ${source})`;
+    });
+    ctx.ui.notify(
+      `Effective review models (project settings take priority):\n${lines.join("\n")}\nReview selection: ${describeReviewLevelMode(config)}.`,
+      "info",
+    );
+  };
+
+  const modelHandler = async (_args: string, ctx: ExtensionContext, reviewTask?: ReviewModelTask) => {
     try {
       const registry = getModelRegistry(ctx);
       if (!registry) {
@@ -1125,6 +1139,10 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       const requestedProvider = tokens[0]?.toLowerCase();
       const filterQuery = tokens[1]?.toLowerCase();
 
+      if (requestedProvider === "reset" && reviewTask) {
+        ctx.ui.notify("Usage: /wai-review-model reset [all|min|med|high].", "warning");
+        return;
+      }
       if (requestedProvider === "reset") {
         await resetModelSelection(ctx, filterQuery, () => refreshWaiProvider(pi, ctx.cwd));
         return;
@@ -1133,16 +1151,26 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       const currentConfig = loadYoowaiConfig(ctx.cwd);
 
       // 1. Select a model role. Keep identities separate from human-readable labels.
-      const scopes = buildModelScopeOptions(currentConfig);
-      const scopePicked = await ctx.ui.select(
-        "Which wai model role should use this model?",
-        scopes.map((scope) => scope.text),
-      );
-      if (!scopePicked) return;
-      const scope = scopes.find((scope) => scope.text === scopePicked);
-      if (!scope) return;
-      const action = scope.task;
-      const effective = action ? resolveModelTask(currentConfig, action).model : currentConfig.secondary;
+      let action: WaiModelTask | undefined = reviewTask;
+      if (!reviewTask) {
+        const scopes = buildModelScopeOptions(currentConfig);
+        const scopePicked = await ctx.ui.select(
+          "Which wai model role should use this model?",
+          scopes.map((scope) => scope.text),
+        );
+        if (!scopePicked) return;
+        const scope = scopes.find((scope) => scope.text === scopePicked);
+        if (!scope) return;
+        action = scope.task;
+      }
+      // The direct shared-review picker edits the fallback, so mark that model
+      // as current even when a depth-specific override is the active reviewer.
+      const effective =
+        reviewTask === "review"
+          ? resolveTaskModel(currentConfig, "review")
+          : action
+            ? resolveModelTask(currentConfig, action).model
+            : currentConfig.secondary;
       const effectiveProvider = effective.provider;
       const effectiveId = effective.id;
       const effectiveThinking = effective.thinking ?? "xhigh";
@@ -1278,8 +1306,12 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         );
       }
       await refreshWaiProvider(pi, ctx.cwd);
+      if (reviewTask) notifyReviewModels(ctx);
     } catch (err) {
-      ctx.ui.notify(`wai-model failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      ctx.ui.notify(
+        `${reviewTask ? "wai-review-model" : "wai-model"} failed: ${err instanceof Error ? err.message : String(err)}`,
+        "error",
+      );
     }
   };
 
@@ -1287,6 +1319,42 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     description:
       "Interactively pick the secondary model for wai, optionally per tool, and set the default review level. Use /wai-model reset [base|<task>] to clear the base or a task override. Usage: /wai-model [provider] [filter]",
     handler: modelHandler,
+  });
+
+  pi.registerCommand("wai-review-model", {
+    description:
+      "Pick the shared review model directly, or a depth-specific override. Usage: /wai-review-model [all|min|med|high] [provider] [filter]; /wai-review-model reset [all|min|med|high]",
+    handler: async (args, ctx) => {
+      try {
+        const targets: Record<string, ReviewModelTask> = {
+          all: "review",
+          min: "reviewMin",
+          med: "reviewMed",
+          high: "reviewHigh",
+        };
+        const trimmed = args.trim();
+        const [first, ...rest] = trimmed.split(/\s+/);
+        if (first.toLowerCase() === "reset") {
+          const target = rest[0]?.toLowerCase() ?? "all";
+          if (!Object.hasOwn(targets, target) || rest.length > 1) {
+            ctx.ui.notify(
+              "Usage: /wai-review-model reset [all|min|med|high]. Reset clears only that global override; other depths keep their settings.",
+              "warning",
+            );
+            return;
+          }
+          await resetModelSelection(ctx, targets[target], () => refreshWaiProvider(pi, ctx.cwd));
+          notifyReviewModels(ctx);
+          return;
+        }
+        const hasTarget = Object.hasOwn(targets, first.toLowerCase());
+        const task = hasTarget ? targets[first.toLowerCase()] : "review";
+        const pickerArgs = hasTarget ? trimmed.slice(first.length).trim() : trimmed;
+        await modelHandler(pickerArgs, ctx, task);
+      } catch (err) {
+        ctx.ui.notify(`wai-review-model failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      }
+    },
   });
 
   const councilHandler = async (_args: string, ctx: ExtensionCommandContext) => {
