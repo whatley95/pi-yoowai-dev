@@ -463,7 +463,7 @@ describe("diff-grabber helpers", () => {
   it("resolveEmptyTree materializes the empty-tree SHA usable as a diff base", { skip: !hasGit }, () => {
     const cwd = mkdtempSync(join(tmpdir(), "wai-dg-empty-"));
     try {
-      execFileSync("git", ["init"], { cwd, ...gitOpts() });
+      initGitRepo(cwd);
       const empty = resolveEmptyTree(cwd);
       assert.ok(empty, "the empty tree must resolve");
       // The object must exist (hash-object -w) and be diffable.

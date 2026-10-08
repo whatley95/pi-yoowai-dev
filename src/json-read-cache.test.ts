@@ -20,16 +20,14 @@ it("avoids parsing unchanged JSON and isolates mutations from the cached value",
   assert.equal(parse.mock.callCount(), 2);
 });
 
-it("detects edits, removal, recreation, and corrupt JSON without returning stale data", async (t) => {
+it("detects immediate same-size edits, removal, recreation, and corrupt JSON without returning stale data", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "wai-json-changes-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "state.json");
   writeFileSync(path, '{"n":1}');
   readCachedJson(path);
   const original = statSync(path);
-  // Ensure ctime changes even on coarse-resolution filesystems, while mtime
-  // and size are restored to their old values.
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // No delay: freshness must not depend on timestamp resolution.
   writeFileSync(path, '{"n":2}');
   utimesSync(path, original.atime, original.mtime);
   assert.deepEqual(readCachedJson(path), { n: 2 });
@@ -38,6 +36,8 @@ it("detects edits, removal, recreation, and corrupt JSON without returning stale
   writeFileSync(path, '{"n":3}');
   assert.deepEqual(readCachedJson(path), { n: 3 });
   writeFileSync(path, "invalid");
+  assert.equal(statSync(path).size, original.size);
+  utimesSync(path, original.atime, original.mtime);
   assert.throws(() => readCachedJson(path));
   writeFileSync(path, '{"n":4}');
   assert.deepEqual(readCachedJson(path), { n: 4 });
