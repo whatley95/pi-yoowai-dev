@@ -15,6 +15,7 @@ import {
   buildModelConfigEntry,
   buildReviewLevelItems,
   buildReviewModelItems,
+  formatCouncilSynthesisModel,
   parseReviewLevelItem,
   isScopeConfigured,
   buildModelScopeOptions,
@@ -649,18 +650,19 @@ describe("isScopeConfigured", () => {
 });
 
 describe("model role display", () => {
-  it("shows disabled assessment and resolves a single member independently of the synthesis override", () => {
+  it("keeps council synthesis out of the general role picker and shows its separate use", () => {
     const config: YoowaiConfig = {
       secondary: { provider: "openai", id: "base-model" },
       taskModels: { judge: { id: "synthesis-model" } },
       judgeCouncil: [],
     };
-    const row = () => buildModelScopeOptions(config).find((scope) => scope.task === "judge")!.text;
-    assert.match(row(), /disabled — empty council/);
+    const row = () => formatCouncilSynthesisModel(config);
+    assert.ok(!buildModelScopeOptions(config).some((scope) => scope.task === "judge"));
+    assert.match(row(), /openai:synthesis-model.*unused until two or more members/);
     config.judgeCouncil = [{ id: "member-model", thinking: "low" }];
-    assert.match(row(), /openai:member-model.*via judgeCouncil.*synthesis setting unused/);
+    assert.match(row(), /openai:synthesis-model.*unused until two or more members/);
     config.judgeCouncil.push({ id: "other-member" });
-    assert.match(row(), /openai:synthesis-model.*council synthesis/);
+    assert.match(row(), /openai:synthesis-model.*combines council results/);
   });
 
   it("keeps non-review roles and omits every review role even with saved review overrides", () => {
@@ -855,7 +857,7 @@ describe("effective model requests in commands", () => {
   }
 });
 
-describe("/wai-model review menu separation", () => {
+describe("/wai-model dedicated menu separation", () => {
   for (const args of [
     "",
     "reset",
@@ -863,9 +865,10 @@ describe("/wai-model review menu separation", () => {
     "reset REVIEWMIN",
     "reset REVIEWMED",
     "reset REVIEWHIGH",
+    "reset JUDGE",
     "save base",
   ]) {
-    it(`keeps review settings in the dedicated command: ${args || "picker"}`, async () => {
+    it(`keeps review and council settings in their dedicated commands: ${args || "picker"}`, async () => {
       const agentDir = mkdtempSync(join(tmpdir(), "wai-separated-picker-agent-"));
       const cwd = mkdtempSync(join(tmpdir(), "wai-separated-picker-cwd-"));
       const previousAgentDir = getAgentDir();
@@ -883,6 +886,7 @@ describe("/wai-model review menu separation", () => {
               reviewMed: { id: "balanced" },
               reviewHigh: { id: "deep" },
               suggest: { id: "advisor" },
+              judge: { id: "synthesizer" },
             },
           },
         };
@@ -913,6 +917,7 @@ describe("/wai-model review menu separation", () => {
               if (title.startsWith("Which wai model role") || title === "Reset which model selection?") {
                 rolesShown = true;
                 assert.ok(!items.some((item) => /^review(?:Min|Med|High)?\s*\(/.test(item)), items.join("\n"));
+                assert.ok(!items.some((item) => item.startsWith("judge (")), items.join("\n"));
                 assert.ok(items.some((item) => item.startsWith("Base secondary model")));
                 assert.ok(items.some((item) => item.startsWith("suggest (")));
                 return args === "save base" ? items.find((item) => item.startsWith("Base secondary model")) : undefined;
@@ -938,7 +943,11 @@ describe("/wai-model review menu separation", () => {
           assert.equal(rolesShown, false);
           const target = args === "reset REVIEW" ? "all" : args.slice("reset REVIEW".length).toLowerCase();
           assert.ok(
-            notifications.some((text) => text.includes(`/wai-review-model reset ${target}`)),
+            notifications.some((text) =>
+              args === "reset JUDGE"
+                ? text.includes("/wai-council") && text.includes("Reset synthesis model")
+                : text.includes(`/wai-review-model reset ${target}`),
+            ),
             notifications.join("\n"),
           );
         }
@@ -1897,11 +1906,209 @@ describe("resetModelSelection", () => {
     assert.ok(items[0]?.includes("✓ configured"), `base row: ${items[0]}`);
     assert.ok(!items.some((i) => i.startsWith("review")));
     const suggestRow = items.find((i) => i.startsWith("suggest ("));
-    const judgeRow = items.find((i) => i.startsWith("judge ("));
+    assert.ok(!items.some((i) => i.startsWith("judge (")));
     assert.ok(suggestRow?.includes("✓ configured"), `suggest row: ${suggestRow}`);
-    assert.ok(judgeRow?.includes("via secondary"), `judge row: ${judgeRow}`);
-    assert.ok(!judgeRow?.includes("✓ configured"), `judge row must not be marked configured: ${judgeRow}`);
   });
+});
+
+describe("council synthesis configuration", () => {
+  it("shows the base or first-member fallback without enabling an empty council", () => {
+    const config: YoowaiConfig = { secondary: { provider: "picker", id: "base", thinking: "off" }, judgeCouncil: [] };
+    assert.match(formatCouncilSynthesisModel(config), /picker:base.*unused until two or more members/);
+    config.secondary = { provider: "", id: "" };
+    assert.match(formatCouncilSynthesisModel(config), /not configured.*unused/);
+    config.judgeCouncil = [
+      { provider: "picker", id: "first" },
+      { provider: "picker", id: "second" },
+    ];
+    assert.match(formatCouncilSynthesisModel(config), /picker:first.*combines council results/);
+  });
+
+  for (const scenario of [
+    "save",
+    "cancel model",
+    "cancel thinking",
+    "reset",
+    "project",
+    "empty",
+    "no base",
+    "save then add",
+    "reset then add",
+    "save then clear",
+    "concurrent settings",
+    "view no registry",
+    "reset no registry",
+  ] as const) {
+    it(`manages synthesis from the council menu: ${scenario}`, async () => {
+      const agentDir = mkdtempSync(join(tmpdir(), "wai-synthesis-agent-"));
+      const cwd = mkdtempSync(join(tmpdir(), "wai-synthesis-cwd-"));
+      const previousAgentDir = getAgentDir();
+      try {
+        setAgentDirForTests(() => agentDir);
+        const settingsPath = join(agentDir, "settings.json");
+        const initial = {
+          unrelated: 42,
+          "pi-yoowai": {
+            secondary: {
+              provider: scenario === "no base" ? "" : "picker",
+              id: scenario === "no base" ? "" : "base",
+              thinking: "off",
+            },
+            reviewLevel: "auto",
+            autoJudge: false,
+            taskModels: {
+              ...(scenario === "no base"
+                ? {}
+                : {
+                    judge: {
+                      provider: "picker",
+                      id: "old",
+                      thinking: "off",
+                      backend: "http",
+                      baseUrl: "https://example.invalid",
+                      timeoutMs: 1337,
+                    },
+                  }),
+              reviewMed: { id: "reviewer" },
+              plan: { id: "planner" },
+            },
+            judgeCouncil: scenario === "empty" ? [] : ["picker/member-a", "picker/member-b"],
+          },
+        };
+        const initialText = JSON.stringify(initial);
+        writeFileSync(settingsPath, initialText);
+        const projectText = JSON.stringify({ "pi-yoowai": { taskModels: { judge: { id: "project" } } } });
+        if (scenario === "project") {
+          mkdirSync(join(cwd, ".pi"));
+          writeFileSync(join(cwd, ".pi", "settings.json"), projectText);
+        }
+        const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+        registerWaiCommands(
+          {
+            registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+              commands.set(name, def),
+          } as unknown as ExtensionAPI,
+          new Map(),
+        );
+        const models = ["base", "old", "member-a", "member-b", "next", "extra", "project"].map((id) => ({
+          provider: "picker",
+          id,
+          reasoning: false,
+        }));
+        const notifications: string[] = [];
+        const menus: string[][] = [];
+        let adding = false;
+        let modelItems: string[] = [];
+        const ctx = {
+          cwd,
+          modelRegistry: scenario.endsWith("no registry")
+            ? undefined
+            : {
+                getAll: () => models,
+                getAvailable: () => models,
+                getProviderAuthStatus: () => ({ configured: true }),
+                find: (provider: string, id: string) =>
+                  models.find((model) => model.provider === provider && model.id === id),
+              },
+          ui: {
+            notify: (text: string) => notifications.push(text),
+            select: async (title: string, items: string[]) => {
+              if (title.startsWith("Judge council")) {
+                menus.push(items);
+                assert.ok(items.some((item) => item.startsWith("Synthesis model:")));
+                assert.ok(items.includes("Reset synthesis model"));
+                if (menus.length === 1) {
+                  if (scenario === "view no registry") return "Done";
+                  if (scenario.startsWith("reset")) return "Reset synthesis model";
+                  if (scenario === "concurrent settings") {
+                    adding = true;
+                    return "Add member…";
+                  }
+                  return items.find((item) => item.startsWith("Synthesis model:"));
+                }
+                if (menus.length === 2 && (scenario === "save then add" || scenario === "reset then add")) {
+                  adding = true;
+                  return "Add member…";
+                }
+                if (menus.length === 2 && scenario === "save then clear") return "Clear council";
+                return "Done";
+              }
+              if (title.startsWith("Pick model")) {
+                modelItems = items;
+                return scenario === "cancel model"
+                  ? undefined
+                  : items.find((item) => item.startsWith(adding ? "extra" : "next"));
+              }
+              if (title.startsWith("Pick thinking")) {
+                if (scenario === "concurrent settings") {
+                  const latest = JSON.parse(readFileSync(settingsPath, "utf8"));
+                  latest.unrelated = 99;
+                  latest["pi-yoowai"].taskModels.judge.id = "external-model";
+                  writeFileSync(settingsPath, JSON.stringify(latest));
+                }
+                return scenario === "cancel thinking" ? undefined : items[0];
+              }
+              throw new Error(`Unexpected picker: ${title}`);
+            },
+          },
+        } as unknown as ExtensionContext;
+        await commands.get("wai-council")!.handler("", ctx);
+        const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
+        const wai = saved["pi-yoowai"];
+        assert.equal(saved.unrelated, scenario === "concurrent settings" ? 99 : 42);
+        assert.deepStrictEqual(wai.secondary, initial["pi-yoowai"].secondary);
+        assert.equal(wai.reviewLevel, "auto");
+        assert.equal(wai.autoJudge, false);
+        assert.deepStrictEqual(wai.taskModels.reviewMed, initial["pi-yoowai"].taskModels.reviewMed);
+        assert.deepStrictEqual(wai.taskModels.plan, initial["pi-yoowai"].taskModels.plan);
+        if (scenario === "cancel model" || scenario === "cancel thinking" || scenario === "view no registry") {
+          assert.equal(readFileSync(settingsPath, "utf8"), initialText, notifications.join("\n"));
+          return;
+        }
+        if (scenario.startsWith("reset")) {
+          assert.equal(wai.taskModels.judge, undefined);
+          assert.ok(menus[1].some((item) => item.startsWith("Synthesis model: picker:base")));
+        } else if (scenario === "concurrent settings") {
+          assert.equal(wai.taskModels.judge.id, "external-model");
+        } else {
+          assert.equal(wai.taskModels.judge.id, "next", notifications.join("\n"));
+          if (scenario !== "no base") {
+            assert.equal(wai.taskModels.judge.backend, "http");
+            assert.equal(wai.taskModels.judge.baseUrl, "https://example.invalid");
+            assert.equal(wai.taskModels.judge.timeoutMs, 1337);
+          }
+          assert.ok(menus[1].some((item) => item.includes(`picker:${scenario === "project" ? "project" : "next"}`)));
+        }
+        if (scenario === "save then add" || scenario === "reset then add" || scenario === "concurrent settings") {
+          assert.equal(wai.judgeCouncil.length, 3);
+          assert.deepStrictEqual(wai.judgeCouncil.slice(0, 2), initial["pi-yoowai"].judgeCouncil);
+          assert.equal(wai.judgeCouncil[2].id, "extra");
+        } else if (scenario === "save then clear") {
+          assert.deepStrictEqual(wai.judgeCouncil, []);
+          assert.ok(menus[2].some((item) => item.includes("picker:next") && item.includes("unused")));
+        } else {
+          assert.deepStrictEqual(wai.judgeCouncil, initial["pi-yoowai"].judgeCouncil);
+        }
+        if (scenario === "empty") assert.ok(menus[1].some((item) => item.includes("unused until two or more members")));
+        if (scenario === "no base") assert.ok(modelItems.includes("member-a ✓ current"));
+        if (scenario === "project") {
+          assert.ok(modelItems.includes("project ✓ current"));
+          assert.ok(
+            notifications.some(
+              (text) => text.includes("picker:project") && text.includes("Project settings take priority"),
+            ),
+          );
+          assert.equal(readFileSync(join(cwd, ".pi", "settings.json"), "utf8"), projectText);
+        }
+      } finally {
+        setAgentDirForTests(() => previousAgentDir);
+        for (const dir of [agentDir, cwd]) {
+          assert.equal(dirname(realpathSync(dir)), realpathSync(tmpdir()));
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
+  }
 });
 
 describe("live thinking levels in model and council commands", () => {

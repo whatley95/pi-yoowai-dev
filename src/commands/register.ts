@@ -101,6 +101,22 @@ function isReviewModelTask(task: string): boolean {
   return REVIEW_MODEL_TASKS.some((role) => role.toLowerCase() === task.toLowerCase());
 }
 
+function isGeneralModelTask(task: WaiModelTask): boolean {
+  return task !== "judge" && !isReviewModelTask(task);
+}
+
+function resolveCouncilSynthesisModel(config: YoowaiConfig): SecondaryModelConfig {
+  const configured = resolveTaskModel(config, "judge");
+  return configured.provider && configured.id ? configured : (resolveJudgeCouncilMembers(config)[0] ?? configured);
+}
+
+export function formatCouncilSynthesisModel(config: YoowaiConfig): string {
+  const model = resolveCouncilSynthesisModel(config);
+  const display = model.provider && model.id ? modelStatusLine(model) : "not configured";
+  const active = resolveJudgeCouncilMembers(config).length >= 2;
+  return `Synthesis model: ${display}${isScopeConfigured("judge", config) ? " ✓ configured" : ""}${active ? " (combines council results)" : " (unused until two or more members)"}`;
+}
+
 export function buildReviewModelItems(config: YoowaiConfig): Array<{
   target: ReviewModelTask | "level" | "reset";
   text: string;
@@ -334,20 +350,12 @@ export function buildModelScopeOptions(config: YoowaiConfig): Array<{ task?: Wai
     {
       text: `Base secondary model — ${display(config.secondary)}${isScopeConfigured("Base secondary model", config) ? " ✓ configured" : ""}`,
     },
-    ...WAI_MODEL_TASKS.filter((task) => !isReviewModelTask(task)).map((task) => {
+    ...WAI_MODEL_TASKS.filter(isGeneralModelTask).map((task) => {
       const { model, source } = resolveModelTask(config, task);
       const configured = isScopeConfigured(task, config);
-      const fallback =
-        task === "judge"
-          ? resolveJudgeCouncilMembers(config).length === 0
-            ? "; disabled — empty council"
-            : resolveJudgeCouncilMembers(config).length === 1
-              ? "; single council member; synthesis setting unused"
-              : "; council synthesis"
-          : "";
       return {
         task,
-        text: `${modelTaskLabel(task)} — ${display(model)} (via ${source})${fallback}${configured ? " ✓ configured" : ""}`,
+        text: `${modelTaskLabel(task)} — ${display(model)} (via ${source})${configured ? " ✓ configured" : ""}`,
       };
     }),
   ];
@@ -663,7 +671,7 @@ export async function resetModelSelection(
       target = WAI_MODEL_TASKS.find((task) => task.toLowerCase() === directTarget.toLowerCase())!;
     } else {
       ctx.ui.notify(
-        `Invalid reset target "${directTarget}". Use "base" or one of: ${WAI_MODEL_TASKS.filter((task) => !isReviewModelTask(task)).join(", ")}. Review models use /wai-review-model.`,
+        `Invalid reset target "${directTarget}". Use "base" or one of: ${WAI_MODEL_TASKS.filter(isGeneralModelTask).join(", ")}. Review models use /wai-review-model; council synthesis uses /wai-council.`,
         "warning",
       );
       return;
@@ -1139,7 +1147,10 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     );
   };
 
-  const modelHandler = async (_args: string, ctx: ExtensionContext, reviewTask?: ReviewModelTask) => {
+  const modelHandler = async (_args: string, ctx: ExtensionContext, dedicatedTask?: ReviewModelTask | "judge") => {
+    const reviewTask =
+      dedicatedTask && isReviewModelTask(dedicatedTask) ? (dedicatedTask as ReviewModelTask) : undefined;
+    const commandName = dedicatedTask === "judge" ? "wai-council" : reviewTask ? "wai-review-model" : "wai-model";
     try {
       const registry = getModelRegistry(ctx);
       if (!registry) {
@@ -1170,11 +1181,20 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       const requestedProvider = tokens[0]?.toLowerCase();
       const filterQuery = tokens[1]?.toLowerCase();
 
-      if (requestedProvider === "reset" && reviewTask) {
-        ctx.ui.notify("Usage: /wai-review-model reset [all|min|med|high].", "warning");
+      if (requestedProvider === "reset" && dedicatedTask) {
+        ctx.ui.notify(
+          reviewTask
+            ? "Usage: /wai-review-model reset [all|min|med|high]."
+            : "Use /wai-council and select Reset synthesis model.",
+          "warning",
+        );
         return;
       }
       if (requestedProvider === "reset") {
+        if (filterQuery === "judge") {
+          ctx.ui.notify("Council synthesis is managed with /wai-council. Select Reset synthesis model there.", "info");
+          return;
+        }
         if (filterQuery && isReviewModelTask(filterQuery)) {
           const target = filterQuery === "review" ? "all" : filterQuery.slice("review".length);
           ctx.ui.notify(
@@ -1190,8 +1210,8 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       const currentConfig = loadYoowaiConfig(ctx.cwd);
 
       // 1. Select a model role. Keep identities separate from human-readable labels.
-      let action: WaiModelTask | undefined = reviewTask;
-      if (!reviewTask) {
+      let action: WaiModelTask | undefined = dedicatedTask;
+      if (!dedicatedTask) {
         const scopes = buildModelScopeOptions(currentConfig);
         const scopePicked = await ctx.ui.select(
           "Which wai model role should use this model?",
@@ -1205,11 +1225,13 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       // The direct shared-review picker edits the fallback, so mark that model
       // as current even when a depth-specific override is the active reviewer.
       const effective =
-        reviewTask === "review"
-          ? resolveTaskModel(currentConfig, "review")
-          : action
-            ? resolveModelTask(currentConfig, action).model
-            : currentConfig.secondary;
+        dedicatedTask === "judge"
+          ? resolveCouncilSynthesisModel(currentConfig)
+          : reviewTask === "review"
+            ? resolveTaskModel(currentConfig, "review")
+            : action
+              ? resolveModelTask(currentConfig, action).model
+              : currentConfig.secondary;
       const effectiveProvider = effective.provider;
       const effectiveId = effective.id;
       const effectiveThinking = effective.thinking ?? "xhigh";
@@ -1325,7 +1347,10 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         const prevTask = (taskModels[taskAction] as Record<string, unknown>) || {};
         taskModels[taskAction] = buildModelConfigEntry(prevTask, { provider, id: modelId, thinking });
         waiSettings.taskModels = taskModels;
-        ctx.ui.notify(`Task model for ${taskAction} set to ${provider}:${modelId} (${thinking}).`, "info");
+        ctx.ui.notify(
+          `${dedicatedTask === "judge" ? "Council synthesis model" : `Task model for ${taskAction}`} set to ${provider}:${modelId} (${thinking}).`,
+          "info",
+        );
       }
 
       saveRecentModel(ctx.cwd, { provider, id: modelId, thinking, scope: action ?? "base" });
@@ -1344,17 +1369,19 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       }
       await refreshWaiProvider(pi, ctx.cwd);
       if (reviewTask) notifyReviewModels(ctx);
+      if (dedicatedTask === "judge")
+        ctx.ui.notify(
+          `${formatCouncilSynthesisModel(loadYoowaiConfig(ctx.cwd))}. Project settings take priority.`,
+          "info",
+        );
     } catch (err) {
-      ctx.ui.notify(
-        `${reviewTask ? "wai-review-model" : "wai-model"} failed: ${err instanceof Error ? err.message : String(err)}`,
-        "error",
-      );
+      ctx.ui.notify(`${commandName} failed: ${err instanceof Error ? err.message : String(err)}`, "error");
     }
   };
 
   pi.registerCommand("wai-model", {
     description:
-      "Pick the base secondary or a non-review task model. Configure review models with /wai-review-model. Use /wai-model reset [base|<task>] to clear the base or a non-review task override. Usage: /wai-model [provider] [filter]",
+      "Pick the base secondary or a general task model. Reviews use /wai-review-model; council synthesis uses /wai-council. Use /wai-model reset [base|<task>] to clear the base or a general task override. Usage: /wai-model [provider] [filter]",
     handler: modelHandler,
   });
 
@@ -1434,34 +1461,30 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   const councilHandler = async (_args: string, ctx: ExtensionCommandContext) => {
     try {
-      const registry = getModelRegistry(ctx);
-      if (!registry) {
-        ctx.ui.notify("Model registry is not available in this environment.", "error");
-        return;
-      }
-      const configuredModels = listConfiguredModels(registry);
-      if (configuredModels.length === 0) {
-        ctx.ui.notify("No configured models found. Run /login first.", "error");
-        return;
-      }
-
       const agentDir = getAgentDir();
       const settingsPath = join(agentDir, "settings.json");
-      let settings: Record<string, unknown> = {};
-      if (existsSync(settingsPath)) {
-        settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
-      }
-      const existing = settings["pi-yoowai"];
-      if (!existing || typeof existing !== "object" || Array.isArray(existing)) settings["pi-yoowai"] = {};
-      const waiSettings = settings["pi-yoowai"] as Record<string, unknown>;
-
-      const persist = async (): Promise<void> => {
-        if (!existsSync(agentDir)) mkdirSync(agentDir, { recursive: true });
-        writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
-        await refreshWaiProvider(pi, ctx.cwd);
+      const readSettings = (): Record<string, unknown> => {
+        let settings: Record<string, unknown> = {};
+        if (existsSync(settingsPath)) {
+          settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+        }
+        const existing = settings["pi-yoowai"];
+        if (!existing || typeof existing !== "object" || Array.isArray(existing)) settings["pi-yoowai"] = {};
+        return settings;
       };
-
       for (;;) {
+        // Re-read after synthesis edits/reset so the overview remains current.
+        const settings = readSettings();
+        const waiSettings = settings["pi-yoowai"] as Record<string, unknown>;
+        const persist = async (): Promise<void> => {
+          // Member edits own only judgeCouncil; preserve settings saved while
+          // the provider/model/thinking pickers were open.
+          const latest = readSettings();
+          (latest["pi-yoowai"] as Record<string, unknown>).judgeCouncil = waiSettings.judgeCouncil;
+          if (!existsSync(agentDir)) mkdirSync(agentDir, { recursive: true });
+          writeFileSync(settingsPath, JSON.stringify(latest, null, 2) + "\n", "utf-8");
+          await refreshWaiProvider(pi, ctx.cwd);
+        };
         const current: unknown[] = Array.isArray(waiSettings.judgeCouncil)
           ? [...(waiSettings.judgeCouncil as unknown[])]
           : [];
@@ -1469,9 +1492,23 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         const status = `${current.length === 0 ? "empty globally" : current.map(formatCouncilMember).join(", ")}; final assessment ${effectiveMembers > 0 ? `${effectiveMembers} member(s)` : "disabled"}`;
         const menu = ["Add member…"];
         if (current.length > 0) menu.push("Remove member…", "Clear council");
-        menu.push("Done");
+        const synthesisItem = formatCouncilSynthesisModel(loadYoowaiConfig(ctx.cwd));
+        menu.push(synthesisItem, "Reset synthesis model", "Done");
         const picked = await ctx.ui.select(`Judge council (${current.length} members): ${status}`, menu);
         if (!picked || picked === "Done") return;
+
+        if (picked === synthesisItem) {
+          await modelHandler("", ctx, "judge");
+          continue;
+        }
+        if (picked === "Reset synthesis model") {
+          await resetModelSelection(ctx, "judge", () => refreshWaiProvider(pi, ctx.cwd));
+          ctx.ui.notify(
+            `${formatCouncilSynthesisModel(loadYoowaiConfig(ctx.cwd))}. Project settings take priority.`,
+            "info",
+          );
+          continue;
+        }
 
         if (picked === "Clear council") {
           waiSettings.judgeCouncil = [];
@@ -1494,6 +1531,18 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           waiSettings.judgeCouncil = current;
           await persist();
           ctx.ui.notify(`Removed ${removed} from the judge council (${current.length} remaining).`, "info");
+          continue;
+        }
+
+        if (picked !== "Add member…") return;
+        const registry = getModelRegistry(ctx);
+        if (!registry) {
+          ctx.ui.notify("Model registry is not available in this environment.", "error");
+          continue;
+        }
+        const configuredModels = listConfiguredModels(registry);
+        if (configuredModels.length === 0) {
+          ctx.ui.notify("No configured models found. Run /login first.", "error");
           continue;
         }
 
@@ -1571,7 +1620,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-council", {
     description:
-      "Manage optional final council assessment: empty disables it; one member reviews directly; multiple members assess in parallel. Add/remove members and choose their thinking levels.",
+      "Manage optional final council assessment: empty disables it; one member reviews directly; multiple members assess in parallel. Add/remove members, choose their thinking levels, and configure/reset the synthesis model.",
     handler: councilHandler,
   });
 
