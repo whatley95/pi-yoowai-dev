@@ -43,7 +43,7 @@ import { executeWaiVision } from "../wai-vision.js";
 import { handleWaiSearchCommand } from "../wai-search.js";
 import { handleWaiSearchConfigCommand } from "../wai-search-config.js";
 import { loadYoowaiConfig, resolveTaskModel, resolveJudgeCouncilMembers } from "../config.js";
-import { DEFAULT_REVIEW_LEVEL, resolveReviewLevel } from "../review-level.js";
+import { describeReviewLevelMode, hasFixedReviewLevel, resolveReviewLevel } from "../review-level.js";
 import { modelTaskLabel, resolveModelTask } from "../model-task-routing.js";
 import type { YoowaiConfig } from "../types.js";
 import {
@@ -263,17 +263,24 @@ export function buildModelConfigEntry(
 }
 
 /** Build the "Pick default review level:" picker items with the effective
- *  current level (config value ?? balanced default) listed first, so the
+ *  current mode (config value ?? auto) listed first, so the
  *  select's pre-highlighted first item is what a blind Enter keeps. */
-export function buildReviewLevelItems(currentLevel: ReviewLevel | undefined): string[] {
-  const effectiveLevel = currentLevel ?? DEFAULT_REVIEW_LEVEL;
-  return ["min", "med", "high"]
+export function buildReviewLevelItems(currentLevel: YoowaiConfig["reviewLevel"]): string[] {
+  const effectiveLevel = currentLevel ?? "auto";
+  return ["auto", "min", "med", "high"]
     .map((l) => ({
-      text: `${l}${l === currentLevel ? " ✓ current" : ""}${l === DEFAULT_REVIEW_LEVEL ? " (default)" : ""}`,
+      text: `${l === "auto" ? "Automatic (med default; risk routing when enabled)" : l}${l === effectiveLevel ? " ✓ current" : ""}`,
       isCurrent: l === effectiveLevel,
     }))
     .sort((a, b) => Number(b.isCurrent) - Number(a.isCurrent))
     .map((x) => x.text);
+}
+
+export function parseReviewLevelItem(item: string): YoowaiConfig["reviewLevel"] {
+  const value = item.split(/\s/)[0].toLowerCase();
+  if (value === "automatic" || value === "auto") return "auto";
+  if (value === "min" || value === "med" || value === "high") return value;
+  return undefined;
 }
 
 /** Whether a model role has its own override, independently of its fallback. */
@@ -298,7 +305,7 @@ export function buildModelScopeOptions(config: YoowaiConfig): Array<{ task?: Wai
       const configured = isScopeConfigured(task, config);
       const fallback =
         task === "review"
-          ? `; active depth: ${resolveReviewLevel(config)}; fallback setting: ${display(resolveTaskModel(config, "review"))}`
+          ? `; active depth: ${resolveReviewLevel(config)}${config.riskBasedReview && !hasFixedReviewLevel(config) ? " baseline (automatic risk routing)" : ""}; fallback setting: ${display(resolveTaskModel(config, "review"))}`
           : task === "judge"
             ? resolveJudgeCouncilMembers(config).length === 0
               ? "; disabled — empty council"
@@ -516,7 +523,7 @@ async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
       ? `  Base model: ${modelStatusLine(config.secondary)}`
       : "  Base model: not configured",
     `  Backend: ${config.secondary.backend ?? "sdk"}`,
-    `  Review level: ${resolveReviewLevel(config)}${config.riskBasedReview && !config.reviewLevel ? " (risk routing enabled)" : ""}`,
+    `  Review level: ${describeReviewLevelMode(config)}`,
     `  Final council assessment: ${resolveJudgeCouncilMembers(config).length > 0 ? `${resolveJudgeCouncilMembers(config).length} member(s)` : "disabled — empty council"}`,
     `  Automatic council assessment: ${config.autoJudge && resolveJudgeCouncilMembers(config).length > 0 ? "enabled" : "disabled"}`,
     config.preReviewCommands && config.preReviewCommands.length > 0
@@ -712,7 +719,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     const reviewConfig = reviewArgs ? loadYoowaiConfig(ctx.cwd) : undefined;
     const progressLevel =
       reviewArgs?.options.level ??
-      (reviewConfig && !(reviewConfig.riskBasedReview && !reviewConfig.reviewLevel)
+      (reviewConfig && !(reviewConfig.riskBasedReview && !hasFixedReviewLevel(reviewConfig))
         ? resolveReviewLevel(reviewConfig)
         : undefined);
     const progress = createProgressReporter(
@@ -1211,16 +1218,16 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       //    regardless of task model. Only the review-only scope asks for it:
       //    the base-model flow must not redirect into an unrelated question
       //    (and Esc there used to discard the whole model selection). The
-      //    level stays editable via `/wai-config set reviewLevel <min|med|high>`
+      //    mode stays editable via `/wai-config set reviewLevel <auto|min|med|high>`
       //    or the review-only scope. The effective current level (config value
       //    ?? balanced default) is listed first so a blind Enter keeps it.
-      let reviewLevel: ReviewLevel | undefined;
+      let reviewLevel: YoowaiConfig["reviewLevel"];
       if (action === "review") {
         const currentLevel = currentConfig.reviewLevel;
         const levelItems = buildReviewLevelItems(currentLevel);
         const levelPicked = await ctx.ui.select("Pick default review level:", levelItems);
         if (levelPicked) {
-          reviewLevel = levelPicked.replace(/ ✓ current|\s*\(default\)/g, "").trim() as ReviewLevel;
+          reviewLevel = parseReviewLevelItem(levelPicked);
         }
         // Esc skips: keep the current reviewLevel and still save the model below.
       }
@@ -1263,6 +1270,13 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       }
 
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+      if (reviewLevel !== undefined) {
+        const effective = loadYoowaiConfig(ctx.cwd);
+        ctx.ui.notify(
+          `Review selection: ${describeReviewLevelMode(effective)}.${effective.reviewLevel !== reviewLevel ? " A project-level override remains active." : ""}`,
+          "info",
+        );
+      }
       await refreshWaiProvider(pi, ctx.cwd);
     } catch (err) {
       ctx.ui.notify(`wai-model failed: ${err instanceof Error ? err.message : String(err)}`, "error");

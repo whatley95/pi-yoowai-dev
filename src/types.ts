@@ -36,6 +36,13 @@ export type WaiModelTask =
 /** Review depth preset. Higher levels spend more tokens and catch deeper issues. */
 export type ReviewLevel = "min" | "med" | "high";
 
+/** Locally derived selection diagnostics; never a model verdict or evidence of coverage. */
+export interface ReviewLevelSelection {
+  level: ReviewLevel;
+  source: "explicit" | "config" | "risk" | "default";
+  reason: string;
+}
+
 import type { BackendType } from "./types/secondary-model.js";
 export type {
   BackendType,
@@ -78,7 +85,7 @@ export interface YoowaiConfig {
   reviewMaxMemoryTokens?: number;
   reviewStrategy?: "auto" | "diff-only" | "full-files";
   /** Review depth preset. Defaults to med; explicit review settings override the preset defaults. */
-  reviewLevel?: ReviewLevel;
+  reviewLevel?: ReviewLevel | "auto";
   /** Opt-in diff-based review depth for calls without an explicit level. */
   riskBasedReview?: boolean;
   verifyByDefault?: boolean;
@@ -464,6 +471,7 @@ export interface WaiToolResult {
   /** Effective review level (min/med/high) when the action is a review.
    *  Drives the level marker in TUI call titles, progress lines, and verdicts. */
   level?: ReviewLevel;
+  levelSelection?: ReviewLevelSelection;
   cost?: UsageCost;
   /** Wall-clock time the wai tool took to produce this result, in milliseconds. */
   elapsedMs?: number;

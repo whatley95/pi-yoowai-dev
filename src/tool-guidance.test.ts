@@ -21,6 +21,9 @@ it("retains detailed workflow rules on demand while reducing always-present inst
   assert.match(visible, /reviewPending|completedSteps/);
   assert.match(visible, /wai_index\(\{topic:'guidance'\}\)/);
   assert.match(visible, /Default to med/);
+  assert.match(visible, /Prefer generic wai/);
+  assert.match(visible, /Name the concrete risk/);
+  assert.match(WAI_TOOL_GUIDANCE.wai_review_high.join("\n"), /final review or retry alone does not justify high/i);
   assert.match(visible, /Final council assessment is optional/);
   assert.match(visible, /Empty disables it/);
   assert.ok(!visible.includes("judge before completion"));

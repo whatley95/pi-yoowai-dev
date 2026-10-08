@@ -84,6 +84,18 @@ const workflowOutput = object({
     }),
   ),
   level: optional(Type.Union([Type.Literal("min"), Type.Literal("med"), Type.Literal("high")])),
+  levelSelection: optional(
+    object({
+      level: Type.Union([Type.Literal("min"), Type.Literal("med"), Type.Literal("high")]),
+      source: Type.Union([
+        Type.Literal("explicit"),
+        Type.Literal("config"),
+        Type.Literal("risk"),
+        Type.Literal("default"),
+      ]),
+      reason: Type.String(),
+    }),
+  ),
 });
 
 const fact = object({

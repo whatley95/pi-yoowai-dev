@@ -642,6 +642,28 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
   }
 
+  it("reports routed depth and explicit overrides even when no model is configured", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithMultiFileChange({ "router.ts": "if (!isAdmin) throw new Error('Denied');\n" });
+    writeSettings(cwd, { reviewLevel: "auto", riskBasedReview: true });
+    const ctx = { cwd } as unknown as ExtensionContext;
+    const routed = await executeWaiReview(cwd, "Review access control", ctx, {}, undefined, () => {});
+    assert.ok(routed.error);
+    assert.equal(routed.level, "high");
+    assert.equal(routed.levelSelection?.source, "risk");
+    assert.match(routed.levelSelection?.reason ?? "", /code added or removed/);
+    const explicit = await executeWaiReview(
+      cwd,
+      "Intentional depth override",
+      ctx,
+      { level: "med" },
+      undefined,
+      () => {},
+    );
+    assert.equal(explicit.level, "med");
+    assert.equal(explicit.levelSelection?.source, "explicit");
+    assert.equal(getState(cwd).completedSteps, 0);
+  });
+
   it("does not record a context-limited worker as passing when another worker fails", { skip: !hasGit }, async () => {
     const cwd = makeRepoWithMultiFileChange({
       "a.ts": "export const a = 2;\n",
@@ -1543,7 +1565,7 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
 
     const { url, bodies } = await startStubServer();
     writeSettings(cwd, {
-      reviewLevel: "min",
+      reviewLevel: "med",
       secondary: {
         provider: "openai",
         id: "gpt-4o-mini",
@@ -1559,14 +1581,21 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     const ctx = { cwd } as unknown as ExtensionContext;
     const first = await executeWaiReview(cwd, "cache baseline probe", ctx, {}, undefined, () => {});
     assert.equal(first.review?.verdict, "pass");
+    assert.equal(first.levelSelection?.source, "config");
     assert.equal(getLastReviewedCommit(cwd), head);
 
     // Simulate a plan/session reset; the identical re-review is served from
     // the cache and must re-anchor the baseline to the current HEAD so the
     // next review does not re-diff already-reviewed commits.
     setLastReviewedCommit(cwd, undefined);
+    const settingsPath = join(cwd, ".pi", "settings.json");
+    const updatedSettings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    updatedSettings["pi-yoowai"].reviewLevel = "auto";
+    updatedSettings["pi-yoowai"].riskBasedReview = true;
+    writeFileSync(settingsPath, JSON.stringify(updatedSettings));
     const second = await executeWaiReview(cwd, "cache baseline probe", ctx, {}, undefined, () => {});
     assert.equal(second.review?.verdict, "pass");
+    assert.equal(second.levelSelection?.source, "risk", "a cache hit must report this invocation's selection reason");
     assert.equal(bodies.length, 1, "the second identical review must hit the cache");
     assert.equal(getLastReviewedCommit(cwd), head, "a cached pass must re-anchor the baseline");
     // A cache hit must also re-record the reviewed files for prior context.

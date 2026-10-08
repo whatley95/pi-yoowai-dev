@@ -5,6 +5,8 @@ import {
   resolveReviewSettings,
   getReviewLevelSettings,
   resolveRiskReviewLevel,
+  resolveReviewLevelSelection,
+  describeReviewLevelMode,
 } from "./review-level.js";
 import type { YoowaiConfig, SecondaryModelConfig } from "./types.js";
 
@@ -118,6 +120,108 @@ describe("resolveRiskReviewLevel", () => {
       resolveRiskReviewLevel({ ...config, riskBasedReview: false }, undefined, ["src/auth.ts"], "+x"),
       "med",
     );
+  });
+
+  it("automatic mode permits routing while fixed med remains authoritative", () => {
+    assert.equal(resolveReviewLevel({ ...config, reviewLevel: "auto" }), "med");
+    assert.equal(resolveRiskReviewLevel({ ...config, reviewLevel: "auto" }, undefined, ["src/auth.ts"], "+x"), "high");
+    assert.equal(
+      resolveRiskReviewLevel(
+        { ...config, reviewLevel: "auto", riskBasedReview: false },
+        undefined,
+        ["src/auth.ts"],
+        "+x",
+      ),
+      "med",
+    );
+    assert.match(describeReviewLevelMode({ ...config, reviewLevel: "med" }), /risk routing bypassed/);
+    assert.match(describeReviewLevelMode({ ...config, reviewLevel: "auto" }), /automatic.*risk routing enabled/);
+  });
+
+  it("does not confuse docs, estimator tokens, or comment changes with credential changes", () => {
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["docs/auth.md"], "+password example"), "min");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["docs/auth.txt"], "+password example"), "min");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["README.txt"], "+text"), "min");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["credentials.txt"], "+text"), "high");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["settings.txt"], "+password = value"), "high");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["src/token-budget.ts"], "+const renamed = 3.5;"), "med");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["src/parser/token.ts"], "+return nextToken;"), "med");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["src/refresh-token.ts"], "+const changed = 1;"), "high");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["src/oauth.ts"], "+const changed = 1;"), "high");
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["src/view.ts"], "+// password documentation"), "med");
+    assert.equal(
+      resolveRiskReviewLevel(
+        config,
+        undefined,
+        ["src/view.ts"],
+        "+++ b/password.ts\n--- a/password.ts\n@@ -1 +1 @@\n-x\n+y",
+      ),
+      "med",
+    );
+  });
+
+  it("detects risky additions, removals, and changes within access-control hunks", () => {
+    for (const diff of [
+      "-if (!isAdmin) throw new Error('Denied');",
+      "-requireAuth(request);",
+      "+if (!is_authenticated(user)) return;",
+      "-const accessToken = response.access_token;",
+      "-await db.query('DELETE FROM users');",
+      "@@ -1,3 +1,3 @@\n if (hasPermission(user)) {\n-  return false;\n+  return true;\n }",
+      "@@ -1,2 +1,2 @@ function authorize(request)\n-return false;\n+return true;",
+    ]) {
+      const selection = resolveReviewLevelSelection(config, undefined, ["src/router.ts"], diff);
+      assert.equal(selection.level, "high", diff);
+      assert.equal(selection.source, "risk");
+      assert.match(selection.reason, /code added or removed|hunk includes/);
+    }
+    // Nearby but unchanged security context must not contaminate another hunk.
+    assert.equal(
+      resolveRiskReviewLevel(
+        config,
+        undefined,
+        ["src/router.ts"],
+        "@@ -1 +1 @@\n requireAuth(request);\n@@ -20 +20 @@\n-const width = 1;\n+const width = 2;",
+      ),
+      "med",
+    );
+  });
+
+  it("ignores documentation hunks in mixed Git and SVN changes", () => {
+    for (const docsHeader of ["diff --git a/docs/auth.md b/docs/auth.md", "Index: docs/auth.md"]) {
+      const sourceHeader = docsHeader.startsWith("Index:")
+        ? "Index: src/view.ts"
+        : "diff --git a/src/view.ts b/src/view.ts";
+      const diff = `${docsHeader}\n@@ -1 +1 @@\n+password = secret\n${sourceHeader}\n@@ -1 +1 @@\n-const width = 1;\n+const width = 2;`;
+      assert.equal(resolveRiskReviewLevel(config, undefined, ["docs/auth.md", "src/view.ts"], diff), "med");
+    }
+    assert.equal(resolveRiskReviewLevel(config, undefined, ["docs/auth.md"], "+text", true), "high");
+    assert.equal(
+      resolveRiskReviewLevel(
+        config,
+        undefined,
+        ["docs/guide.md", "src/view.ts"],
+        "diff --git a/docs/guide.md b/docs/guide.md\n+docs\nUnrecognized source header\n+requireAuth(request);",
+      ),
+      "high",
+    );
+  });
+
+  it("explains selection sources independently of model thinking", () => {
+    const fixed = { ...config, reviewLevel: "high" as const };
+    assert.equal(resolveReviewLevelSelection(fixed, "med", ["src/auth.ts"], "+x").source, "explicit");
+    assert.equal(resolveReviewLevelSelection(fixed, undefined, ["README.md"], "+x").source, "config");
+    const normal = resolveReviewLevelSelection(config, undefined, ["src/view.ts"], "+const x = 1;");
+    assert.deepEqual(normal, {
+      level: "med",
+      source: "risk",
+      reason: "No risk-routing signal detected; keeping med review.",
+    });
+    assert.equal(
+      resolveReviewLevelSelection({ ...config, riskBasedReview: false }, undefined, ["src/auth.ts"], "+x").source,
+      "default",
+    );
+    assert.equal(resolveReviewLevelSelection(config, undefined, ["src/auth.ts"], "+x").source, "risk");
   });
 });
 

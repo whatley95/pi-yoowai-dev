@@ -539,8 +539,8 @@ function mergeConfig(base: YoowaiConfig, override: unknown): YoowaiConfig {
     reviewStrategy: ["auto", "diff-only", "full-files"].includes(o.reviewStrategy ?? "")
       ? o.reviewStrategy
       : base.reviewStrategy,
-    reviewLevel: ["min", "med", "high"].includes(o.reviewLevel ?? "")
-      ? (o.reviewLevel as "min" | "med" | "high")
+    reviewLevel: ["auto", "min", "med", "high"].includes(o.reviewLevel ?? "")
+      ? (o.reviewLevel as YoowaiConfig["reviewLevel"])
       : base.reviewLevel,
     riskBasedReview: typeof o.riskBasedReview === "boolean" ? o.riskBasedReview : (base.riskBasedReview ?? false),
     verifyByDefault: typeof o.verifyByDefault === "boolean" ? o.verifyByDefault : base.verifyByDefault,

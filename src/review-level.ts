@@ -1,4 +1,6 @@
-import type { ReviewLevel, YoowaiConfig } from "./types.js";
+import type { ReviewLevel, ReviewLevelSelection, YoowaiConfig } from "./types.js";
+import { splitDiffByFile } from "./diff-grabber.js";
+import { normalizeReviewPath } from "./path-security.js";
 
 /** Balanced review is the fallback regardless of model family or thinking level. */
 export const DEFAULT_REVIEW_LEVEL: ReviewLevel = "med";
@@ -94,8 +96,43 @@ export const LEVEL_DEFAULTS: Record<
  */
 export function resolveReviewLevel(config: YoowaiConfig, toolOverride?: ReviewLevel): ReviewLevel {
   if (toolOverride) return toolOverride;
-  if (config.reviewLevel) return config.reviewLevel;
+  if (hasFixedReviewLevel(config)) return config.reviewLevel as ReviewLevel;
   return DEFAULT_REVIEW_LEVEL;
+}
+
+export function hasFixedReviewLevel(config: YoowaiConfig): boolean {
+  return config.reviewLevel !== undefined && config.reviewLevel !== "auto";
+}
+
+export function describeReviewLevelMode(config: YoowaiConfig): string {
+  if (hasFixedReviewLevel(config))
+    return `${config.reviewLevel} (configured${config.riskBasedReview ? "; risk routing bypassed" : ""})`;
+  return `automatic (med default; risk routing ${config.riskBasedReview ? "enabled" : "disabled"})`;
+}
+
+export function resolveReviewLevelSelection(
+  config: YoowaiConfig,
+  toolOverride: ReviewLevel | undefined,
+  changedFiles: string[],
+  diff: string,
+  truncated = false,
+): ReviewLevelSelection {
+  if (toolOverride) return { level: toolOverride, source: "explicit", reason: "Explicit review level requested." };
+  if (hasFixedReviewLevel(config))
+    return {
+      level: resolveReviewLevel(config),
+      source: "config",
+      reason: `Configured fixed review level.${config.riskBasedReview ? " Risk routing is bypassed." : ""}`,
+    };
+  if (config.riskBasedReview && changedFiles.length > 0)
+    return classifyRiskReviewSelection(DEFAULT_REVIEW_LEVEL, changedFiles, diff, truncated);
+  return {
+    level: DEFAULT_REVIEW_LEVEL,
+    source: "default",
+    reason: config.riskBasedReview
+      ? "No changed paths available; balanced default."
+      : "Balanced default; risk routing is disabled.",
+  };
 }
 
 /** Conservative, opt-in routing: deepen security/data changes, and spend less
@@ -107,9 +144,7 @@ export function resolveRiskReviewLevel(
   diff: string,
   truncated = false,
 ): ReviewLevel {
-  const base = resolveReviewLevel(config, toolOverride);
-  if (!config.riskBasedReview || toolOverride || config.reviewLevel || changedFiles.length === 0) return base;
-  return classifyRiskReviewLevel(base, changedFiles, diff, truncated);
+  return resolveReviewLevelSelection(config, toolOverride, changedFiles, diff, truncated).level;
 }
 
 export function classifyRiskReviewLevel(
@@ -118,19 +153,78 @@ export function classifyRiskReviewLevel(
   diff: string,
   truncated = false,
 ): ReviewLevel {
-  if (changedFiles.length === 0) return base;
+  return classifyRiskReviewSelection(base, changedFiles, diff, truncated).level;
+}
+
+function classifyRiskReviewSelection(
+  base: ReviewLevel,
+  changedFiles: string[],
+  diff: string,
+  truncated: boolean,
+): ReviewLevelSelection {
+  const selected = (level: ReviewLevel, reason: string): ReviewLevelSelection => ({ level, source: "risk", reason });
+  if (changedFiles.length === 0) return selected(base, "No changed paths available for risk routing.");
+  if (truncated) return selected("high", "Captured diff is truncated; complete evidence is still required.");
+  const isDocumentation = (path: string): boolean => {
+    const normalized = path.replace(/\\/g, "/");
+    if (/\.(?:md|mdx|rst)$/i.test(normalized)) return true;
+    // Plain-text configuration or credential data is not necessarily docs.
+    return (
+      /\.txt$/i.test(normalized) &&
+      (/(?:^|\/)docs?\//i.test(normalized) ||
+        /(?:^|\/)(?:readme|changelog|license|notice|contributing)\.txt$/i.test(normalized))
+    );
+  };
+  const sourceFiles = changedFiles.filter((file) => !isDocumentation(file));
+  if (sourceFiles.length === 0) return selected(base === "high" ? base : "min", "Documentation-only change.");
   const sensitivePath =
-    /(?:^|[\x2f._-])(auth|security|permission|crypto|payment|billing|migration|schema|database|session|token|credential)(?:[\x2f._-]|$)/i;
-  const sensitiveAddition =
-    /^\+(?!\+).*(?:innerHTML|\beval\s*\(|\bexec\s*\(|\bspawn\s*\(|child_process|password|secret|api[_-]?key|DELETE\s+FROM)/im;
-  if (
-    truncated ||
-    changedFiles.some((file) => sensitivePath.test(file.replace(/\\/g, "/"))) ||
-    sensitiveAddition.test(diff)
-  )
-    return "high";
-  const docsOnly = changedFiles.every((file) => /\.(?:md|mdx|txt|rst)$/i.test(file));
-  return docsOnly && base !== "high" ? "min" : base;
+    /(?:^|[\x2f._-])(auth|oauth|jwt|authentication|authorization|security|permissions?|crypto|payments?|billing|migrations?|schema|database|session|credentials?)(?:[\x2f._-]|$)/i;
+  const credentialTokenPath = /(?:^|[\x2f._-])(?:access|refresh|auth|bearer)[._-]?tokens?(?:[\x2f._-]|$)/i;
+  const sensitiveFile = sourceFiles.find((file) => {
+    const path = file.replace(/\\/g, "/");
+    return sensitivePath.test(path) || credentialTokenPath.test(path);
+  });
+  if (sensitiveFile) return selected("high", `Sensitive source path: ${sensitiveFile}`);
+
+  // Associate hunks with their files so a documentation snippet does not deepen
+  // an unrelated code change. Both Git and SVN captures carry file headers.
+  const blocks = splitDiffByFile(diff, /^Index: /m.test(diff) ? "svn" : "git");
+  // If any source path has no parsed block, retain the original patch rather
+  // than hiding an unrecognized source hunk while filtering documentation.
+  const sourceDiff = sourceFiles.every((file) => Object.hasOwn(blocks, normalizeReviewPath(file)))
+    ? Object.entries(blocks)
+        .filter(([file]) => !isDocumentation(file))
+        .map(([, patch]) => patch)
+        .join("\n")
+    : diff;
+  const sensitiveCode =
+    /innerHTML|\b(?:eval|exec|spawn)\s*\(|child_process|\b(?:password|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|bearer)\b|\b(?:DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE)\b/i;
+  const accessControl =
+    /\b(?:is_?(?:admin|authenticated|authorized)|has_?permission|check_?permissions?|require_?auth|verify_?token|validate_?token|authorize|authenticate)\b/i;
+  let securityContext = false;
+  let changedInHunk = false;
+  const hunkHasSecurityChange = (): boolean => securityContext && changedInHunk;
+  for (const line of sourceDiff.split(/\r?\n/)) {
+    if (/^(?:diff --git |Index: |@@)/.test(line)) {
+      if (hunkHasSecurityChange())
+        return selected("high", "Changed hunk includes access-control or credential handling.");
+      changedInHunk = false;
+      securityContext = /^@@/.test(line) && accessControl.test(line);
+      continue;
+    }
+    if (/^(?:\+\+\+|---)/.test(line) || !/^[ +-]/.test(line)) continue;
+    const code = line.slice(1);
+    if (/^\s*(?:\/\/|#|\*|\/\*)/.test(code)) continue;
+    if (/^[+-]/.test(line)) {
+      changedInHunk = true;
+      if (sensitiveCode.test(code) || accessControl.test(code))
+        return selected("high", "Security, data, or execution-sensitive code added or removed.");
+    } else if (accessControl.test(code) || sensitiveCode.test(code)) {
+      securityContext = true;
+    }
+  }
+  if (hunkHasSecurityChange()) return selected("high", "Changed hunk includes access-control or credential handling.");
+  return selected(base, `No risk-routing signal detected; keeping ${base} review.`);
 }
 
 /** Build effective review settings by applying the level defaults and then

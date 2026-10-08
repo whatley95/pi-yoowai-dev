@@ -2,7 +2,7 @@ import { Text } from "@earendil-works/pi-tui";
 import type { AgentToolResult, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { formatCost } from "./cost-tracker.js";
 import { loadYoowaiConfig } from "./config.js";
-import { resolveReviewLevel } from "./review-level.js";
+import { hasFixedReviewLevel, resolveReviewLevel } from "./review-level.js";
 import type { WaiToolParams, WaiToolResult, ReviewIssue, StageProfile, ReviewLevel, UsageCost } from "./types.js";
 
 /** Local theme interface compatible with the real Pi Theme shape. */
@@ -108,7 +108,7 @@ export function renderCall(args: WaiToolParams, theme: Theme, context?: ToolRend
   if (p.review && !level && context?.cwd) {
     try {
       const config = loadYoowaiConfig(context.cwd);
-      dynamicRiskReview = Boolean(config.riskBasedReview && !config.reviewLevel);
+      dynamicRiskReview = Boolean(config.riskBasedReview && !hasFixedReviewLevel(config));
       if (!dynamicRiskReview) level = resolveReviewLevel(config);
     } catch {
       // display-only; ignore

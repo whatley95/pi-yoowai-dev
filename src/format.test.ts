@@ -10,6 +10,21 @@ const sampleCost = {
   sessionCostUsd: 0.1616,
 };
 
+test("review selection reasons render for verdicts and local failures", () => {
+  for (const result of [
+    { review: { verdict: "pass" as const, issues: [], suggestions: [], consensus: true } },
+    { error: "No secondary model configured" },
+  ]) {
+    const text = formatResultText({
+      action: "review",
+      level: "med",
+      levelSelection: { level: "med", source: "default", reason: "Balanced default." },
+      ...result,
+    });
+    assert.match(text, /Review selection: \*\*med\*\* \(default\).*Balanced default/);
+  }
+});
+
 function recommendResult(overrides: Partial<WaiToolResult>): WaiToolResult {
   return {
     action: "recommend",

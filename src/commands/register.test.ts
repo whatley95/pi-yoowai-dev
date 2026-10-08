@@ -14,6 +14,7 @@ import {
   promptSearchModels,
   buildModelConfigEntry,
   buildReviewLevelItems,
+  parseReviewLevelItem,
   isScopeConfigured,
   buildModelScopeOptions,
   resetModelSelection,
@@ -33,9 +34,9 @@ import type { SearchResults } from "duck-duck-scrape";
 import type { RecentModel } from "../model-history.js";
 import type { YoowaiConfig } from "../types.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { createServer } from "node:http";
 
 const canonicalLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -852,6 +853,82 @@ describe("effective model requests in commands", () => {
   }
 });
 
+describe("review picker automatic mode", () => {
+  for (const scenario of ["automatic", "project override", "cancel"] as const) {
+    it(`persists review selection safely: ${scenario}`, async () => {
+      const agentDir = mkdtempSync(join(tmpdir(), "wai-auto-picker-agent-"));
+      const cwd = mkdtempSync(join(tmpdir(), "wai-auto-picker-cwd-"));
+      const previousAgentDir = getAgentDir();
+      try {
+        setAgentDirForTests(() => agentDir);
+        const settingsPath = join(agentDir, "settings.json");
+        writeFileSync(
+          settingsPath,
+          JSON.stringify({
+            unrelated: 42,
+            "pi-yoowai": {
+              secondary: { provider: "picker", id: "model", thinking: "off" },
+              reviewLevel: "high",
+              riskBasedReview: true,
+            },
+          }),
+        );
+        const projectSettings = JSON.stringify({ "pi-yoowai": { reviewLevel: "high" } });
+        if (scenario === "project override") {
+          mkdirSync(join(cwd, ".pi"));
+          writeFileSync(join(cwd, ".pi", "settings.json"), projectSettings);
+        }
+        const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+        registerWaiCommands(
+          {
+            registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+              commands.set(name, def),
+          } as unknown as ExtensionAPI,
+          new Map(),
+        );
+        const model = { provider: "picker", id: "model", reasoning: false };
+        const notifications: string[] = [];
+        const ctx = {
+          cwd,
+          modelRegistry: {
+            getAll: () => [model],
+            getAvailable: () => [model],
+            getProviderAuthStatus: () => ({ configured: true }),
+            find: () => model,
+          },
+          ui: {
+            notify: (text: string) => notifications.push(text),
+            select: async (title: string, items: string[]) => {
+              if (title.startsWith("Which wai model role")) return items.find((item) => item.startsWith("review ("));
+              if (title.startsWith("Pick model") || title.startsWith("Pick thinking")) return items[0];
+              if (title === "Pick default review level:")
+                return scenario === "cancel" ? undefined : items.find((item) => item.startsWith("Automatic"));
+              throw new Error(`Unexpected picker: ${title}`);
+            },
+          },
+        } as unknown as ExtensionContext;
+        await commands.get("wai-model")!.handler("picker", ctx);
+        const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
+        assert.equal(saved.unrelated, 42);
+        assert.equal(saved["pi-yoowai"].reviewLevel, scenario === "cancel" ? "high" : "auto", notifications.join("\n"));
+        assert.equal(saved["pi-yoowai"].riskBasedReview, true);
+        assert.equal(saved["pi-yoowai"].taskModels.review.id, "model");
+        assert.equal(loadYoowaiConfig(cwd).reviewLevel, scenario === "automatic" ? "auto" : "high");
+        if (scenario === "project override") {
+          assert.ok(notifications.some((text) => text.includes("project-level override remains active")));
+          assert.equal(readFileSync(join(cwd, ".pi", "settings.json"), "utf8"), projectSettings);
+        }
+      } finally {
+        setAgentDirForTests(() => previousAgentDir);
+        for (const dir of [agentDir, cwd]) {
+          assert.equal(dirname(realpathSync(dir)), realpathSync(tmpdir()));
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
+  }
+});
+
 describe("buildModelConfigEntry", () => {
   it("preserves existing provider-specific fields when re-selecting the same provider", () => {
     const prev = {
@@ -1492,30 +1569,30 @@ describe("live thinking levels in model and council commands", () => {
 });
 
 describe("buildReviewLevelItems", () => {
+  const automatic = "Automatic (med default; risk routing when enabled)";
   it("lists the configured current level first so a blind Enter keeps it", () => {
-    assert.deepStrictEqual(buildReviewLevelItems("min"), ["min ✓ current", "med (default)", "high"]);
+    assert.deepStrictEqual(buildReviewLevelItems("min"), ["min ✓ current", automatic, "med", "high"]);
   });
 
-  it("lists med first when no level is configured", () => {
-    assert.deepStrictEqual(buildReviewLevelItems(undefined), ["med (default)", "min", "high"]);
+  it("keeps automatic selection when no fixed level is configured", () => {
+    for (const current of [undefined, "auto"] as const) {
+      assert.deepStrictEqual(buildReviewLevelItems(current), [`${automatic} ✓ current`, "min", "med", "high"]);
+    }
   });
 
   it("keeps the configured current level first even when it differs from the default", () => {
-    assert.deepStrictEqual(buildReviewLevelItems("high"), ["high ✓ current", "min", "med (default)"]);
+    assert.deepStrictEqual(buildReviewLevelItems("high"), ["high ✓ current", automatic, "min", "med"]);
   });
 
-  it("labels med as both current and default when configured", () => {
-    assert.deepStrictEqual(buildReviewLevelItems("med"), ["med ✓ current (default)", "min", "high"]);
+  it("distinguishes a fixed med level from automatic selection", () => {
+    assert.deepStrictEqual(buildReviewLevelItems("med"), ["med ✓ current", automatic, "min", "high"]);
   });
 
-  it("never drops a level and always returns exactly three items", () => {
+  it("never drops a mode and parses current/default labels without freezing auto to med", () => {
     const items = buildReviewLevelItems("min");
-    assert.strictEqual(items.length, 3);
-    for (const level of ["min", "med", "high"]) {
-      assert.ok(
-        items.some((i) => i === level || i.startsWith(`${level} `)),
-        `${level} missing from ${items}`,
-      );
-    }
+    assert.strictEqual(items.length, 4);
+    assert.deepStrictEqual(items.map(parseReviewLevelItem), ["min", "auto", "med", "high"]);
+    assert.equal(parseReviewLevelItem(`${automatic} ✓ current`), "auto");
+    assert.equal(parseReviewLevelItem("unknown"), undefined);
   });
 });

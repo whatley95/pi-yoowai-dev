@@ -930,6 +930,28 @@ describe("loadYoowaiConfig autoPreReviewCommands", () => {
 });
 
 describe("loadYoowaiConfig riskBasedReview", () => {
+  it("accepts auto and allows a project auto setting to override a fixed global level", () => {
+    const cwd = makeTempDir("config-auto-review-");
+    const agentDir = makeTempDir("config-auto-review-agent-");
+    const previousAgentDir = getAgentDir();
+    try {
+      setAgentDirForTests(() => agentDir);
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify({ "pi-yoowai": { reviewLevel: "high", riskBasedReview: true } }),
+      );
+      assert.equal(loadYoowaiConfig(cwd).reviewLevel, "high");
+      writeProjectSettings(cwd, { reviewLevel: "auto" });
+      assert.equal(loadYoowaiConfig(cwd).reviewLevel, "auto");
+      assert.equal(loadYoowaiConfig(cwd).riskBasedReview, true);
+      writeProjectSettings(cwd, { reviewLevel: "invalid" });
+      assert.equal(loadYoowaiConfig(cwd).reviewLevel, "high");
+    } finally {
+      setAgentDirForTests(() => previousAgentDir);
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
   it("defaults off and accepts only boolean settings", () => {
     const cwd = makeTempDir("config-risk-review-");
     try {

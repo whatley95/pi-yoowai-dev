@@ -67,9 +67,16 @@ import { resolveBackendType, resolveBudgetModel } from "../backends/backend-reso
 import { validateReviewResult, getReviewValidationErrors, salvageReviewFromMarkdown } from "../prompts.js";
 import { verifyResult, mergeVerifiedCost } from "./verify.js";
 import { buildCacheKey, getCachedReview, setCachedResult } from "../review-cache.js";
-import { getReviewLevelSettings, resolveRiskReviewLevel } from "../review-level.js";
+import { getReviewLevelSettings, resolveReviewLevelSelection } from "../review-level.js";
 import type { ProgressReporter } from "../progress.js";
-import type { WaiToolResult, ReviewResult, UsageCost, ReviewLevel, ReviewExecution } from "../types.js";
+import type {
+  WaiToolResult,
+  ReviewResult,
+  UsageCost,
+  ReviewLevel,
+  ReviewLevelSelection,
+  ReviewExecution,
+} from "../types.js";
 import { INCONCLUSIVE_REVIEW_GUIDANCE } from "../workflow-guidance.js";
 import { withReviewRecovery } from "../review-recovery.js";
 
@@ -136,25 +143,43 @@ export function planAdvanceFromReview(
   return null;
 }
 
-export async function executeWaiReview(...args: Parameters<typeof executeReview>): Promise<WaiToolResult> {
-  return withReviewRecovery(await executeReview(...args));
+type ReviewOptions = {
+  files?: string[];
+  exclude?: string[];
+  revision?: string;
+  since?: string;
+  vcs?: "git" | "svn";
+  untracked?: boolean;
+  level?: ReviewLevel;
+};
+
+type ReviewArguments = [
+  cwd: string,
+  description: string,
+  ctx: ExtensionContext,
+  options: ReviewOptions | undefined,
+  signal: AbortSignal | undefined,
+  progress: ProgressReporter,
+];
+
+export async function executeWaiReview(...args: ReviewArguments): Promise<WaiToolResult> {
+  let levelSelection: ReviewLevelSelection | undefined;
+  const result = await executeReview(...args, (selection) => {
+    levelSelection = selection;
+  });
+  // Compute diagnostics for this invocation, including cache hits and local
+  // failures. Do not reuse a previous caller's selection reason from cache.
+  return withReviewRecovery({ ...result, ...(levelSelection ? { level: levelSelection.level, levelSelection } : {}) });
 }
 
 async function executeReview(
   cwd: string,
   description: string,
   ctx: ExtensionContext,
-  options: {
-    files?: string[];
-    exclude?: string[];
-    revision?: string;
-    since?: string;
-    vcs?: "git" | "svn";
-    untracked?: boolean;
-    level?: ReviewLevel;
-  } = {},
+  options: ReviewOptions = {},
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
+  onSelection: (selection: ReviewLevelSelection) => void,
 ): Promise<WaiToolResult> {
   signal?.throwIfAborted();
   const config = loadYoowaiConfig(cwd);
@@ -245,7 +270,9 @@ async function executeReview(
       },
     };
   }
-  const level = resolveRiskReviewLevel(config, options.level, changedFiles, diff, truncated);
+  const selection = resolveReviewLevelSelection(config, options.level, changedFiles, diff, truncated);
+  onSelection(selection);
+  const level = selection.level;
   const reviewSettings = getReviewLevelSettings(config, level);
   const effectiveConfig = { ...config, ...reviewSettings };
   // The effective depth selects the matching per-level model and tool loop.

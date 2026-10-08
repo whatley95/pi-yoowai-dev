@@ -9,6 +9,7 @@ it("exposes typed structured fields for every registered tool, including error-o
   const examples: Record<string, unknown> = {
     wai: {
       action: "review",
+      levelSelection: { level: "high", source: "risk", reason: "Sensitive source path" },
       review: { verdict: "needs-work", inconclusive: true, scopeLimited: false },
       recovery: { reason: "empty-diff", message: "empty", nextAction: "inspect", retry: "after-change" },
       workflow: { completedSteps: 0, totalSteps: 2, pendingEdits: 1, reviewPending: true },
@@ -38,6 +39,14 @@ it("exposes typed structured fields for every registered tool, including error-o
     assert.ok(Value.Check(schema, { error: "provider failed", futureMetadata: true }));
   }
   assert.equal(Value.Check(getNativeOutputSchema("wai"), { review: { inconclusive: "yes" } }), false);
+  assert.equal(
+    Value.Check(getNativeOutputSchema("wai"), { levelSelection: { level: "auto", source: "risk", reason: "x" } }),
+    false,
+  );
+  assert.equal(
+    Value.Check(getNativeOutputSchema("wai"), { levelSelection: { level: "med", source: "model", reason: "x" } }),
+    false,
+  );
   assert.equal(Value.Check(getNativeOutputSchema("wai_index"), { memoryEntries: [{ file: 3 }] }), false);
   assert.ok(
     Value.Check(getNativeOutputSchema("wai_index"), {

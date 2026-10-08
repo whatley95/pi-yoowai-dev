@@ -3,7 +3,7 @@ import type { WaiToolResult, WaiModelTask, ReviewLevel, PlanUpdateRequest } from
 import { Type } from "@sinclair/typebox";
 import { PlanUpdateRequestSchema } from "./schemas.js";
 import { loadYoowaiConfig, resolveTaskModel } from "./config.js";
-import { resolveReviewLevel } from "./review-level.js";
+import { hasFixedReviewLevel, resolveReviewLevel } from "./review-level.js";
 import { setPiSessionId, clearPiSessionId } from "./secondary-model.js";
 
 import {
@@ -278,7 +278,7 @@ export default async function (pi: ExtensionAPI) {
       onUpdate,
       // The generic wai tool has no level param. Show a configured depth when
       // fixed; risk routing selects its actual depth after collecting the diff.
-      p.review && !(config.riskBasedReview && !config.reviewLevel) ? resolveReviewLevel(config) : undefined,
+      p.review && !(config.riskBasedReview && !hasFixedReviewLevel(config)) ? resolveReviewLevel(config) : undefined,
     );
     let result: WaiToolResult;
     const abortProgress = () => cleanupProgressReporter(progress);
@@ -595,7 +595,7 @@ export default async function (pi: ExtensionAPI) {
       review: Type.Optional(
         Type.String({
           description:
-            "Provide a description of what you just implemented. Be specific and technical: name the files/functions changed, how the change works (null handling, fallbacks, edge cases), and why — not just the intent. Vague descriptions get vaguer reviews. The secondary model examines the diff and returns a verdict with issues. Uses the configured default review level (set via /wai-model or pi-yoowai.reviewLevel).",
+            "Provide a description of what you just implemented. Be specific and technical: name the files/functions changed, how the change works (null handling, fallbacks, edge cases), and why — not just the intent. Vague descriptions get vaguer reviews. Prefer this generic review for normal changes: it uses the balanced med default or configured selection/risk routing and reports why that level was selected.",
         }),
       ),
       suggest: Type.Optional(

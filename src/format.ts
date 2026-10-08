@@ -41,8 +41,12 @@ function largeChangeHint(level: ReviewLevel | undefined): string {
 
 export function formatResultText(result: WaiToolResult): string {
   const recovery = getReviewRecovery(result);
+  const selection = result.action === "review" ? result.levelSelection : undefined;
+  const selectionText = selection
+    ? `Review selection: **${selection.level}** (${selection.source}) — ${selection.reason}`
+    : "";
   if (result.error)
-    return `wai error: ${result.error}${recovery ? `\n\nRecovery (${recovery.reason}): ${recovery.nextAction}` : ""}`;
+    return `wai error: ${result.error}${selectionText ? `\n\n${selectionText}` : ""}${recovery ? `\n\nRecovery (${recovery.reason}): ${recovery.nextAction}` : ""}`;
   if (result.skipped)
     return `## wai ${result.action} — skipped\n\n${result.skipReason ?? "Optional assessment disabled."}`;
 
@@ -112,6 +116,8 @@ export function formatResultText(result: WaiToolResult): string {
       lines.push(`- ${c}`);
     }
   }
+
+  if (selectionText) lines.push(selectionText, "");
 
   if (result.review) {
     const icon = result.review.verdict === "pass" ? "✓" : result.review.verdict === "blocked" ? "✗" : "⚠";
