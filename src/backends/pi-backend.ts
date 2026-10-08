@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,14 +34,21 @@ const SIGKILL_TIMEOUT_MS = 5000;
 const PI_PROCESS_TIMEOUT_MS = 300_000; // 5 minutes default timeout for child pi process
 const INHERITED_SESSION_MAX_ENTRIES = 10;
 
-let testPiSpawnResolver: (() => { command: string; prefixArgs: string[] }) | null = null;
+interface PiSpawnTarget {
+  command: string;
+  prefixArgs: string[];
+  /** Test targets can declare their version without executing an extra process. */
+  version?: string;
+}
+let testPiSpawnResolver: (() => PiSpawnTarget) | null = null;
+const cliVersions = new Map<string, Promise<string | undefined>>();
 
 /** Test hook: override the Pi binary used by the pi backend. */
-export function setPiSpawnResolver(resolver: (() => { command: string; prefixArgs: string[] }) | null): void {
+export function setPiSpawnResolver(resolver: (() => PiSpawnTarget) | null): void {
   testPiSpawnResolver = resolver;
 }
 
-function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
+function resolvePiSpawn(): PiSpawnTarget {
   if (testPiSpawnResolver) return testPiSpawnResolver();
   const isNode = /[\\/]node(?:\.exe)?$/i.test(process.execPath);
   const isBun = /[\\/]bun(?:\.exe)?$/i.test(process.execPath);
@@ -49,6 +56,37 @@ function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
     return { command: process.execPath, prefixArgs: [process.argv[1]] };
   }
   return { command: process.execPath, prefixArgs: [] };
+}
+
+/** Probe the executable actually launched, which may differ from Wai's peer package.
+ * --version exits before model/MCP setup. Cache once per executable/entry point. */
+export async function probePiCliVersion(target: PiSpawnTarget): Promise<string | undefined> {
+  const key = JSON.stringify([target.command, target.prefixArgs]);
+  let pending = cliVersions.get(key);
+  if (!pending) {
+    pending = new Promise((resolve) => {
+      execFile(
+        target.command,
+        [...target.prefixArgs, "--version"],
+        { timeout: 5000, maxBuffer: 4096, windowsHide: true, encoding: "utf8" },
+        (error, stdout) => resolve(error ? undefined : stdout.trim()),
+      );
+    });
+    cliVersions.set(key, pending);
+  }
+  return pending;
+}
+
+/** Read-only CLI evidence tools; never inherit the parent's editing/shell tools.
+ * --no-mcp was introduced in 1.0.4; unknown/older executables retain valid flags. */
+export function buildPiIsolationArgs(version?: string): string[] {
+  const args = ["--no-extensions", "--no-skills", "--no-prompt-templates", "--tools", "read,grep,find,ls"];
+  const match = /^(?:pi\s+)?(?:v)?(\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(version ?? "");
+  if (match) {
+    const [major, minor, patch] = match.slice(1).map(Number);
+    if (major > 1 || (major === 1 && (minor > 0 || patch >= 4))) args.push("--no-mcp");
+  }
+  return args;
 }
 
 function writeTempSessionJsonl(sessionJsonl: string): { dir: string; filePath: string } {
@@ -537,8 +575,11 @@ export async function callPiBackend(
     sessionJsonl = taskJsonl;
   }
 
+  const target = resolvePiSpawn();
+  const version = testPiSpawnResolver ? target.version : await probePiCliVersion(target);
+  signal?.throwIfAborted();
+  const { command, prefixArgs } = target;
   const tmp = writeTempSessionJsonl(sessionJsonl);
-  const { command, prefixArgs } = resolvePiSpawn();
 
   const args = [
     "--mode",
@@ -552,7 +593,7 @@ export async function callPiBackend(
     model,
     "--thinking",
     thinking ?? "off",
-    "--no-extensions",
+    ...buildPiIsolationArgs(version),
     "Respond to the user message above.",
   ];
 

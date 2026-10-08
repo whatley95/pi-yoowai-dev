@@ -19,7 +19,7 @@ import {
 } from "../prompts.js";
 import { getPastIssuesForFiles } from "../review-memory.js";
 import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
-import { calculateReviewBudget } from "../token-budget.js";
+import { calculateReviewBudget, tokenBudgetChars } from "../token-budget.js";
 import { deduplicateAddedSource } from "./review-chunks.js";
 import {
   getState,
@@ -273,7 +273,7 @@ export async function executeWaiJudge(
     modelConfig,
   );
 
-  const preReviewChars = baseBudget.availableInputTokens * 4;
+  const preReviewChars = tokenBudgetChars(baseBudget.availableInputTokens);
   if (preReviewChars <= 0) {
     preReviewOutput = "";
   } else if (preReviewOutput.length > preReviewChars) {

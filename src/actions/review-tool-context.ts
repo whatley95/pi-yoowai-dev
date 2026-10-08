@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { resolveProjectPath, normalizeReviewPath } from "../path-security.js";
-import { estimateTokens, type ReviewBudget } from "../token-budget.js";
+import { estimateTokens, tokenBudgetChars, type ReviewBudget } from "../token-budget.js";
 import type { FileContentEntry } from "../file-loader.js";
 import type { CallSecondaryModelOptions } from "../types.js";
 
@@ -33,7 +33,7 @@ export function resolveReviewToolContext(input: {
     Math.min(input.budget.availableInputTokens, input.budget.hardInputCap ?? Infinity) -
     input.evidenceTokens -
     TOOL_INSTRUCTION_TOKENS;
-  const maxToolContextChars = Math.max(0, Math.floor(Math.min(windowHeadroom, evidenceHeadroom) * 4));
+  const maxToolContextChars = tokenBudgetChars(Math.min(windowHeadroom, evidenceHeadroom));
   const readPageChars = Math.min(MAX_READ_PAGE_CHARS, Math.max(512, maxToolContextChars));
   const base = input.maxRequests ?? 5;
   let maxToolIterations = base;

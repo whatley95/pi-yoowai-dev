@@ -9,7 +9,7 @@ import { hasUiChanges } from "../design-ref.js";
 import { formatWriterDesignGuidance } from "../design-ref-defaults.js";
 import { getState, getEditTracker } from "../session-state.js";
 import { getPastIssuesForFiles } from "../review-memory.js";
-import { estimateTokens, truncateToTokenBudget } from "../token-budget.js";
+import { estimateTokens, tokenBudgetChars, truncateToTokenBudget } from "../token-budget.js";
 import {
   buildPlanReviewReminder,
   GIT_COMMIT_GUIDANCE,
@@ -228,7 +228,7 @@ function truncateBlock(block: string, maxTokens: number): string {
     const inner = notesMatch[1];
     // Reserve room for the truncation marker so the capped block stays within
     // budget; the marker itself must not push the block back over.
-    const maxInnerChars = Math.max(0, inner.length - overTokens * 4 - marker.length);
+    const maxInnerChars = Math.max(0, inner.length - tokenBudgetChars(overTokens) - marker.length);
     let cappedInner = inner;
     if (inner.length > maxInnerChars) {
       // The slice is UTF-16 based; strip a lone trailing high surrogate from

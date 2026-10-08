@@ -500,6 +500,23 @@ console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content
     assert.equal(content, "anthropic:claude-3-5-sonnet");
   });
 
+  it("passes the isolated read-only tool loadout to a modern Pi fallback without an extra model call", async () => {
+    const cwd = makeTempDir("wai-pi-isolation-");
+    tmpDirs.push(cwd);
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "pi" });
+    const script = join(cwd, "fake-pi-isolation.js");
+    writeFileSync(
+      script,
+      `console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:JSON.stringify(process.argv.slice(2))}],usage:{input:5,output:3,cost:0}}}));`,
+    );
+    setPiSpawnResolver(() => ({ command: process.execPath, prefixArgs: [script], version: "1.1.0" }));
+    const { content } = await callSecondaryModel("openai", "gpt-4o-mini", "system", "user", { cwd });
+    const args = JSON.parse(content) as string[];
+    assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls");
+    assert.ok(args.includes("--no-mcp") && args.includes("--no-skills") && args.includes("--no-prompt-templates"));
+    assert.equal(getSessionCost(cwd).calls, 1);
+  });
+
   it("adds response_format json_object for supported providers when structuredOutput is true", async () => {
     const cwd = makeTempDir("pi-yoowai-http-json-");
     tmpDirs.push(cwd);
@@ -849,7 +866,13 @@ function fakeSdkAssistantMessage(text: string, usage?: Partial<Usage>, stopReaso
       cacheRead: 0,
       cacheWrite: 0,
       totalTokens: inputTokens + outputTokens,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      cost: usage?.cost ?? {
+        input: (inputTokens * 3) / 1_000_000,
+        output: (outputTokens * 6) / 1_000_000,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: estimateCost("opencode-go", "qwen3.7-max", inputTokens, outputTokens),
+      },
     },
     stopReason,
     timestamp: Date.now(),

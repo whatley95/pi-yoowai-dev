@@ -683,6 +683,18 @@ export async function callSdkBackend(
 
     const message = await stream.result();
     if (message.usage) reportNativeUsage(message.usage);
+    // Pi 1.1 records monotonic per-response duration, separately from Wai's
+    // overlapping worker/context timings. Older messages can omit it.
+    if (cwd) {
+      logEvent(cwd, "debug", "SDK model response completed", {
+        provider,
+        model,
+        stopReason: message.stopReason,
+        ...(typeof message.durationMs === "number" && Number.isFinite(message.durationMs) && message.durationMs >= 0
+          ? { durationMs: message.durationMs }
+          : {}),
+      });
+    }
 
     if (message.stopReason === "error" || message.stopReason === "aborted") {
       const detail = message.errorMessage ? `: ${message.errorMessage}` : "";
@@ -703,7 +715,14 @@ export async function callSdkBackend(
     if (message.usage) {
       return {
         content,
-        usage: applyReportedUsage(provider, model, usage, message.usage.input, message.usage.output),
+        usage: applyReportedUsage(
+          provider,
+          model,
+          usage,
+          message.usage.input + (message.usage.cacheRead ?? 0) + (message.usage.cacheWrite ?? 0),
+          message.usage.output,
+          message.usage.cost?.total,
+        ),
         truncated,
       };
     }

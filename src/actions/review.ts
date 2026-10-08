@@ -20,7 +20,13 @@ import { runPreReviewCommands, formatPreReviewOutput } from "../pre-review.js";
 import { resolveEffectivePreReviewCommands, resolveEffectiveToolLoop } from "./context-shared.js";
 import { groupRelatedReviewFiles } from "./review-batching.js";
 import { splitReviewDiff } from "./review-chunks.js";
-import { calculateReviewBudget, estimateTokens, truncateToTokenBudget, type ReviewBudget } from "../token-budget.js";
+import {
+  calculateReviewBudget,
+  estimateTokens,
+  tokenBudgetChars,
+  truncateToTokenBudget,
+  type ReviewBudget,
+} from "../token-budget.js";
 import { getSessionCost, getReservedCost, formatCost } from "../cost-tracker.js";
 import { logEvent } from "../logger.js";
 import {
@@ -517,7 +523,7 @@ async function executeReview(
     signal?.throwIfAborted();
     checks = results.map(({ command, exitCode }) => ({ command, exitCode }));
     preReviewOutput = formatPreReviewOutput(results);
-    const preReviewChars = baseBudget.availableInputTokens * 4;
+    const preReviewChars = tokenBudgetChars(baseBudget.availableInputTokens);
     if (preReviewChars <= 0) {
       preReviewOutput = "";
     } else if (preReviewOutput.length > preReviewChars) {
@@ -801,7 +807,7 @@ async function executeReview(
         const fileBudget = items.length === 1 ? items[0].fileBudget : batchBudget(items);
         const parts = splitReviewDiff(
           items.map((p) => fileDiffs[p.file] ?? "").join("\n"),
-          reviewDiffAllowance(commonBatch(files, fileMemoryContext, fileBudget)) * 4,
+          tokenBudgetChars(reviewDiffAllowance(commonBatch(files, fileMemoryContext, fileBudget))),
         );
         return parts.map((diff, index) => ({
           files,

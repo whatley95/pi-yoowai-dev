@@ -7,7 +7,7 @@ import { runPreReviewCommands } from "./pre-review.js";
 import { isSafeRelativePath, resolveProjectPath } from "./path-security.js";
 import { listTrackedFiles } from "./conventions.js";
 import { mergeUsageCost } from "./actions/shared.js";
-import { estimateTokens } from "./token-budget.js";
+import { estimateTokens, tokenBudgetChars } from "./token-budget.js";
 import { emptyRecordedUsage } from "./cost-tracker.js";
 import {
   dispatchNativeReadTool,
@@ -704,7 +704,8 @@ export async function executeToolLoop(
       const cached = previous && previous.stamp === stamp ? previous : undefined;
       let reused = !!cached;
       const remainingChars =
-        Math.min(contextChars - toolContextChars, (inputLimit - estimateTokens(system + currentUser)) * 4) - 1200;
+        Math.min(contextChars - toolContextChars, tokenBudgetChars(inputLimit - estimateTokens(system + currentUser))) -
+        1200;
       if (!cached && remainingChars < 512)
         throw coverageError(
           "Context input allowance exhausted: required tool evidence cannot fit in the remaining review input budget.",

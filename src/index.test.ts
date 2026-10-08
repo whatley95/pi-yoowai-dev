@@ -539,19 +539,24 @@ describe("wai extension registration", () => {
       mockCtx(cwd),
     )) as { isError: boolean; structuredContent: { content: string; nextOffset: number; truncated: boolean } };
     assert.equal(first.isError, false);
-    assert.equal(first.structuredContent.content.length, 100);
-    assert.equal(first.structuredContent.nextOffset, 100);
+    assert.equal(first.structuredContent.content.length, 87);
+    assert.equal(first.structuredContent.nextOffset, 87);
     assert.equal(first.structuredContent.truncated, true);
     const next = (await execute(
       "design-next",
-      { topic: "wai-skill-design", doc: "references/motion.md", offset: 100, maxTokens: 25 },
+      {
+        topic: "wai-skill-design",
+        doc: "references/motion.md",
+        offset: first.structuredContent.nextOffset,
+        maxTokens: 25,
+      },
       undefined,
       undefined,
       mockCtx(cwd),
     )) as { isError: boolean; structuredContent: { content: string; offset: number; nextOffset: number } };
     assert.equal(next.isError, false);
-    assert.equal(next.structuredContent.offset, 100);
-    assert.equal(next.structuredContent.nextOffset, 200);
+    assert.equal(next.structuredContent.offset, 87);
+    assert.equal(next.structuredContent.nextOffset, 174);
     assert.notEqual(next.structuredContent.content, first.structuredContent.content);
     const invalid = (await execute(
       "design-invalid",

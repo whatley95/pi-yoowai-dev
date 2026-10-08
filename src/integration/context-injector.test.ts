@@ -14,6 +14,7 @@ import { setPlan, recordFileEdit, setPlanProgress } from "../session-state.js";
 import { recordIssues } from "../review-memory.js";
 import { recordLearnedFact } from "../wai-learn.js";
 import { saveConventions } from "../conventions.js";
+import { estimateTokens } from "../token-budget.js";
 
 type FakePi = {
   pi: ExtensionAPI;
@@ -410,7 +411,7 @@ describe("context-injector", () => {
     assert.ok(content.includes("Login refresh uses the shared lock"));
     assert.ok(!content.includes("Large conventions"));
     const block = content.slice(content.indexOf("<wai_context>"));
-    assert.ok(Math.ceil(block.length / 4) <= 800);
+    assert.ok(estimateTokens(block) <= 800);
   });
 
   it("shrinks optional knowledge under context pressure while retaining the current step, decisions and reminders", () => {
@@ -442,7 +443,7 @@ describe("context-injector", () => {
       assert.match(content, /WORKFLOW REMINDER/);
       assert.match(content, /\[decision\] Do not replace the shared refresh lock/);
       assert.match(content, /<\/wai_context>/);
-      assert.ok(Math.ceil(content.slice(content.indexOf("<wai_context>")).length / 4) <= 800);
+      assert.ok(estimateTokens(content.slice(content.indexOf("<wai_context>"))) <= 800);
       assert.equal(
         (content.match(/<project_knowledge>/g) ?? []).length,
         (content.match(/<\/project_knowledge>/g) ?? []).length,
@@ -512,7 +513,7 @@ describe("context-injector", () => {
     const content = (event.messages[0] as { content: string }).content;
     assert.match(content, /Retain current task/);
     assert.match(content, /Keep required checks/);
-    assert.ok(Math.ceil(content.slice(content.indexOf("<wai_context>")).length / 4) <= 400);
+    assert.ok(estimateTokens(content.slice(content.indexOf("<wai_context>"))) <= 400);
   });
 
   it("does nothing when autoInjectContext is false", () => {
@@ -766,7 +767,7 @@ describe("context-injector", () => {
     );
     // The injected block stays strictly within the token budget.
     const injected = content.slice(content.indexOf("<wai_context>"));
-    assert.ok(Math.ceil(injected.length / 4) <= 100, "injected context must respect contextInjectMaxTokens");
+    assert.ok(estimateTokens(injected) <= 100, "injected context must respect contextInjectMaxTokens");
   });
 
   it("never leaves a lone surrogate when advisor notes contain astral characters", () => {

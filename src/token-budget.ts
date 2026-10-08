@@ -9,15 +9,22 @@ export interface ReviewBudget {
   hardInputCap?: number;
 }
 
-// Rough estimate: ~4 chars per token for English/code.
+// Match Pi 1.1's conservative English/code estimate, including on older hosts.
+export const CHARS_PER_TOKEN = 3.5;
+
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+export function tokenBudgetChars(maxTokens: number): number {
+  return Math.max(0, Math.floor(Math.floor(maxTokens) * CHARS_PER_TOKEN));
 }
 
 export function truncateToTokenBudget(text: string, maxTokens: number): string {
   if (estimateTokens(text) <= maxTokens) return text;
-  const maxChars = maxTokens * 4;
-  return text.slice(0, maxChars) + "\n… (truncated to token budget)";
+  const maxChars = tokenBudgetChars(maxTokens);
+  const marker = "\n… (truncated to token budget)";
+  return (text.slice(0, Math.max(0, maxChars - marker.length)) + marker).slice(0, maxChars);
 }
 
 export function calculateReviewBudget(

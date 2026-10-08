@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { calculateReviewBudget, estimateTokens, truncateToTokenBudget } from "./token-budget.js";
+import { calculateReviewBudget, estimateTokens, tokenBudgetChars, truncateToTokenBudget } from "./token-budget.js";
+import { estimateTokens as estimateBackendTokens } from "./backends/shared.js";
 import type { YoowaiConfig } from "./types.js";
 
 describe("token budget", () => {
@@ -11,8 +12,17 @@ describe("token budget", () => {
   };
 
   it("estimates tokens from text length", () => {
-    assert.equal(estimateTokens("abcd"), 1);
-    assert.equal(estimateTokens("abcdefgh"), 2);
+    assert.equal(estimateTokens("abcd"), 2);
+    assert.equal(estimateTokens("abcdefgh"), 3);
+    assert.equal(estimateTokens("x".repeat(35000)), 10000);
+    assert.equal(estimateBackendTokens("x".repeat(35000)), 10000);
+  });
+
+  it("keeps character conversion and truncation, including its marker, within the token cap", () => {
+    for (const budget of [0, 1, 1.5, 2, 10, 21]) {
+      assert.ok(estimateTokens("x".repeat(tokenBudgetChars(budget))) <= budget);
+      assert.ok(estimateTokens(truncateToTokenBudget("x".repeat(1000), budget)) <= budget);
+    }
   });
 
   it("reserves output and safety margin", () => {

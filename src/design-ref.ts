@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { logEvent } from "./logger.js";
 import { resolveProjectPath } from "./path-security.js";
 import { getProjectConfigPath } from "./pi-paths.js";
-import { estimateTokens } from "./token-budget.js";
+import { estimateTokens, tokenBudgetChars } from "./token-budget.js";
 import { seedDefaultDesignRules } from "./design-ref-defaults.js";
 import { adaptDefaultDesignRule, DEFAULT_RULES_SOURCE } from "./design-ref-defaults.js";
 import { getPackagedSkillsRoot, isFlutterProject, isAndroidModuleFile } from "./skill-guidance.js";
@@ -180,7 +180,7 @@ export function formatDesignRulesForPrompt(cwd: string, maxTokens: number, files
       .join("\n");
     if (estimateTokens(text) <= maxTokens) return text;
     // Truncate on whole-line boundaries so the bullet list stays parseable.
-    const maxChars = maxTokens * 4;
+    const maxChars = tokenBudgetChars(maxTokens);
     const sliced = text.slice(0, maxChars);
     const lastNewline = sliced.lastIndexOf("\n");
     return lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced;
@@ -361,7 +361,7 @@ export function readDesignRefPage(topic: string, doc?: string, offset = 0, maxTo
   if (!canonicalFile.startsWith(canonicalRoot + sep))
     throw new Error("Design reference resolves outside the packaged root.");
   const text = readFileSync(resolved, "utf-8");
-  const content = text.slice(offset, offset + maxTokens * 4);
+  const content = text.slice(offset, offset + tokenBudgetChars(maxTokens));
   const nextOffset = offset + content.length < text.length ? offset + content.length : undefined;
   return {
     topic,
@@ -377,13 +377,13 @@ export function readDesignRefPage(topic: string, doc?: string, offset = 0, maxTo
 export function readDesignRefDoc(topic: string, doc?: string, maxTokens = 6000): string {
   let page = readDesignRefPage(topic, doc, 0, 6000);
   let content = page.content;
-  while (page.nextOffset !== undefined && (maxTokens <= 0 || content.length < maxTokens * 4)) {
+  while (page.nextOffset !== undefined && (maxTokens <= 0 || content.length < tokenBudgetChars(maxTokens))) {
     page = readDesignRefPage(topic, doc, page.nextOffset, 6000);
     content += page.content;
   }
-  if (maxTokens <= 0 || (content.length <= maxTokens * 4 && !page.truncated)) return content;
+  if (maxTokens <= 0 || (content.length <= tokenBudgetChars(maxTokens) && !page.truncated)) return content;
   const suffix = "\n\n… (truncated; continue with wai_design_ref offset:";
-  const budget = maxTokens * 4;
+  const budget = tokenBudgetChars(maxTokens);
   const markerReserve = suffix.length + String(content.length).length + 2;
   const end = Math.max(0, budget - markerReserve);
   return (content.slice(0, end) + suffix + end + ")").slice(0, budget);

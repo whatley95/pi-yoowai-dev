@@ -65,6 +65,39 @@ const result = (verdict: "pass" | "needs-work"): WaiToolResult => ({
   },
 });
 
+it("does not start review or judge after an aborted settle even before any boundary was observed", async () => {
+  for (const actionableBoundaries of [false, true]) {
+    let reviews = 0;
+    let judges = 0;
+    const f = fixture({
+      actionableBoundaries,
+      executeWaiReview: async () => {
+        reviews++;
+        return result("pass");
+      },
+      executeWaiJudge: async () => {
+        judges++;
+        return { action: "judge" };
+      },
+    });
+    try {
+      setPlan(f.cwd, { summary: "finished", todo: ["one"], acceptanceCriteria: [] });
+      getState(f.cwd).completedSteps = 1;
+      getState(f.cwd).editsSinceLastReview = 1;
+      await f.emit("agent_settled", { type: "agent_settled", aborted: true });
+      Object.defineProperty(f.ctx, "signal", { value: AbortSignal.abort() });
+      await f.emit("agent_settled", { type: "agent_settled", aborted: false });
+      assert.equal(reviews, 0);
+      assert.equal(judges, 0);
+      assert.equal(getState(f.cwd).editsSinceLastReview, 1);
+      assert.equal(f.entries.length, 0);
+      assert.equal(f.steers.length, 0);
+    } finally {
+      f.cleanup();
+    }
+  }
+});
+
 it("dispatches wai drafts through the latest Pi ExtensionRunner boundary API", async (t) => {
   if (!("emitBoundary" in ExtensionRunner.prototype)) {
     t.skip("Actionable boundaries require Pi 0.87+");

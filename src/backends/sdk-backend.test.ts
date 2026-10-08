@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -28,6 +28,7 @@ import {
 import { setAgentDirForTests, getAgentDir } from "../pi-paths.js";
 import { callSecondaryModel, setPiSpawnResolver } from "../secondary-model.js";
 import { resolveBackend, resolveSdkModelInfo, resolveBudgetModel } from "./backend-resolver.js";
+import { getSessionCost } from "../cost-tracker.js";
 
 // --- Local fakes (mirroring the helpers in secondary-model.test.ts) ---
 
@@ -152,6 +153,52 @@ function fakeSdkStream(message: AssistantMessage): AssistantMessageEventStream {
     },
   } as unknown as AssistantMessageEventStream;
 }
+
+it("retains SDK cost tiers, cached input, and response timing on registry and compat routes", async () => {
+  makeAgentDir();
+  for (const route of ["registry", "compat"] as const) {
+    const cwd = makeCwd();
+    const message = fakeSdkAssistantMessage("sdk priced response");
+    message.durationMs = 123.5;
+    message.usage = {
+      input: 1000,
+      output: 100,
+      cacheRead: 20000,
+      cacheWrite: 3000,
+      totalTokens: 24100,
+      cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 },
+    };
+    if (route === "registry") {
+      const fake = makeCapableRegistry({ model: fakeSdkModel("test-provider", "test-model"), streamSimple: message });
+      setSdkRegistryOverride(() => fake.registry);
+    } else {
+      setSdkRegistryOverride(null);
+      installCompatFakes({ compatModel: fakeSdkModel("test-provider", "test-model"), stream: fakeSdkStream(message) });
+    }
+    const response = await callSecondaryModel("test-provider", "test-model", "sys", "usr", { cwd });
+    assert.equal(response.usage.estimatedCostUsd, 10);
+    assert.equal(response.usage.estimatedInputTokens, 24000);
+    assert.equal(getSessionCost(cwd).costUsd, 10);
+    assert.equal(getSessionCost(cwd).calls, 1);
+    assert.match(readFileSync(join(cwd, ".pi", "yoowai", "wai.log"), "utf8"), /"durationMs":123.5/);
+    writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": { costBudgetUsd: 1 } }));
+    await assert.rejects(callSecondaryModel("test-provider", "test-model", "sys", "usr", { cwd }), /cost budget/);
+    assert.equal(getSessionCost(cwd).calls, 1, "reported spend must stop the next call before it streams");
+  }
+});
+
+it("preserves a zero SDK cost and does not invent duration for older host responses", async () => {
+  makeAgentDir();
+  const cwd = makeCwd();
+  installCompatFakes({
+    compatModel: fakeSdkModel("test-provider", "test-model"),
+    stream: fakeSdkStream(fakeSdkAssistantMessage("free response")),
+  });
+  setSdkRegistryOverride(null);
+  const response = await callSdkBackend("test-provider", "test-model", "sys", "usr", { cwd });
+  assert.equal(response.usage.estimatedCostUsd, 0);
+  assert.doesNotMatch(readFileSync(join(cwd, ".pi", "yoowai", "wai.log"), "utf8"), /durationMs/);
+});
 
 /** Deferred promise helper for deterministic concurrency tests. */
 function makeDeferred<T>() {

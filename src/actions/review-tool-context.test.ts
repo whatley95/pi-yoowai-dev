@@ -63,8 +63,8 @@ describe("review context capacity", () => {
 
   it("respects input headroom and cannot inspect outside-project junctions", () => {
     const constrained = resolveReviewToolContext({ ...base, budget: { ...budget, hardInputCap: 3600 } });
-    assert.equal(constrained.maxToolContextChars, 1600);
-    assert.equal(constrained.readPageChars, 1600);
+    assert.equal(constrained.maxToolContextChars, 1400);
+    assert.equal(constrained.readPageChars, 1400);
     assert.equal(
       resolveReviewToolContext({ ...base, budget: { ...budget, hardInputCap: 1000 } }).maxToolContextChars,
       0,

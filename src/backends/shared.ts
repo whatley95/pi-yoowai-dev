@@ -1,5 +1,7 @@
 import type { UsageCost } from "../types.js";
 import type { AssistantMessageLike, ContentPart, PiProcessResult } from "../types/secondary-model.js";
+import { estimateTokens } from "../token-budget.js";
+export { estimateTokens } from "../token-budget.js";
 
 /** Normalize backend-specific stop reasons into a single "was the output truncated?"
  *  signal. Covers the Anthropic/OpenAI SDK ("length"), Anthropic HTTP
@@ -92,11 +94,6 @@ export function estimateCost(provider: string, model: string, inputTokens: numbe
   return (inputTokens * rate.input + outputTokens * rate.output) / 1_000_000;
 }
 
-export function estimateTokens(text: string): number {
-  // Rough estimate: ~4 chars per token for English/code
-  return Math.ceil(text.length / 4);
-}
-
 export function buildUsage(
   provider: string,
   model: string,
@@ -121,16 +118,24 @@ export function applyReportedUsage(
   usage: UsageCost,
   inputTokens: unknown,
   outputTokens: unknown,
+  reportedCost?: unknown,
 ): UsageCost {
   const inTokens =
-    typeof inputTokens === "number" && Number.isFinite(inputTokens) ? inputTokens : usage.estimatedInputTokens;
+    typeof inputTokens === "number" && Number.isFinite(inputTokens) && inputTokens >= 0
+      ? inputTokens
+      : usage.estimatedInputTokens;
   const outTokens =
-    typeof outputTokens === "number" && Number.isFinite(outputTokens) ? outputTokens : usage.estimatedOutputTokens;
+    typeof outputTokens === "number" && Number.isFinite(outputTokens) && outputTokens >= 0
+      ? outputTokens
+      : usage.estimatedOutputTokens;
   return {
     ...usage,
     estimatedInputTokens: inTokens,
     estimatedOutputTokens: outTokens,
-    estimatedCostUsd: estimateCost(provider, model, inTokens, outTokens),
+    estimatedCostUsd:
+      typeof reportedCost === "number" && Number.isFinite(reportedCost) && reportedCost >= 0
+        ? reportedCost
+        : estimateCost(provider, model, inTokens, outTokens),
   };
 }
 

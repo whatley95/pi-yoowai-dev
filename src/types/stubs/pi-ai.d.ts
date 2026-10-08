@@ -107,6 +107,7 @@ declare module "@earendil-works/pi-ai" {
   }
 
   export interface AssistantMessage {
+    durationMs?: number;
     role: "assistant";
     content: (TextContent | ThinkingContent | ToolCall)[];
     api: Api;

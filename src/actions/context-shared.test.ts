@@ -96,7 +96,7 @@ describe("prepareActionDiff (fail-closed, never truncates)", () => {
 
   it("fails closed with guidance when the diff exceeds the budget", () => {
     const result = prepareActionDiff("security", {
-      diff: "a".repeat(40_000), // ~10k tokens
+      diff: "a".repeat(40_000), // over 11k tokens
       availableInputTokens: 5000,
       fileTokens: 0,
     });
@@ -108,13 +108,13 @@ describe("prepareActionDiff (fail-closed, never truncates)", () => {
 
   it("deducts codemap and designRef after files (yields to them)", () => {
     // 4000 available − 1000 system − 1000 codemap − 500 designRef = 1500 tokens
-    // left for the diff (~6000 chars). A 5000-char diff fits, 7000 does not.
+    // left for the diff (5250 chars). A 5000-char diff fits, 7000 does not.
     const fits = prepareActionDiff("judge", {
       diff: "a".repeat(5000),
       availableInputTokens: 4000,
       fileTokens: 0,
-      codemap: "b".repeat(4000),
-      designRefText: "c".repeat(2000),
+      codemap: "b".repeat(3500),
+      designRefText: "c".repeat(1750),
     });
     assert.ok(fits.ok, "diff under remaining budget must pass");
 
@@ -122,8 +122,8 @@ describe("prepareActionDiff (fail-closed, never truncates)", () => {
       diff: "a".repeat(7000),
       availableInputTokens: 4000,
       fileTokens: 0,
-      codemap: "b".repeat(4000),
-      designRefText: "c".repeat(2000),
+      codemap: "b".repeat(3500),
+      designRefText: "c".repeat(1750),
     });
     assert.ok(!over.ok);
     assert.match(over.error, /judge/);
@@ -132,13 +132,13 @@ describe("prepareActionDiff (fail-closed, never truncates)", () => {
   it("honors the overridable system-prompt estimate", () => {
     // Default 1000 leaves 900 tokens; a larger estimate (2000) leaves nothing.
     const tight = prepareActionDiff("test", {
-      diff: "a".repeat(3600), // 900 tokens
+      diff: "a".repeat(3150), // 900 tokens
       availableInputTokens: 2000,
       fileTokens: 0,
       systemPromptEstimate: 1100,
     });
     assert.ok(tight.ok);
-    assert.ok(!tight.ok ? true : tight.diff.length === 3600);
+    assert.ok(!tight.ok ? true : tight.diff.length === 3150);
 
     const none = prepareActionDiff("test", {
       diff: "a".repeat(100),

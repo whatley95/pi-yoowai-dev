@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getProjectConfigPath } from "./pi-paths.js";
 import { logEvent } from "./logger.js";
-import { estimateTokens } from "./token-budget.js";
+import { estimateTokens, tokenBudgetChars } from "./token-budget.js";
 import { formatEvaluationGuidance } from "./skill-guidance.js";
 
 /** Actions that support per-action instruction files (`.pi/yoowai/instructions/<action>.md`).
@@ -100,7 +100,7 @@ export function capActionInstructions(cwd: string, action: string, maxTokens: nu
   }
   if (!text) return "";
   if (estimateTokens(text) <= maxTokens) return text;
-  const maxChars = maxTokens * 4;
+  const maxChars = tokenBudgetChars(maxTokens);
   const sliced = text.slice(0, maxChars);
   const lastNewline = sliced.lastIndexOf("\n");
   return lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced;

@@ -458,8 +458,14 @@ export function registerLifecycleHandlers(
     }
   });
 
-  pi.on("agent_settled", async (_event: AgentSettledEvent, ctx) => {
+  pi.on("agent_settled", async (event: AgentSettledEvent, ctx) => {
     try {
+      // The run's signal can already be gone at settle. Pi 1.1 explicitly
+      // distinguishes Escape/cancellation; never start new work in that case.
+      if ((event as AgentSettledEvent & { aborted?: boolean }).aborted === true || ctx.signal?.aborted) {
+        updateWaiStatus(ctx);
+        return;
+      }
       if (actionable && observedBoundaries.has(ctx.cwd)) {
         updateWaiStatus(ctx);
         return;

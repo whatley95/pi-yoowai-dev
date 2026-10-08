@@ -265,7 +265,7 @@ async function runSingleAttempt(
               provider,
               model,
               thinking,
-              promptTokensEstimate: Math.ceil((sys.length + user.length) / 4),
+              promptTokensEstimate: estimateTokens(sys + user),
               backend: "sdk->pi",
             });
           }
@@ -278,7 +278,7 @@ async function runSingleAttempt(
           provider,
           model,
           thinking,
-          promptTokensEstimate: Math.ceil((sys.length + user.length) / 4),
+          promptTokensEstimate: estimateTokens(sys + user),
           backend,
         });
       }

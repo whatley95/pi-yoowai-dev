@@ -149,8 +149,8 @@ describe("capActionInstructions", () => {
     tmpDirs.push(cwd);
     const lines = ["line one", "line two", "line three", "line four"].join("\n");
     writeInstruction(cwd, "plan", lines);
-    const capped = capActionInstructions(cwd, "plan", 2);
-    // 2 tokens * 4 chars per token = 8 chars — must stop at a newline, so
+    const capped = capActionInstructions(cwd, "plan", 3);
+    // 3 tokens * 3.5 chars per token allows the first complete line only, so
     // only "line one" (plus nothing partial from "line two") may remain.
     assert.ok(capped.length > 0);
     assert.ok(!capped.includes("line three"));
