@@ -17,7 +17,10 @@ verbatim into every project. Switching should remain immediate; replay controls 
 optional when there is motion worth replaying.
 
 Verify each variant's actual behavior and console/runtime output. Show where to view
-it and explain its tradeoff. When a choice is needed, wait for that choice; if the user
-already selected a direction, implement it directly. Integrate the selected variant
-using project conventions. Remove only prototype files created for this task, and
-retain them if the user requested that.
+it and explain its tradeoff. For a comparison-only request, deliver the prototypes
+and tradeoffs; choosing a favorite does not itself authorize production integration.
+When implementation is already within the task's scope, integrate the selected variant
+using project conventions. Wait for a choice only when one is still needed; continue
+directly when the user has already selected a direction and authorized implementation.
+After integration, remove only prototype files created for this task, and retain them
+if the user requested that.

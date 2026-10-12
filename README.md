@@ -537,7 +537,7 @@ Package discovery uses native pi.skills; no resources_discover hook re-adds filt
 | wai-testing | Meaningful test selection and truthful execution evidence |
 | wai-safe-refactor | Preserve contracts while changing responsibilities/callers |
 | wai-api-contracts | Producer/consumer compatibility, data/auth boundaries and migrations |
-| wai-delivery | Wai plans, stale-plan diagnosis, review recovery, Git/SVN preparation |
+| wai-delivery | Preserve task goals, resume interrupted work, Wai plans, review recovery, Git/SVN preparation |
 | wai-flutter | Confirmed Flutter widget/navigation/lifecycle work |
 | wai-kotlin | Kotlin/Android apps, Compose or XML UI, coroutine/Flow lifecycle, native Flutter integrations, and mobile tests |
 | wai-spring | Confirmed Java/Spring service/persistence work |
@@ -547,11 +547,15 @@ Package discovery uses native pi.skills; no resources_discover hook re-adds filt
 
 Force a skill with /skill:wai-skill-design (or another name). Use Pi package resource filters or pi config to control activation. If loading src/index.ts directly instead of the package, supply the skills through Pi's additional skill paths, or use the optional setup copy; the extension does not bypass disabled skill filters.
 
+wai-delivery keeps the requested outcome, constraints, and success conditions in the existing Wai plan. It guides the main agent through follow-up changes, recovery after interruptions or compaction, useful next actions, explicit blockers, and evidence before claiming completion. This is skill guidance; it adds no separate goal tracker or automatic continuation. Use /skill:wai-delivery to select it explicitly for a substantial task.
+
 wai-skill-design loads focused references for foundations, motion, recipes, fluid interfaces, review, audits/opportunities, prototypes, library choice, and vocabulary. They adapt all nine original topics, preserving their source material and MIT attribution in design-refs/ and the adapted skill's LICENSE. Generic greetings, fixed report formats, forced subagents/worktrees, and extra approval steps are not part of the adapted workflow. The original names still work through wai_design_ref as source references.
 
 The secondary model does not inherit skill bodies read by the main agent. Review/judge/test/security select short evaluation criteria shared with relevant development skill references, within instructionsMaxTokens (up to 400 tokens of the existing allowance). Project instructions consume the budget first and explicit requirements take precedence. No added provider call or source-coverage bypass is involved. The exact selected text participates in existing prompt/cache keys.
 
 Web/Node selection follows the nearest package in mixed repositories. Confirmed frontend frameworks and browser file types receive web criteria; backend modules and server/tooling paths receive Node criteria where applicable. Security actions and credential/authorization paths receive security criteria. Skills load detailed references only when relevant: browser/integration tests, CI/release evidence, architecture, profiling, and data migrations. These references add no automatic deployment or approval requirement.
+
+Flutter and Spring evaluation criteria use the changed file's nearest pubspec or Maven/Gradle build, including nested packages and modules. A plain Dart/Java module stops inheritance from a framework-specific parent, and paths outside the project cannot supply stack evidence. Both `migration/` and `migrations/` paths select contract criteria for review and judgment. The design prototype workflow keeps comparison-only requests scoped to prototypes; integrating a selected variant requires implementation to be within the existing task scope.
 
 Flutter UI detection requires Flutter SDK evidence plus UI paths; Dart services do not trigger web design rules. Android criteria require an Android plugin or manifest in the containing module; an ordinary Kotlin/JVM Gradle module does not trigger Android guidance. Likely Android UI paths also receive platform-neutral design rules. Both mobile platforms keep custom project rules and omit web-only defaults. Source-owned legacy default text is adapted in prompts without rewriting the user's stored rules.
 

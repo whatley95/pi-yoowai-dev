@@ -32,8 +32,38 @@ function readManifest(cwd: string, file: string): string {
     return "";
   }
 }
+const FLUTTER_SDK_PATTERN = /^\s*flutter:\s*(?:#.*)?\r?\n\s+sdk:\s*flutter\s*(?:#.*)?$/m;
 export function isFlutterProject(cwd: string): boolean {
-  return /^\s*flutter:\s*(?:#.*)?\r?\n\s+sdk:\s*flutter\s*(?:#.*)?$/m.test(readManifest(cwd, "pubspec.yaml"));
+  return FLUTTER_SDK_PATTERN.test(readManifest(cwd, "pubspec.yaml"));
+}
+
+/** A declared package/module boundary owns its criteria, even when its metadata
+ * is empty or unreadable. Cache only within one selection call. */
+function readNearestManifest(
+  cwd: string,
+  file: string,
+  names: readonly string[],
+  manifests: Map<string, string>,
+): string {
+  const absolute = resolveProjectPath(cwd, file);
+  if (!absolute) return "";
+  const root = resolve(cwd);
+  const visited: string[] = [];
+  const remember = (text: string): string => {
+    for (const dir of visited) manifests.set(dir, text);
+    return text;
+  };
+  for (let dir = dirname(absolute), depth = 0; depth < 24; dir = dirname(dir), depth++) {
+    const known = manifests.get(dir);
+    if (known !== undefined) return remember(known);
+    visited.push(dir);
+    const candidates = names.map((name) => resolveProjectPath(cwd, join(relative(root, dir), name)));
+    if (candidates.some((path) => path === null)) return remember("");
+    const present = candidates.filter((path): path is string => path !== null && existsSync(path));
+    if (present.length) return remember(present.map((path) => readManifest(cwd, relative(root, path))).join("\n"));
+    if (dir === root) return remember("");
+  }
+  return "";
 }
 
 /** Nearest package owns stack selection in mixed repositories. Build tools
@@ -139,19 +169,31 @@ export function selectEvaluationSkills(cwd: string, action: string, files: strin
   if (
     action !== "test" &&
     paths.some((file) =>
-      /(?:^|[/._-])(?:api|auth(?:entication|orization)?|routes?|controllers?|dto|schemas?|migration)(?:[/._-]|$)/i.test(
+      /(?:^|[/._-])(?:api|auth(?:entication|orization)?|routes?|controllers?|dto|schemas?|migrations?)(?:[/._-]|$)/i.test(
         file,
       ),
     )
   )
     selected.push("wai-api-contracts");
-  if (paths.some((file) => /\.dart$/i.test(file)) && isFlutterProject(cwd)) selected.push("wai-flutter");
+  const flutterManifests = new Map<string, string>();
+  if (
+    paths.some(
+      (file) =>
+        /\.dart$/i.test(file) &&
+        FLUTTER_SDK_PATTERN.test(readNearestManifest(cwd, file, ["pubspec.yaml"], flutterManifests)),
+    )
+  )
+    selected.push("wai-flutter");
   const androidModules = new Map<string, boolean>();
   if (paths.some((file) => isAndroidModuleFile(cwd, file, androidModules))) selected.push("wai-kotlin");
+  const springManifests = new Map<string, string>();
   if (
-    paths.some((file) => /\.java$/i.test(file)) &&
-    ["pom.xml", "build.gradle", "build.gradle.kts"].some((file) =>
-      /org\.springframework|spring-boot/.test(readManifest(cwd, file)),
+    paths.some(
+      (file) =>
+        /\.java$/i.test(file) &&
+        /org\.springframework|spring-boot/.test(
+          readNearestManifest(cwd, file, ["pom.xml", "build.gradle", "build.gradle.kts"], springManifests),
+        ),
     )
   )
     selected.push("wai-spring");

@@ -70,6 +70,78 @@ describe("selected development guidance", () => {
     assert.ok(text.includes("wai-security"));
     assert.ok(estimateTokens(text) <= 800);
   });
+  it("includes contract criteria for singular and plural migration paths", () => {
+    const cwd = temp();
+    for (const action of ["review", "judge"]) {
+      for (const file of ["migration/001.sql", "db/migrations/001.sql", "db\\migrations\\001.sql"]) {
+        const text = capActionInstructions(cwd, action, 800, [file]);
+        assert.ok(text.includes("wai-api-contracts"), action + " " + file);
+        assert.ok(estimateTokens(text) <= 800);
+      }
+    }
+    assert.ok(!selectEvaluationSkills(cwd, "review", ["src/migrationHelper.ts"]).includes("wai-api-contracts"));
+  });
+  it("uses the containing Flutter package without inheriting across a plain Dart package", () => {
+    const cwd = temp();
+    mkdirSync(join(cwd, "apps", "mobile"), { recursive: true });
+    mkdirSync(join(cwd, "packages", "shared"), { recursive: true });
+    const flutter = "dependencies:\n  flutter:\n    sdk: flutter\n";
+    writeFileSync(join(cwd, "apps", "mobile", "pubspec.yaml"), flutter);
+    writeFileSync(join(cwd, "packages", "shared", "pubspec.yaml"), "name: shared\n");
+    const mobile = "apps\\mobile\\lib\\widgets\\status.dart";
+    const shared = "packages/shared/lib/format.dart";
+    const text = capActionInstructions(cwd, "review", 800, [mobile]);
+    assert.ok(text.includes("wai-flutter"));
+    assert.ok(estimateTokens(text) <= 800);
+    writeFileSync(join(cwd, "pubspec.yaml"), flutter);
+    assert.ok(!selectEvaluationSkills(cwd, "review", [shared]).includes("wai-flutter"));
+    assert.ok(selectEvaluationSkills(cwd, "review", [shared, mobile]).includes("wai-flutter"));
+    writeFileSync(join(cwd, "apps", "mobile", "pubspec.yaml"), "name: ordinary_dart\n");
+    assert.ok(!selectEvaluationSkills(cwd, "review", [mobile]).includes("wai-flutter"));
+  });
+  it("uses the containing Spring build without inheriting across a plain Java module", () => {
+    for (const manifest of ["pom.xml", "build.gradle", "build.gradle.kts"]) {
+      const cwd = temp();
+      mkdirSync(join(cwd, "services", "orders"), { recursive: true });
+      mkdirSync(join(cwd, "modules", "plain"), { recursive: true });
+      const spring =
+        manifest === "pom.xml"
+          ? "<project><dependencies><dependency><groupId>org.springframework.boot</groupId></dependency></dependencies></project>"
+          : 'plugins { id("org.springframework.boot") }';
+      writeFileSync(join(cwd, "services", "orders", manifest), spring);
+      writeFileSync(
+        join(cwd, "modules", "plain", manifest),
+        manifest === "pom.xml" ? "<project />" : "plugins { java }",
+      );
+      const service = "services\\orders\\src\\main\\java\\Orders.java";
+      const plain = "modules/plain/src/main/java/Utility.java";
+      const text = capActionInstructions(cwd, "review", 800, [service]);
+      assert.ok(text.includes("wai-spring"), manifest);
+      assert.ok(estimateTokens(text) <= 800);
+      writeFileSync(join(cwd, manifest), spring);
+      assert.ok(!selectEvaluationSkills(cwd, "review", [plain]).includes("wai-spring"), manifest);
+      assert.ok(selectEvaluationSkills(cwd, "review", [plain, service]).includes("wai-spring"), manifest);
+      writeFileSync(join(cwd, "services", "orders", manifest), "");
+      assert.ok(!selectEvaluationSkills(cwd, "review", [service]).includes("wai-spring"), manifest);
+    }
+  });
+  it("does not apply Flutter or Spring criteria to files outside the project", () => {
+    const cwd = temp(),
+      outside = temp();
+    writeFileSync(join(cwd, "pubspec.yaml"), "dependencies:\n  flutter:\n    sdk: flutter\n");
+    writeFileSync(join(cwd, "pom.xml"), "<dependency>org.springframework.boot</dependency>");
+    writeFileSync(join(outside, "pubspec.yaml"), "dependencies:\n  flutter:\n    sdk: flutter\n");
+    writeFileSync(join(outside, "pom.xml"), "<dependency>org.springframework.boot</dependency>");
+    symlinkSync(outside, join(cwd, "external"), process.platform === "win32" ? "junction" : "dir");
+    const selected = selectEvaluationSkills(cwd, "review", [
+      "external/lib/widget.dart",
+      "../outside/widget.dart",
+      "external/src/Service.java",
+      "../outside/Service.java",
+    ]);
+    assert.ok(!selected.includes("wai-flutter"));
+    assert.ok(!selected.includes("wai-spring"));
+  });
   it("does not use malformed or external package metadata as stack evidence", () => {
     const cwd = temp(),
       outside = temp();
