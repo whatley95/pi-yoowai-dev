@@ -1,11 +1,13 @@
-import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** The actionable settle boundary was introduced in Pi 0.87. */
 export function getPiHostVersion(): string | undefined {
   try {
-    let directory = dirname(createRequire(import.meta.url).resolve("@earendil-works/pi-coding-agent"));
+    // Pi exports its entry point under the ESM import condition. CommonJS
+    // require.resolve can reject that export and silently disable host features.
+    let directory = dirname(fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent")));
     for (;;) {
       try {
         const metadata = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
