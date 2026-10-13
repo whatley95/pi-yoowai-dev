@@ -159,10 +159,10 @@ export interface RecordFactOptions {
   source?: string;
 }
 
-export function recordLearnedFact(cwd: string, fact: string, options: RecordFactOptions = {}): LearnedFact {
-  const store = loadLearned(cwd);
+function newLearnedFact(fact: string, options: RecordFactOptions): LearnedFact {
+  if (!fact.trim()) throw new Error("A learned fact must contain non-whitespace text.");
   const now = new Date().toISOString();
-  const entry: LearnedFact = {
+  return {
     fact: fact.trim(),
     category: options.category?.trim() || undefined,
     // Write-time validation: only fact/decision are persisted (a stray value
@@ -174,10 +174,27 @@ export function recordLearnedFact(cwd: string, fact: string, options: RecordFact
     // Stable unique per-entry id (duplicate facts recorded in the same
     // millisecond must stay distinguishable for renewal/reaffirmation).
     id: `${now}-${randomUUID()}`,
-    // A fresh record is fresh by construction: its verification stamp starts
-    // at creation (entries count as verified once at write time).
+    // Creation starts the freshness window; it does not prove the claim.
     lastVerifiedAt: now,
   };
+}
+
+/** Exact content/metadata identity only; never merge semantically similar claims. */
+function sameLearnedFact(a: LearnedFact, b: LearnedFact): boolean {
+  return (
+    a.fact.trim() === b.fact.trim() &&
+    (a.kind ?? "fact") === (b.kind ?? "fact") &&
+    (a.category?.trim() || undefined) === b.category &&
+    (a.source?.trim() || undefined) === b.source
+  );
+}
+
+export function recordLearnedFact(cwd: string, fact: string, options: RecordFactOptions = {}): LearnedFact {
+  const store = loadLearned(cwd);
+  const entry = newLearnedFact(fact, options);
+  const existing = store.facts.find((candidate) => sameLearnedFact(candidate, entry));
+  // Repeated capture must not refresh an old lesson or evict other entries.
+  if (existing) return existing;
   store.facts.push(entry);
   if (store.facts.length > MAX_FACTS) {
     store.facts = store.facts.slice(-MAX_FACTS);
@@ -185,6 +202,48 @@ export function recordLearnedFact(cwd: string, fact: string, options: RecordFact
   if (!saveLearned(cwd, store))
     throw new Error("The learned fact could not be written to disk. See wai logs for details.");
   return entry;
+}
+
+function learnedFactIndex(store: LearnedStore, id: string): number {
+  const matches = store.facts.flatMap((fact, index) => (fact.id === id.trim() ? [index] : []));
+  if (matches.length !== 1) {
+    throw new Error(matches.length ? "Ambiguous learned fact ID." : "No learned fact matches that ID.");
+  }
+  return matches[0];
+}
+
+/** Replace one inspected entry. New identity prevents in-flight verification
+ * of the old claim from renewing the replacement. Omitted metadata is retained. */
+export function replaceLearnedFact(
+  cwd: string,
+  id: string,
+  fact: string,
+  options: RecordFactOptions = {},
+): LearnedFact {
+  const store = loadLearned(cwd);
+  const index = learnedFactIndex(store, id);
+  const previous = store.facts[index];
+  const entry = newLearnedFact(fact, {
+    category: options.category ?? previous.category,
+    source: options.source ?? previous.source,
+    kind: options.kind ?? previous.kind,
+  });
+  if (sameLearnedFact(previous, entry)) return previous;
+  if (store.facts.some((candidate, i) => i !== index && sameLearnedFact(candidate, entry))) {
+    throw new Error("That replacement is already stored. Revoke the obsolete entry by ID instead.");
+  }
+  store.facts[index] = entry;
+  if (!saveLearned(cwd, store)) throw new Error("The replacement could not be written to disk. See wai logs.");
+  return entry;
+}
+
+/** Remove exactly one inspected entry from future retrieval and verification. */
+export function revokeLearnedFact(cwd: string, id: string): LearnedFact {
+  const store = loadLearned(cwd);
+  const index = learnedFactIndex(store, id);
+  const [removed] = store.facts.splice(index, 1);
+  if (!saveLearned(cwd, store)) throw new Error("The revocation could not be written to disk. See wai logs.");
+  return removed;
 }
 
 export function loadLearnedFacts(cwd: string): LearnedFact[] {
@@ -355,11 +414,12 @@ export function formatLearnedFactsWithFreshness(facts: LearnedFact[], now: Date 
     const category = f.category ? ` [${f.category}]` : "";
     const source = f.source ? ` (source: ${f.source})` : "";
     const kind = f.kind === "decision" ? " [decision]" : "";
+    const identity = f.id ? ` [id: ${f.id}]` : "";
     if (freshness.stale) {
       const since = freshness.staleSince ? ` (since ${freshness.staleSince.slice(0, 10)})` : "";
-      lines.push(`- STALE${kind}${category} ${f.fact}${source} — verify, update, or revoke${since}`);
+      lines.push(`- STALE${kind}${category} ${f.fact}${source} — verify, update, or revoke${since}${identity}`);
     } else {
-      lines.push(`-${kind}${category} ${f.fact}${source}`);
+      lines.push(`-${kind}${category} ${f.fact}${source}${identity}`);
     }
   }
   return lines.join("\n");

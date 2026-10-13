@@ -30,6 +30,8 @@ const WAI_SKILLS = [
   "wai-safe-refactor",
   "wai-api-contracts",
   "wai-delivery",
+  "wai-dependency-upgrade",
+  "wai-learning",
   "wai-flutter",
   "wai-kotlin",
   "wai-spring",

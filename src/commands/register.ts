@@ -71,6 +71,8 @@ import { loadConventions, clearConventions } from "../conventions.js";
 import { logEvent, readRecentLogs, clearLogs } from "../logger.js";
 import {
   recordLearnedFact,
+  replaceLearnedFact,
+  revokeLearnedFact,
   clearLearnedFacts,
   verifyLearnedFacts,
   verifyLearnedFactsDeep,
@@ -1887,6 +1889,22 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       return;
     }
 
+    if (parsed.kind === "replace" || parsed.kind === "revoke") {
+      try {
+        const entry =
+          parsed.kind === "replace"
+            ? replaceLearnedFact(ctx.cwd, parsed.entryId!, parsed.fact!, { category: parsed.category })
+            : revokeLearnedFact(ctx.cwd, parsed.entryId!);
+        ctx.ui.notify(
+          `${parsed.kind === "replace" ? "Replacement stored" : "Revoked"}: ${entry.fact} [id: ${entry.id}]`,
+          "info",
+        );
+      } catch (err) {
+        ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+      }
+      return;
+    }
+
     if (parsed.kind === "stale") {
       const staleFacts = listStaleFacts(ctx.cwd, parsed.staleQuery);
       const text =
@@ -1953,16 +1971,16 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     }
 
     try {
-      recordLearnedFact(ctx.cwd, parsed.fact!, { category: parsed.category });
+      const entry = recordLearnedFact(ctx.cwd, parsed.fact!, { category: parsed.category });
+      ctx.ui.notify(`Fact stored [id: ${entry.id}].`, "info");
     } catch (err) {
       ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
       return;
     }
-    ctx.ui.notify(`Recorded project fact${parsed.category ? ` [${parsed.category}]` : ""}.`, "info");
   };
   pi.registerCommand("wai-learn", {
     description:
-      "Record or verify project facts. Usage: /wai-learn <fact> [--category <cat>] | /wai-learn --verify [--query <keyword>] [--deep] | /wai-learn --stale [--query <keyword>] | /wai-learn --reaffirm <fact>",
+      "Manage project facts. Usage: /wai-learn <fact> [--category <cat>] | --verify [--query <keyword>] [--deep] | --stale [--query <keyword>] | --reaffirm <fact> | --replace <id> <fact> [--category <cat>] | --revoke <id>",
     handler: learnHandler,
   });
 

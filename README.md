@@ -18,7 +18,7 @@ npx pi-yoowai@latest setup --preset=openai
 
 Then make sure credentials for the chosen provider are available (`~/.pi/agent/auth.json`, an environment variable such as `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`, or Pi's `/login`), restart Pi, and run `/wai-test` to verify connectivity. From a local clone, `npm run setup` runs the same installer (exposed as the `pi-yoowai` bin entry).
 
-Pi loads the ten Wai-owned skills directly from the package manifest: design, debugging, testing, refactoring, API contracts, delivery, Flutter, Kotlin/Android, Spring, and Node. Full guidance is read only when relevant. The installer offers an optional copy for legacy/direct-file loading; existing skill directories are preserved, and /wai-status reports potential overrides and older design copies.
+Pi loads fourteen Wai-owned skills directly from the package manifest: design, debugging, testing, refactoring, API contracts, delivery, dependency upgrades, learning, Flutter, Kotlin/Android, Spring, Node, web, and security. Full guidance is read only when relevant. The installer offers an optional copy for legacy/direct-file loading; existing skill directories are preserved, and /wai-status reports potential overrides and older design copies.
 
 ## Install
 
@@ -470,7 +470,7 @@ Explain a code snippet, error message, diff, or file with the secondary model.
 
 ### `wai_learn` tool
 
-Record a persistent project fact that wai will remember across sessions.
+Record and maintain persistent project facts that wai can reuse across sessions.
 
 | Call                                                                          | What it does                                                                                                                                                                                                                                                                                     |
 | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -487,7 +487,16 @@ Record a persistent project fact that wai will remember across sessions.
 | `wai_scaffold({ targets: ["skill", "review", "security", "test"] })`          | **PREVIEW** the four guidance files (no writes) — deterministic; fills `{{stack}}`, `{{language}}`, `{{testCommand}}`, `{{analyzeCommand}}` from conventions/manifests; recognized keys without evidence render `<FILL ME: key — evidence: ...>`; only unknown keys stay raw `{{key}}` (counted) |
 | `wai_scaffold({ targets: ["skill", "review"], apply: true })`                 | **Apply**: exclusive-create under `.pi/skills/...` and `.pi/yoowai/instructions/...` (existing files never overwritten)                                                                                                                                                                          |
 
-Recorded facts appear in `wai_index({ topic: "learned" })`.
+Recorded facts and their entry IDs appear in `wai_index({ topic: "learned" })` (or `/wai-index learned`). Inspect the entry before changing it:
+
+| Call | What it does |
+| --- | --- |
+| `wai_learn({ replace: "<entry ID>", fact: "<corrected lesson>" })` | Replace one entry; omitted category/source/kind are retained |
+| `wai_learn({ revoke: "<entry ID>" })` | Remove one entry from future retrieval |
+| `/wai-learn --replace <id> <fact> [--category <cat>]` | Replace an entry from the terminal |
+| `/wai-learn --revoke <id>` | Revoke an entry from the terminal |
+
+Repeated identical fact text, kind, category, and source reuse the existing entry without refreshing its age or consuming another slot. Text comparison is case-sensitive and trims surrounding whitespace; differently scoped or worded lessons remain separate. Replacement assigns a new ID and freshness window when content or metadata changes, preventing an in-flight verification of the old entry from renewing the new claim. A replacement identical to the selected entry is a no-op; a collision with another entry is rejected so the agent can inspect and revoke the obsolete one explicitly. Missing or ambiguous IDs and persistence failures return errors. Revocation removes stored knowledge; it cannot retract text already present in a conversation.
 
 `verify` checks referenced files, source files, and symbols from the current project index. It returns each fact as `valid`, `questionable`, or `outdated` without a model call. A structural `valid` result means references exist; it does not prove a behavioral claim or renew freshness. Facts without verifiable references are `questionable`.
 
@@ -506,7 +515,7 @@ When injected context exceeds `contextInjectMaxTokens`, wai first shrinks learne
 
 **Renewal is guarded.** Shallow `verify` never renews a fact. Deep verification renews only a valid, evidence-backed result after the model call resolves; questionable, outdated, empty, malformed, or unsupported results never renew. `reaffirm` renews explicitly by exact fact text (duplicate texts are rejected as ambiguous unless targeted by entry id). Every entry has a stable per-entry id; writes report whether persistence succeeded (`write-failed` is surfaced as an error).
 
-> Contestability (automatically challenging stale decisions when a review contradicts them) is deliberately **deferred**; the current UX is the explicit stale listing with a `verify, update, or revoke` hint.
+> Automatically challenging stale decisions when a review contradicts them is deliberately **deferred**. Inspect the stale listing, verify the claim, and use explicit replacement or revocation when warranted.
 
 ### Reusing project scans
 
@@ -528,7 +537,7 @@ Call this when building, reviewing, or improving UI/animation code to get detail
 
 #### Native design and development skills
 
-Package discovery uses native pi.skills; no resources_discover hook re-adds filtered skills. Pi advertises each skill's name, description, and path, and instructs the main agent to read SKILL.md when the task matches. These twelve skills permit automatic selection:
+Package discovery uses native pi.skills; no resources_discover hook re-adds filtered skills. Pi advertises each skill's name, description, and path, and instructs the main agent to read SKILL.md when the task matches. These fourteen skills permit automatic selection:
 
 | Skill | When it helps |
 | --- | --- |
@@ -538,6 +547,8 @@ Package discovery uses native pi.skills; no resources_discover hook re-adds filt
 | wai-safe-refactor | Preserve contracts while changing responsibilities/callers |
 | wai-api-contracts | Producer/consumer compatibility, data/auth boundaries and migrations |
 | wai-delivery | Preserve task goals, resume interrupted work, Wai plans, review recovery, Git/SVN preparation |
+| wai-dependency-upgrade | Version upgrades, affected consumers, supported host compatibility, and migration evidence |
+| wai-learning | Recall useful lessons, capture confirmed corrections, and replace or revoke outdated project knowledge |
 | wai-flutter | Confirmed Flutter widget/navigation/lifecycle work |
 | wai-kotlin | Kotlin/Android apps, Compose or XML UI, coroutine/Flow lifecycle, native Flutter integrations, and mobile tests |
 | wai-spring | Confirmed Java/Spring service/persistence work |
@@ -547,7 +558,13 @@ Package discovery uses native pi.skills; no resources_discover hook re-adds filt
 
 Force a skill with /skill:wai-skill-design (or another name). Use Pi package resource filters or pi config to control activation. If loading src/index.ts directly instead of the package, supply the skills through Pi's additional skill paths, or use the optional setup copy; the extension does not bypass disabled skill filters.
 
-wai-delivery keeps the requested outcome, constraints, and success conditions in the existing Wai plan. It guides the main agent through follow-up changes, recovery after interruptions or compaction, useful next actions, explicit blockers, and evidence before claiming completion. This is skill guidance; it adds no separate goal tracker or automatic continuation. Use /skill:wai-delivery to select it explicitly for a substantial task.
+wai-delivery keeps the requested outcome, constraints, and success conditions in the existing Wai plan. It guides the main agent through follow-up changes, recovery after interruptions or compaction, useful next actions, explicit blockers, and evidence before claiming completion. Before ending a turn, it asks the agent to distinguish completed, actionable, and blocked outcomes and continue authorized work where possible. This is skill guidance; it adds no separate goal tracker or automatic continuation. Use /skill:wai-delivery to select it explicitly for a substantial task.
+
+wai-dependency-upgrade guides requested library, framework, SDK, and runtime upgrades using actual resolved versions, official migration evidence, affected consumers, and supported-version checks. Its host compatibility reference covers capability detection, lifecycle ownership, and fallback boundaries. Use /skill:wai-dependency-upgrade for an upgrade task; it does not automatically select a target version or raise the supported minimum.
+
+wai-learning connects confirmed discoveries and user corrections to `wai_learn`, with related-entry lookup, scoped evidence, exact duplicate handling, and explicit correction/revocation. Review/reflection suggestions require investigation before becoming lessons. Task progress stays in the plan; reusable procedures can justify a separate project skill after repeated successful use. Use /skill:wai-learning explicitly when needed. This guidance uses the existing retrieval path; it adds no background model calls, automatic rewriting of skills, or measured claim of improved accuracy.
+
+Learning is deliberately quiet: reuse context already present, skip routine or redundant facts, avoid per-turn reflection/verification, and omit routine save announcements. Tool responses return the selected entry rather than a list of related lessons. Failed saves and material contradictions remain visible; normal context selection retains its existing token budget.
 
 wai-skill-design loads focused references for foundations, motion, recipes, fluid interfaces, review, audits/opportunities, prototypes, library choice, and vocabulary. They adapt all nine original topics, preserving their source material and MIT attribution in design-refs/ and the adapted skill's LICENSE. Generic greetings, fixed report formats, forced subagents/worktrees, and extra approval steps are not part of the adapted workflow. The original names still work through wai_design_ref as source references.
 

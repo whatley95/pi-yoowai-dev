@@ -194,14 +194,27 @@ export function renderVisionCall(
   return text;
 }
 
-/** Render a call to the wai_learn tool (record or verify). */
+/** Render a project-memory operation. */
 export function renderLearnCall(
-  args: { fact?: string; verify?: boolean; deep?: boolean; query?: string; stale?: boolean; reaffirm?: string },
+  args: {
+    fact?: string;
+    verify?: boolean;
+    deep?: boolean;
+    query?: string;
+    stale?: boolean;
+    reaffirm?: string;
+    replace?: string;
+    revoke?: string;
+  },
   theme: Theme,
   context?: ToolRenderContext,
 ): Text {
   let label: string;
-  if (args.stale) {
+  if (args.revoke) {
+    label = `wai learn revoke: ${truncate(args.revoke, 60)}`;
+  } else if (args.replace) {
+    label = `wai learn replace ${truncate(args.replace, 60)}: ${truncate(args.fact ?? "", 80)}`;
+  } else if (args.stale) {
     const query = typeof args.query === "string" && args.query ? truncate(args.query, 60) : "";
     label = `wai learn stale${query ? ` (${query})` : ""}`;
   } else if (args.reaffirm) {

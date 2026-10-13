@@ -209,7 +209,7 @@ describe("wai-learn", () => {
     assert.ok(!/STALE.*Fresh fact/.test(rendered), "the fresh entry must not be marked stale");
   });
 
-  it("read/lookup/re-record never renew stamps; only a fresh record starts verified", () => {
+  it("read/lookup/re-record never renew stamps or duplicate an existing record", () => {
     recordLearnedFact(cwd, "Stable fact.");
     const path = join(cwd, ".pi", "yoowai", "learned.json");
     const oldStamp = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
@@ -223,11 +223,11 @@ describe("wai-learn", () => {
     listStaleFacts(cwd);
     formatLearnedFactsWithFreshness(loadLearnedFacts(cwd));
     assert.equal(loadLearnedFacts(cwd)[0].lastVerifiedAt, oldStamp, "reads must not renew");
-    // Re-recording the same fact adds a NEW entry (old one untouched).
+    // Re-recording the same fact reuses the existing entry, even when stale.
     recordLearnedFact(cwd, "Stable fact.");
     const after = loadLearnedFacts(cwd);
     assert.equal(after[0].lastVerifiedAt, oldStamp, "the existing entry keeps its stamp");
-    assert.notEqual(after[1].lastVerifiedAt, oldStamp, "the new record starts with its own stamp");
+    assert.equal(after.length, 1, "repeated capture does not add a fresh duplicate");
   });
 
   it("renews on meaningful verification only", () => {
@@ -356,8 +356,8 @@ describe("wai-learn", () => {
   });
 
   it("renews duplicate fact texts by their own per-entry id", () => {
-    recordLearnedFact(cwd, "Dup fact.");
-    recordLearnedFact(cwd, "Dup fact.");
+    recordLearnedFact(cwd, "Dup fact.", { source: "first.md" });
+    recordLearnedFact(cwd, "Dup fact.", { source: "second.md" });
     const path = join(cwd, ".pi", "yoowai", "learned.json");
     const store = JSON.parse(readFileSync(path, "utf-8")) as { facts: Array<Record<string, string>> };
     const [first, second] = store.facts;
@@ -403,8 +403,8 @@ describe("wai-learn", () => {
   });
 
   it("reaffirm rejects ambiguous duplicate text and reports outcomes", () => {
-    recordLearnedFact(cwd, "Dup fact.");
-    recordLearnedFact(cwd, "Dup fact.");
+    recordLearnedFact(cwd, "Dup fact.", { source: "first.md" });
+    recordLearnedFact(cwd, "Dup fact.", { source: "second.md" });
     const path = join(cwd, ".pi", "yoowai", "learned.json");
     const store = JSON.parse(readFileSync(path, "utf-8")) as { facts: Array<Record<string, string>> };
     const oldStamp = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();

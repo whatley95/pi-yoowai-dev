@@ -34,7 +34,8 @@ import { WAI_TOOL_GUIDANCE } from "./tool-guidance.js";
 import { attachWorkflowMetadata } from "./review-recovery.js";
 import {
   recordLearnedFact,
-  findLearnedFacts,
+  replaceLearnedFact,
+  revokeLearnedFact,
   listStaleFacts,
   reaffirmFact,
   applyVerifiedRenewals,
@@ -1027,6 +1028,13 @@ export default async function (pi: ExtensionAPI) {
     const r = params as Record<string, unknown>;
     const query = typeof r.query === "string" ? r.query : undefined;
 
+    for (const selector of ["replace", "revoke"] as const) {
+      if (r[selector] !== undefined && (typeof r[selector] !== "string" || !r[selector].trim())) {
+        const error = `${selector} requires a non-empty learned fact ID from wai_index.`;
+        return { content: [{ type: "text", text: error }], details: { error }, isError: true };
+      }
+    }
+
     // deep is a verify modifier only — never valid with stale/reaffirm/fact.
     if (r.deep === true && r.verify !== true) {
       return {
@@ -1035,11 +1043,10 @@ export default async function (pi: ExtensionAPI) {
         isError: true,
       };
     }
-    // Exactly one action: record (fact), verify (+deep modifier), stale, or
-    // reaffirm. Conflicting selectors are rejected loudly instead of being
-    // silently resolved by branch order.
+    // replace consumes fact as its new content; every other action is exclusive.
     const actions = [
-      typeof r.fact === "string" && r.fact.length > 0 ? "fact" : null,
+      r.replace !== undefined ? "replace" : r.fact !== undefined ? "fact" : null,
+      r.revoke !== undefined ? "revoke" : null,
       r.verify === true ? "verify" : null,
       r.stale === true ? "stale" : null,
       typeof r.reaffirm === "string" && r.reaffirm.trim().length > 0 ? "reaffirm" : null,
@@ -1052,6 +1059,20 @@ export default async function (pi: ExtensionAPI) {
         details: { error: "Conflicting action parameters." },
         isError: true,
       };
+    }
+
+    if (typeof r.revoke === "string") {
+      try {
+        const revoked = revokeLearnedFact(ctx.cwd, r.revoke);
+        return {
+          content: [{ type: "text", text: `Revoked learned fact ${revoked.id}: ${revoked.fact}` }],
+          details: { action: "learn", revoked },
+          isError: false,
+        };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text", text: error }], details: { action: "learn", error }, isError: true };
+      }
     }
 
     if (r.verify === true && r.deep === true) {
@@ -1149,7 +1170,7 @@ export default async function (pi: ExtensionAPI) {
       };
     }
 
-    if (typeof r.fact !== "string" || r.fact.length === 0) {
+    if (typeof r.fact !== "string" || r.fact.trim().length === 0) {
       return {
         content: [{ type: "text", text: "wai_learn: Missing or empty 'fact' parameter." }],
         details: { error: "Missing or empty 'fact' parameter." },
@@ -1160,48 +1181,51 @@ export default async function (pi: ExtensionAPI) {
     const source = typeof r.source === "string" ? r.source : undefined;
     const kind = r.kind === "decision" || r.kind === "fact" ? r.kind : undefined;
     try {
-      recordLearnedFact(ctx.cwd, r.fact, { category, source, kind });
+      const entry =
+        typeof r.replace === "string"
+          ? replaceLearnedFact(ctx.cwd, r.replace, r.fact, { category, source, kind })
+          : recordLearnedFact(ctx.cwd, r.fact, { category, source, kind });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${typeof r.replace === "string" ? "Replacement stored" : "Fact stored"} [id: ${entry.id}].`,
+          },
+        ],
+        details: { action: "learn", learned: [entry], replaced: r.replace },
+        isError: false,
+      };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       return { content: [{ type: "text", text: error }], details: { action: "learn", error }, isError: true };
     }
-    const related = findLearnedFacts(ctx.cwd, r.fact).slice(0, 10);
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Recorded fact.${
-            related.length > 1
-              ? ` Related facts (${related.length - 1}):\n${related
-                  .slice(1)
-                  .map((f) => `- ${f.fact}`)
-                  .join("\n")}`
-              : ""
-          }`,
-        },
-      ],
-      details: { action: "learn", learned: related },
-      isError: false,
-    };
   }
 
   registerTool({
     name: "wai_learn",
     label: "Wai Learn — Project Facts",
     description:
-      "Record a persistent project fact that wai will remember across sessions. Facts are surfaced by wai_index so the main agent can ground future work in project-specific knowledge.",
+      "Record, verify, replace, or revoke persistent project facts. Inspect entries and IDs through wai_index before replacing or revoking a lesson.",
     promptSnippet: "wai_learn: remember this project fact for future sessions",
     promptGuidelines: WAI_TOOL_GUIDANCE.wai_learn,
     parameters: Type.Object({
       fact: Type.Optional(
         Type.String({
-          description: "The project fact to record. Required unless verify is true.",
+          description: "The project fact to record, or the new content when replacing an entry.",
         }),
       ),
       category: Type.Optional(
         Type.String({
           description: "Optional category for grouping facts.",
         }),
+      ),
+      replace: Type.Optional(
+        Type.String({
+          description: "Exact entry ID from wai_index to replace; requires fact. Omitted metadata is retained.",
+        }),
+      ),
+      revoke: Type.Optional(
+        Type.String({ description: "Exact entry ID from wai_index to remove. Exclusive with other actions." }),
       ),
       kind: Type.Optional(
         Type.Union([Type.Literal("fact"), Type.Literal("decision")], {
@@ -1242,11 +1266,7 @@ export default async function (pi: ExtensionAPI) {
       ),
     }),
     renderCall: (args, theme, context) =>
-      renderLearnCall(
-        args as { fact?: string; verify?: boolean; deep?: boolean; query?: string; stale?: boolean; reaffirm?: string },
-        theme,
-        context,
-      ),
+      renderLearnCall(args as Parameters<typeof renderLearnCall>[0], theme, context),
     renderResult: (result, opts, theme, context) => renderAuxResult("learn", result, opts, theme, context),
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       return runWaiLearnTool(params, signal, onUpdate as ((update: unknown) => void) | undefined, ctx);

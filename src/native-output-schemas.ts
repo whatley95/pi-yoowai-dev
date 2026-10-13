@@ -212,6 +212,8 @@ const outputs: Record<string, TObject> = {
     error: optional(Type.String()),
     action: optional(Type.String()),
     learned: optional(Type.Array(fact)),
+    replaced: optional(Type.String()),
+    revoked: optional(fact),
     stale: optional(Type.Array(fact)),
     reaffirmed: optional(Type.Boolean()),
     reason: optional(Type.String()),

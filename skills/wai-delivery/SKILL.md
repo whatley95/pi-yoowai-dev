@@ -40,6 +40,19 @@ then report the missing input or capability, what was attempted, and what would 
 progress. Repeated unchanged attempts are not progress; revise the approach when the
 evidence warrants it and leave blocked outcomes visibly incomplete.
 
+Before ending a turn, reconcile the requested outcomes with the current workspace:
+which are complete with evidence, which remain actionable, and which are blocked?
+If an authorized next action is available, take it. A completed subtask, proposed fix,
+started background check, or status reply is a checkpoint, not a reason to hand back
+unfinished work. Follow required checks through to their results when the tools and
+session allow it. If execution must stop, preserve the exact next action and remaining
+outcomes in the existing plan/session context, and state the reason for stopping.
+
+When a confirmed correction or reusable discovery should change future work, use
+the `wai-learning` skill when available to maintain a concise lesson through `wai_learn`.
+Keep the active goal and unfinished steps in the plan; capturing a lesson is not a
+substitute for completing the current task.
+
 Use scoped review for focused feedback. Before completion, run a whole-tree review
 with intended new files included and without files/exclude/revision/since restrictions.
 Coverage gaps, truncation, failed checks, or inconclusive results cannot certify the

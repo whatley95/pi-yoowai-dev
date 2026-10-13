@@ -132,7 +132,7 @@ export function parseSecurityCommandArgs(input: string): {
   return { description: base.description, options: { ...base.options, fullProject } };
 }
 
-export type LearnCommandKind = "record" | "verify" | "stale" | "reaffirm" | "invalid";
+export type LearnCommandKind = "record" | "verify" | "stale" | "reaffirm" | "replace" | "revoke" | "invalid";
 
 export interface LearnCommandArgs {
   kind: LearnCommandKind;
@@ -146,6 +146,7 @@ export interface LearnCommandArgs {
   staleQuery?: string;
   /** Reaffirm mode: exact stored fact text. */
   reaffirmFact?: string;
+  entryId?: string;
   invalidReason?: string;
 }
 
@@ -159,7 +160,8 @@ function tokenize(input: string): string[] {
  * Parses /wai-learn arguments as a token state machine. Exactly one action is
  * allowed:
  *   record <fact> [--category <cat>] | --verify [--query <kw>] [--deep] |
- *   --stale [--query <kw>] | --reaffirm <exact fact text>
+ *   --stale [--query <kw>] | --reaffirm <exact fact text> |
+ *   --replace <id> <fact> [--category <cat>] | --revoke <id>
  * Every flag is validated against its mode; unknown flags, missing values,
  * flag-like values, and conflicting actions yield kind "invalid" with a
  * reason.
@@ -168,6 +170,35 @@ export function parseLearnCommandArgs(input: string): LearnCommandArgs {
   const args = tokenize(input.trim());
   if (args.length === 0) {
     return { kind: "invalid", invalidReason: "Provide a fact or an action flag." };
+  }
+
+  if (args[0] === "--replace" || args[0] === "--revoke") {
+    const [action, entryId, ...rest] = args;
+    if (!entryId?.trim() || entryId.startsWith("--")) {
+      return { kind: "invalid", invalidReason: `${action} requires an entry ID from /wai-index learned.` };
+    }
+    if (action === "--revoke") {
+      return rest.length === 0
+        ? { kind: "revoke", entryId }
+        : { kind: "invalid", invalidReason: "--revoke accepts one entry ID only." };
+    }
+    // Replacement accepts record-style text/category; no other action flags.
+    if (rest.some((token) => token.startsWith("--") && token !== "--category")) {
+      return { kind: "invalid", invalidReason: "--replace accepts new fact text and optional --category only." };
+    }
+    const categoryIndex = rest.indexOf("--category");
+    let category: string | undefined;
+    if (categoryIndex >= 0) {
+      category = rest[categoryIndex + 1];
+      if (!category?.trim() || category.startsWith("--") || rest.lastIndexOf("--category") !== categoryIndex) {
+        return { kind: "invalid", invalidReason: "--category requires one value and may appear only once." };
+      }
+      rest.splice(categoryIndex, 2);
+    }
+    const fact = rest.join(" ").trim();
+    return fact
+      ? { kind: "replace", entryId, fact, category }
+      : { kind: "invalid", invalidReason: "--replace requires new fact text." };
   }
 
   const flagSet = new Set<string>();

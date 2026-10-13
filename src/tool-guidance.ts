@@ -88,14 +88,11 @@ export const WAI_TOOL_GUIDANCE = {
     "Use context to add background (e.g. 'this is the settings dialog after my change').",
   ],
   wai_learn: [
-    "Call wai_learn to record project-specific facts, decisions, or quirks the main agent should remember.",
-    "Use a category to group related facts (e.g. 'auth', 'build', 'conventions').",
-    "Keep facts concise and actionable.",
-    "Include a project-relative source file for factual claims. Stored memory is context; verify it against current code before acting on it.",
-    "Recorded facts appear in wai_index topic 'learned'.",
-    "Fresh learned facts are automatically selected by task and source-file relevance for the main agent, within its context budget. Fresh decisions are also selected for review prompts.",
-    "Use verify:true for structural reference checks; these do not renew freshness or prove a behavioral claim.",
-    "Add deep:true to verify with the secondary model for higher accuracy (costs tokens per fact).",
+    "Save only confirmed project lessons likely to change future work, with concise scope, category, and a source. Skip guesses, secrets, temporary progress, and facts already available in context.",
+    "Inspect related entries through wai_index topic 'learned'. Correct one with replace:<entry ID> and fact:<new text>, or remove it with revoke:<entry ID>. Identical records do not renew freshness.",
+    "Relevant fresh lessons already enter bounded context; consult current code before relying on them. Active goals stay in the plan.",
+    "Use verify:true for structural checks (no freshness renewal); deep:true adds model verification and cost. Reaffirm only with justification.",
+    "No per-turn learning ritual or routine success announcements. Report a material contradiction or failed save; otherwise continue the task.",
   ],
   wai_scaffold: [
     "Call wai_scaffold WITHOUT apply to preview the proposed files first; show the user the preview and get approval before calling it again with apply:true.",
@@ -159,7 +156,7 @@ const DESCRIPTIONS: Record<string, string> = {
   wai_index: "Query stored project context, plan progress, memory, learned facts, and symbols. No model call.",
   wai_explain: "Ask the secondary model to explain code, a file, or an error.",
   wai_vision: "Analyze an image/PDF path or an inline image block with the configured secondary vision model.",
-  wai_learn: "Record, check, list stale, or explicitly reaffirm project facts and decisions.",
+  wai_learn: "Record, replace, revoke, check, list stale, or explicitly reaffirm project facts and decisions.",
   wai_scaffold: "Preview or create project engineering guidance files; existing files are preserved.",
   wai_design_ref: "List or read curated UI and animation design guidance.",
 };
