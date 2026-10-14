@@ -1,4 +1,5 @@
 import {
+  ADVISOR_BEFORE_USER_GUIDANCE,
   PLAN_GUIDANCE,
   PLAN_ALIGNMENT_GUIDANCE,
   REVIEW_SCOPE_GUIDANCE,
@@ -23,8 +24,7 @@ export const WAI_TOOL_GUIDANCE = {
     "Pick review depth by the change's risk and complexity: med is the balanced default for normal features and bugfixes or when unsure; min is for clearly low-risk docs, comments, config, tests-only, or tiny mechanical changes (renames, version bumps); high requires a concrete risk such as auth, secrets, payments, migrations, public API behavior, concurrency, algorithms, state machines, intricate control flow, or cross-module refactors. File count, model family, and thinking level alone do not justify high. A small security-sensitive change can still require high. Plain `wai review` uses automatic selection (med by default, optional risk routing) unless a fixed pi-yoowai.reviewLevel is configured; explicit wai_review_min/med/high tools always override automatic selection.",
     "Use wai with scan:true immediately when opening a project for the first time. Stored conventions improve all future reviews and plans. Add scanDeep:true on that first scan to also sample source files and build the project symbol index.",
     "Scan reuses matching inputs for 24 hours without a model call. Set scanRefresh:true to explicitly re-run the scan model; a reused deep scan still refreshes the symbol graph.",
-    "Use wai({ advisor: '<question>' }) for quick judgment calls before committing to an approach or when stuck. When the question needs a structured comparison of alternatives, use suggest instead.",
-    "Use wai({ suggest: '<question>' }) for structured alternative approaches with evidence. If stuck or looping, consult suggest or advisor before asking the user for implementation guidance.",
+    ADVISOR_BEFORE_USER_GUIDANCE,
     "When the user asks a non-trivial architectural or design question where multiple valid approaches exist, call wai.suggest before answering. For simple factual questions you can verify yourself (reading files, running commands), answer directly without wai.",
     "Use wai({ recommend: '<next-step question>' }) when deciding what to do next. If you have spent more than one turn without clear progress, call wai.recommend.",
     "Use wai({ test: '<testing question>' }) for a dedicated assessment of missing tests, failing tests, or test quality. This assessment does not replace executing the required checks.",
@@ -134,6 +134,7 @@ WAI_TOOL_GUIDANCE.wai_vision.push(CODEMODE_IMAGE_GUIDANCE);
 const COMPACT_CORE = [
   "Use one wai action per call: plan before non-trivial work, review each cohesive edit batch, and run required checks. " +
     "Read wai_index({topic:'guidance'}) or describeNamespace('wai').instructions before first use for detailed workflow and tool guidance.",
+  ADVISOR_BEFORE_USER_GUIDANCE,
   "Default to med for normal changes or uncertainty; use min for clearly low-risk edits and high for a concrete " +
     "security, data, contract, concurrency, or complexity risk. File count, model family, and thinking level alone " +
     "do not justify high. Prefer generic wai({review:'...'}) so configured routing applies; explicit depth tools are intentional overrides. " +

@@ -1055,7 +1055,9 @@ The advisor is the pair-programming companion for **frequent, lightweight intera
 wai({ advisor: "should I use a Map or a Record for this cache?" });
 ```
 
-Unlike `suggest` (structured `approaches[]` with pros/cons), the advisor answers in **plain text**: a direct recommendation up front, the reasoning, and pushback when your plan is a bad idea. There is no JSON contract, no doc fetching, and no tool loop — one fast call. Use it liberally for quick judgment calls; reserve `suggest` for formal alternative comparisons.
+Unlike `suggest` (structured `approaches[]` with pros/cons), the advisor answers in **plain text**: a direct recommendation up front, the reasoning, and pushback when your plan is a bad idea. There is no JSON contract, no doc fetching, and no tool loop — one fast call. Use it for unresolved technical judgment calls; reserve `suggest` for formal alternative comparisons.
+
+The main-agent instructions direct it to inspect available evidence and consult Wai before asking the user for technical implementation guidance. A source-supported answer that respects the user's requirements lets the agent continue authorized work. Unsupported, conflicting, empty, or failed advice leaves the question unresolved; the agent gathers missing evidence without repeating unchanged calls. User preferences, scope decisions, authorization, and information unavailable to the models still come from the user. This rule is included in both detailed and compact tool guidance and the delivery skill; it adds no automatic model calls or runtime interception of questions.
 
 The advisor uses its own model when configured (`taskModels.advisor` via `/wai-model`), otherwise it **falls back to the `suggest` model**, then the base `secondary`. Point both at a fast, cheap model for frictionless interaction:
 

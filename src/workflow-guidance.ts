@@ -1,4 +1,12 @@
 /** Shared main-agent instructions used by tools, reminders, and reports. */
+export const ADVISOR_BEFORE_USER_GUIDANCE =
+  "Before asking the user for technical implementation guidance, inspect available code and requirements. " +
+  "For an unresolved technical choice, call wai({ advisor: '<question, evidence, constraints, and proposed approach>' }); " +
+  "use suggest for a structured comparison. Check the advice against source and explicit requirements, then continue " +
+  "authorized work when supported. Unsupported, conflicting, empty, or failed advice does not resolve the question; " +
+  "seek missing evidence and avoid repeated unchanged calls. Ask the user when their preference, scope decision, " +
+  "authorization, or unavailable information is needed. Wai cannot supply those on the user's behalf.";
+
 export const FINAL_COUNCIL_GUIDANCE =
   "Final council assessment is optional. Use wai({ judge: '<completed work>' }) only when council members are " +
   "configured for a final assessment. Empty disables it, one member reviews directly, and multiple members assess " +

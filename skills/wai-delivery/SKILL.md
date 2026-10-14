@@ -16,8 +16,13 @@ Treat follow-up corrections and constraints as refinements of the active objecti
 unless the user changes or cancels it. A status question does not discard remaining
 work. When new evidence changes the approach, preserve the required outcome; use
 `planUpdate` for confirmed changes to the existing plan and retain unaffected progress.
-Ask for clarification when a missing decision materially changes scope or correctness;
-continue useful work that does not depend on that answer.
+Before asking the user for technical implementation guidance, inspect the available
+code and constraints, then consult `wai({advisor:"..."})` for an unresolved choice
+(use `suggest` for structured alternatives). Include evidence and a proposed approach.
+Continue authorized work when the advice is supported by source and requirements.
+Unsupported or conflicting advice needs further evidence; avoid repeated unchanged
+calls. Ask the user for their preference, scope, authorization, or unavailable information
+when needed, and continue useful independent work while waiting.
 
 Before a batch, inspect the current step. A partial diff, unfinished next step, or
 unchanged preservation invariant does not make a plan stale. Require positive evidence
