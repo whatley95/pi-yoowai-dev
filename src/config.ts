@@ -10,6 +10,7 @@ import type {
   WaiModelTask,
   DocsConfig,
   ReviewLevel,
+  ReviewModelTask,
 } from "./types.js";
 
 export { getAgentDir, getProjectConfigPath } from "./pi-paths.js";
@@ -103,7 +104,7 @@ export function resolveTaskModel(config: YoowaiConfig, action: WaiModelTask): Se
 }
 
 /** Map an explicit review level to its per-level task override key. */
-export const REVIEW_LEVEL_TASKS: Record<ReviewLevel, WaiModelTask> = {
+export const REVIEW_LEVEL_TASKS: Record<ReviewLevel, ReviewModelTask> = {
   min: "reviewMin",
   med: "reviewMed",
   high: "reviewHigh",
@@ -121,6 +122,68 @@ export function resolveReviewTaskModel(config: YoowaiConfig, level?: ReviewLevel
     }
   }
   return resolveTaskModel(config, "review");
+}
+
+/** Only request preferences can cross model identities. Connection credentials,
+ *  protocol settings and model capacity must belong to the selected model. */
+function reviewModelPreferences(model: Partial<SecondaryModelConfig>): Partial<SecondaryModelConfig> {
+  // A custom HTTP primary must not make a picker-selected alternate bypass
+  // Pi's SDK authentication. The alternate can set its own backend explicitly.
+  return {
+    thinking: model.thinking,
+    cacheRetention: model.cacheRetention,
+    transport: model.transport,
+    maxRetries: model.maxRetries,
+    maxRetryDelayMs: model.maxRetryDelayMs,
+    timeoutMs: model.timeoutMs,
+  };
+}
+
+function hasModelIdentity(model: Partial<SecondaryModelConfig>): model is SecondaryModelConfig {
+  return (
+    typeof model.provider === "string" &&
+    model.provider.trim().length > 0 &&
+    typeof model.id === "string" &&
+    model.id.trim().length > 0
+  );
+}
+
+/** Resolve the alternate slot, including a duplicate primary for picker state.
+ *  A depth with its own primary uses only its own alternate; shared alternates
+ *  accompany the shared primary. Explicit null blocks shared inheritance. */
+export function resolveReviewAlternateModel(
+  config: YoowaiConfig,
+  level?: ReviewLevel,
+): SecondaryModelConfig | undefined {
+  const primary = resolveReviewTaskModel(config, level);
+  let alternate = config.reviewAlternates?.review;
+  if (level) {
+    const task = REVIEW_LEVEL_TASKS[level];
+    const depthAlternate = config.reviewAlternates?.[task];
+    const primaryOverride = config.taskModels?.[task];
+    if (depthAlternate !== undefined) {
+      alternate = depthAlternate;
+    } else if (primaryOverride && (primaryOverride.provider || primaryOverride.id)) {
+      alternate = undefined;
+    }
+  }
+  if (!alternate || !hasModelIdentity(alternate)) return undefined;
+  return mergeSecondaryFields(reviewModelPreferences(primary), {
+    ...alternate,
+    provider: alternate.provider.trim(),
+    id: alternate.id.trim(),
+  }) as SecondaryModelConfig;
+}
+
+/** Resolve a review pool without changing the established primary selection. */
+export function resolveReviewModelCandidates(config: YoowaiConfig, level?: ReviewLevel): SecondaryModelConfig[] {
+  const primary = resolveReviewTaskModel(config, level);
+  const resolved = resolveReviewAlternateModel(config, level);
+  if (!resolved) return [primary];
+  if (resolved.provider.toLowerCase() === primary.provider.toLowerCase() && resolved.id === primary.id) {
+    return [primary];
+  }
+  return [primary, resolved];
 }
 
 /** Resolve the model for an advisor call: the explicit advisor task override
@@ -164,6 +227,7 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
     // Keep explicit settings distinguishable so optional risk routing can
     // refine the shared med fallback when no level was chosen.
     reviewLevel: undefined,
+    reviewLoadBalance: "least-busy",
     riskBasedReview: false,
     verifyDoneClaims: true,
     reviewReminderEdits: 3,
@@ -234,6 +298,8 @@ export function loadYoowaiConfig(cwd: string): YoowaiConfig {
 const KNOWN_CONFIG_KEYS = new Set([
   "secondary",
   "taskModels",
+  "reviewAlternates",
+  "reviewLoadBalance",
   "judgeCouncil",
   "autoJudge",
   "preReviewCommands",
@@ -406,6 +472,41 @@ function mergeTaskModels(base: YoowaiConfig["taskModels"], override: unknown): Y
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+const VALID_REVIEW_MODEL_TASKS = new Set<string>(["review", "reviewMin", "reviewMed", "reviewHigh"]);
+
+function mergeReviewAlternates(
+  base: YoowaiConfig["reviewAlternates"],
+  override: unknown,
+): YoowaiConfig["reviewAlternates"] {
+  if (!override || typeof override !== "object" || Array.isArray(override)) return base;
+  const result: NonNullable<YoowaiConfig["reviewAlternates"]> = base ? { ...base } : {};
+  for (const [role, value] of Object.entries(override)) {
+    if (!VALID_REVIEW_MODEL_TASKS.has(role)) continue;
+    const task = role as ReviewModelTask;
+    if (value === null) {
+      result[task] = null;
+      continue;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Partial<SecondaryModelConfig>;
+    const previous = result[task];
+    const hasIdentityField = Object.hasOwn(entry, "provider") || Object.hasOwn(entry, "id");
+    // Never combine a newly selected provider with a previous model id, or
+    // create an alternate implicitly from the primary model's identity.
+    if (hasIdentityField && !hasModelIdentity(entry)) continue;
+    if (!hasIdentityField && (!previous || !hasModelIdentity(previous))) continue;
+    const identityChanged =
+      hasIdentityField && (entry.provider?.trim() !== previous?.provider || entry.id?.trim() !== previous?.id);
+    const inherited = identityChanged ? reviewModelPreferences(previous ?? {}) : (previous ?? {});
+    const merged = mergeSecondaryFields(inherited, entry);
+    if (!hasModelIdentity(merged)) continue;
+    merged.provider = merged.provider.trim();
+    merged.id = merged.id.trim();
+    result[task] = merged;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 function mergeJudgeCouncil(base: YoowaiConfig["judgeCouncil"], override: unknown): YoowaiConfig["judgeCouncil"] {
   if (!Array.isArray(override)) {
     return base;
@@ -524,6 +625,12 @@ export function mergeYoowaiConfig(base: YoowaiConfig, override: unknown): Yoowai
   return {
     secondary: mergeSecondary(base.secondary, o.secondary),
     taskModels: mergeTaskModels(base.taskModels, o.taskModels),
+    reviewAlternates: mergeReviewAlternates(base.reviewAlternates, o.reviewAlternates),
+    reviewLoadBalance: pickOptionalEnum(
+      o.reviewLoadBalance,
+      ["round-robin", "failover", "least-busy"],
+      base.reviewLoadBalance ?? "least-busy",
+    ),
     judgeCouncil: mergeJudgeCouncil(base.judgeCouncil, o.judgeCouncil),
     autoJudge: typeof o.autoJudge === "boolean" ? o.autoJudge : base.autoJudge,
     preReviewCommands: Array.isArray(o.preReviewCommands)

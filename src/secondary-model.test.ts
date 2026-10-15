@@ -16,6 +16,7 @@ import {
   setSdkStreamSimpleOverride,
   stripLeadingOverlap,
   estimateCost,
+  SecondaryModelUnavailableError,
 } from "./secondary-model.js";
 import { getReservedCost, getSessionCost, recordCost } from "./cost-tracker.js";
 import { setSdkOAuthResolverOverride } from "./backends/sdk-backend.js";
@@ -78,6 +79,51 @@ describe("secondary-model backends", () => {
     setSdkOAuthResolverOverride(null);
     global.fetch = originalFetch;
     setAgentDirForTests(() => originalAgentDir);
+  });
+
+  it("marks provider outages for review failover without marking local budget refusals", async () => {
+    const cwd = makeTempDir("wai-unavailable-");
+    tmpDirs.push(cwd);
+    const agentDir = makeTempDir("wai-unavailable-agent-");
+    tempAgentDirs.push(agentDir);
+    setAgentDirForTests(() => agentDir);
+    const model = { provider: "anthropic", id: "claude-sonnet-4-6", backend: "http", apiKey: "test", maxRetries: 0 };
+    writeSettings(cwd, model);
+    let calls = 0;
+    global.fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify({ error: "overloaded" }), { status: 529 });
+    };
+    await assert.rejects(
+      callSecondaryModel(model.provider, model.id, "system", "user", { cwd }),
+      (error: unknown) => error instanceof SecondaryModelUnavailableError && /529/.test(error.message),
+    );
+    assert.equal(calls, 1);
+    writeSettings(cwd, model, { costBudgetUsd: 0 });
+    await assert.rejects(
+      callSecondaryModel(model.provider, model.id, "system", "user", { cwd }),
+      (error: unknown) =>
+        error instanceof Error && /budget/.test(error.message) && !(error instanceof SecondaryModelUnavailableError),
+    );
+    assert.equal(calls, 1, "budget refusal must not invoke the backend");
+  });
+
+  it("keeps invalid provider requests out of availability failover", async () => {
+    const cwd = makeTempDir("wai-invalid-request-");
+    tmpDirs.push(cwd);
+    const agentDir = makeTempDir("wai-invalid-request-agent-");
+    tempAgentDirs.push(agentDir);
+    setAgentDirForTests(() => agentDir);
+    writeSettings(cwd, { provider: "openai", id: "gpt-4o-mini", backend: "http", apiKey: "test", maxRetries: 0 });
+    global.fetch = async () =>
+      new Response(JSON.stringify({ error: "requested 500 output tokens exceeds limit; retry after 401 seconds" }), {
+        status: 400,
+      });
+    await assert.rejects(
+      callSecondaryModel("openai", "gpt-4o-mini", "system", "user", { cwd }),
+      (error: unknown) =>
+        error instanceof Error && /400/.test(error.message) && !(error instanceof SecondaryModelUnavailableError),
+    );
   });
 
   it("uses pi backend when backend: pi is configured", async () => {

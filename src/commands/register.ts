@@ -48,6 +48,8 @@ import {
   mergeYoowaiConfig,
   resolveTaskModel,
   resolveReviewTaskModel,
+  resolveReviewModelCandidates,
+  resolveReviewAlternateModel,
   resolveJudgeCouncilMembers,
 } from "../config.js";
 import { describeReviewLevelMode, hasFixedReviewLevel, resolveReviewLevel } from "../review-level.js";
@@ -173,6 +175,7 @@ export function buildAllGeneralModelSettings(
   const excluded = (config: YoowaiConfig) => [
     resolveTaskModel(config, "review"),
     ...(["min", "med", "high"] as const).map((level) => resolveReviewTaskModel(config, level)),
+    ...([undefined, "min", "med", "high"] as const).map((level) => resolveReviewAlternateModel(config, level)),
     resolveCouncilSynthesisModel(config),
     resolveJudgeCouncilMembers(config),
   ];
@@ -198,7 +201,7 @@ export function formatCouncilSynthesisModel(config: YoowaiConfig): string {
 }
 
 export function buildReviewModelItems(config: YoowaiConfig): Array<{
-  target: ReviewModelTask | "level" | "reset";
+  target: ReviewModelTask | `second:${ReviewModelTask}` | "level" | "balance" | "reset" | "reset-second";
   text: string;
 }> {
   const models = [
@@ -214,14 +217,37 @@ export function buildReviewModelItems(config: YoowaiConfig): Array<{
           ? { model: resolveTaskModel(config, "review"), source: config.taskModels?.review ? "review" : "secondary" }
           : resolveModelTask(config, target);
       const display = model.provider && model.id ? modelStatusLine(model) : "not configured";
+      const alternate = resolveReviewAlternateModel(config, reviewTaskLevel(target));
       return {
         target,
-        text: `${label}: ${display} (via ${source})${isScopeConfigured(target, config) ? " ✓ configured" : ""}`,
+        text: `${label}: ${display} (via ${source})${isScopeConfigured(target, config) ? " ✓ configured" : ""} · Second: ${alternate ? modelStatusLine(alternate) : "not configured"}`,
       };
     }),
     { target: "level", text: `Review mode: ${describeReviewLevelMode(config)}` },
+    { target: "balance", text: `Load balance: ${describeReviewLoadBalance(config)}` },
+    ...models.map(({ target, label }) => {
+      const alternate = resolveReviewAlternateModel(config, reviewTaskLevel(target));
+      return {
+        target: `second:${target}` as const,
+        text: `Second model for ${label}: ${alternate ? modelStatusLine(alternate) : "not configured"}`,
+      };
+    }),
     { target: "reset", text: "Reset a review model…" },
+    { target: "reset-second", text: "Disable a second review model…" },
   ];
+}
+
+function reviewTaskLevel(task: ReviewModelTask): ReviewLevel | undefined {
+  return task === "reviewMin" ? "min" : task === "reviewMed" ? "med" : task === "reviewHigh" ? "high" : undefined;
+}
+
+function describeReviewLoadBalance(config: YoowaiConfig): string {
+  const mode = config.reviewLoadBalance ?? "least-busy";
+  return mode === "least-busy"
+    ? "least-busy (alternate ties; fail over when unavailable)"
+    : mode === "round-robin"
+      ? "round-robin (fail over when unavailable)"
+      : "failover (primary first)";
 }
 
 /** Parsed /wai-language argument. */
@@ -644,6 +670,10 @@ async function showWaiStatus(ctx: ExtensionContext): Promise<void> {
       : "  Base model: not configured",
     `  Backend: ${config.secondary.backend ?? "sdk"}`,
     `  Review level: ${describeReviewLevelMode(config)}`,
+    `  Review load balance: ${describeReviewLoadBalance(config)}`,
+    ...buildReviewModelItems(config)
+      .slice(0, 4)
+      .map((item) => `  ${item.text}`),
     `  Final council assessment: ${resolveJudgeCouncilMembers(config).length > 0 ? `${resolveJudgeCouncilMembers(config).length} member(s)` : "disabled — empty council"}`,
     `  Automatic council assessment: ${config.autoJudge && resolveJudgeCouncilMembers(config).length > 0 ? "enabled" : "disabled"}`,
     config.preReviewCommands && config.preReviewCommands.length > 0
@@ -1002,7 +1032,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     handler: reviewLevelHandler("high"),
   });
 
-  const configHandler = async (args: string, ctx: ExtensionCommandContext) => {
+  const configHandler = async (args: string, ctx: ExtensionCommandContext, throwOnError = false) => {
     const agentDir = getAgentDir();
     const settingsPath = join(agentDir, "settings.json");
     const trimmed = args.trim();
@@ -1098,6 +1128,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
           await refreshWaiProvider(pi, ctx.cwd);
           ctx.ui.notify(`Set wai secondary model to ${provider}.${modelId} in ${settingsPath}`, "info");
         } catch (err) {
+          if (throwOnError) throw err;
           const message = err instanceof Error ? err.message : String(err);
           ctx.ui.notify(`Failed to update settings: ${message}`, "error");
         }
@@ -1162,6 +1193,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         "warning",
       );
     } catch (err) {
+      if (throwOnError) throw err;
       const message = err instanceof Error ? err.message : String(err);
       ctx.ui.notify(`Failed to update settings: ${message}`, "error");
     }
@@ -1219,15 +1251,21 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
     const lines = (["min", "med", "high"] as const).map((level) => {
       const task = `review${level[0].toUpperCase()}${level.slice(1)}` as ReviewModelTask;
       const { model, source } = resolveModelTask(config, task);
-      return `${level}: ${modelStatusLine(model)} (via ${source})`;
+      const alternate = resolveReviewAlternateModel(config, level);
+      return `${level}: ${modelStatusLine(model)} (via ${source}) · Second: ${alternate ? modelStatusLine(alternate) : "not configured"}`;
     });
     ctx.ui.notify(
-      `Effective review models (project settings take priority):\n${lines.join("\n")}\nReview selection: ${describeReviewLevelMode(config)}.`,
+      `Effective review models (project settings take priority):\n${lines.join("\n")}\nReview selection: ${describeReviewLevelMode(config)}.\nLoad balance: ${describeReviewLoadBalance(config)}.`,
       "info",
     );
   };
 
-  const modelHandler = async (_args: string, ctx: ExtensionContext, dedicatedTask?: ReviewModelTask | "judge") => {
+  const modelHandler = async (
+    _args: string,
+    ctx: ExtensionContext,
+    dedicatedTask?: ReviewModelTask | "judge",
+    secondModel = false,
+  ) => {
     const reviewTask =
       dedicatedTask && isReviewModelTask(dedicatedTask) ? (dedicatedTask as ReviewModelTask) : undefined;
     const commandName = dedicatedTask === "judge" ? "wai-council" : reviewTask ? "wai-review-model" : "wai-model";
@@ -1307,13 +1345,19 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       // The direct shared-review picker edits the fallback, so mark that model
       // as current even when a depth-specific override is the active reviewer.
       const effective =
-        dedicatedTask === "judge"
-          ? resolveCouncilSynthesisModel(currentConfig)
-          : reviewTask === "review"
-            ? resolveTaskModel(currentConfig, "review")
-            : action
-              ? resolveModelTask(currentConfig, action).model
-              : currentConfig.secondary;
+        secondModel && reviewTask
+          ? (resolveReviewAlternateModel(currentConfig, reviewTaskLevel(reviewTask)) ?? {
+              provider: "",
+              id: "",
+              thinking: "xhigh",
+            })
+          : dedicatedTask === "judge"
+            ? resolveCouncilSynthesisModel(currentConfig)
+            : reviewTask === "review"
+              ? resolveTaskModel(currentConfig, "review")
+              : action
+                ? resolveModelTask(currentConfig, action).model
+                : currentConfig.secondary;
       const effectiveProvider = effective.provider;
       const effectiveId = effective.id;
       const effectiveThinking = effective.thinking ?? "xhigh";
@@ -1391,7 +1435,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       //    or `/wai-review-model`. The effective current level (config value
       //    ?? balanced default) is listed first so a blind Enter keeps it.
       let reviewLevel: YoowaiConfig["reviewLevel"];
-      if (reviewTask === "review") {
+      if (reviewTask === "review" && !secondModel) {
         const currentLevel = currentConfig.reviewLevel;
         const levelItems = buildReviewLevelItems(currentLevel);
         const levelPicked = await ctx.ui.select("Pick default review level:", levelItems);
@@ -1414,7 +1458,23 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       if (!settings["pi-yoowai"]) settings["pi-yoowai"] = {};
       const waiSettings = settings["pi-yoowai"] as Record<string, unknown>;
 
-      if (allGeneralModels) {
+      if (secondModel && reviewTask) {
+        const configuredAlternates = waiSettings.reviewAlternates;
+        const alternates =
+          configuredAlternates && typeof configuredAlternates === "object" && !Array.isArray(configuredAlternates)
+            ? (configuredAlternates as Record<string, unknown>)
+            : {};
+        const previous = alternates[reviewTask];
+        // A second slot owns its endpoint and credentials. Never seed it from
+        // the primary profile, even when both use the same provider.
+        const own =
+          previous && typeof previous === "object" && !Array.isArray(previous)
+            ? (previous as Record<string, unknown>)
+            : undefined;
+        alternates[reviewTask] = buildModelConfigEntry(own, { provider, id: modelId, thinking });
+        waiSettings.reviewAlternates = alternates;
+        ctx.ui.notify(`Second model for ${reviewTask} set to ${provider}:${modelId} (${thinking}).`, "info");
+      } else if (allGeneralModels) {
         const projectPath = getProjectConfigPath(ctx.cwd, "settings.json");
         const originalProjectText = existsSync(projectPath) ? readFileSync(projectPath, "utf-8") : undefined;
         const projectSettings = originalProjectText ? JSON.parse(originalProjectText) : {};
@@ -1501,7 +1561,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-review-model", {
     description:
-      "Show review models by depth and edit a model, review mode, or override. Usage: /wai-review-model [all|min|med|high] [provider] [filter]; /wai-review-model reset [all|min|med|high]. max is an alias for high.",
+      "Edit review models, second models, depth, and load balancing. Usage: /wai-review-model [all|min|med|high] [provider] [filter]; second <target> [provider] [filter]; second reset <target>; balance [least-busy|round-robin|failover]; reset [target]. max aliases high.",
     handler: async (args, ctx) => {
       try {
         const targets: Record<string, ReviewModelTask> = {
@@ -1513,6 +1573,71 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         };
         const trimmed = args.trim();
         const [first, ...rest] = trimmed.split(/\s+/);
+        const disableSecond = async (target: ReviewModelTask): Promise<void> => {
+          await configHandler(`set reviewAlternates.${target} null`, ctx, true);
+          ctx.ui.notify(
+            `Global second model for ${target} disabled. A project-level override can still supply a second model.`,
+            "info",
+          );
+          notifyReviewModels(ctx);
+        };
+        const selectBalance = async (requested?: string): Promise<void> => {
+          const modes = ["least-busy", "round-robin", "failover"] as const;
+          const config = loadYoowaiConfig(ctx.cwd);
+          let mode = requested;
+          if (!mode) {
+            const options = modes
+              .map((value) => ({
+                value,
+                current: value === (config.reviewLoadBalance ?? "least-busy"),
+                text: `${describeReviewLoadBalance({ ...config, reviewLoadBalance: value })}${value === (config.reviewLoadBalance ?? "least-busy") ? " ✓ current" : ""}`,
+              }))
+              .sort((a, b) => Number(b.current) - Number(a.current));
+            const picked = await ctx.ui.select(
+              "Pick review load balance:",
+              options.map((item) => item.text),
+            );
+            mode = options.find((item) => item.text === picked)?.value;
+            if (!mode) return;
+          }
+          if (!modes.some((value) => value === mode)) {
+            ctx.ui.notify("Usage: /wai-review-model balance [least-busy|round-robin|failover].", "warning");
+            return;
+          }
+          await configHandler(`set reviewLoadBalance ${mode}`, ctx, true);
+          if (loadYoowaiConfig(ctx.cwd).reviewLoadBalance !== mode)
+            ctx.ui.notify("A project-level review load balance override remains active.", "info");
+          notifyReviewModels(ctx);
+        };
+        if (first.toLowerCase() === "balance") {
+          if (rest.length > 1) {
+            ctx.ui.notify("Usage: /wai-review-model balance [least-busy|round-robin|failover].", "warning");
+            return;
+          }
+          await selectBalance(rest[0]?.toLowerCase());
+          return;
+        }
+        if (first.toLowerCase() === "second") {
+          const reset = rest[0]?.toLowerCase() === "reset";
+          const target = rest[reset ? 1 : 0]?.toLowerCase() ?? "all";
+          if (!Object.hasOwn(targets, target) || (reset && rest.length > 2)) {
+            ctx.ui.notify(
+              "Usage: /wai-review-model second <all|min|med|high> [provider] [filter]; second reset [all|min|med|high].",
+              "warning",
+            );
+            return;
+          }
+          if (reset) await disableSecond(targets[target]);
+          else {
+            // Slice the target prefix from the original text so quoted filters survive.
+            const pickerArgs = trimmed
+              .slice(first.length)
+              .trim()
+              .replace(/^\S+\s*/, "");
+            await modelHandler(pickerArgs, ctx, targets[target], true);
+          }
+          return;
+        }
         if (first.toLowerCase() === "reset") {
           const target = rest[0]?.toLowerCase() ?? "all";
           if (!Object.hasOwn(targets, target) || rest.length > 1) {
@@ -1552,19 +1677,28 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
               }
               notifyReviewModels(ctx);
             }
-          } else if (item.target === "reset") {
+          } else if (item.target === "balance") {
+            await selectBalance();
+          } else if (item.target === "reset" || item.target === "reset-second") {
             const models = items.filter((entry) => isReviewModelTask(entry.target));
             const resetPicked = await ctx.ui.select(
-              "Reset which review model override?",
+              item.target === "reset-second"
+                ? "Disable which second review model?"
+                : "Reset which review model override?",
               models.map((entry) => entry.text),
             );
             const target = models.find((entry) => entry.text === resetPicked)?.target;
-            if (target) {
-              await resetModelSelection(ctx, target, () => refreshWaiProvider(pi, ctx.cwd));
-              notifyReviewModels(ctx);
+            if (target && isReviewModelTask(target)) {
+              if (item.target === "reset-second") await disableSecond(target as ReviewModelTask);
+              else {
+                await resetModelSelection(ctx, target, () => refreshWaiProvider(pi, ctx.cwd));
+                notifyReviewModels(ctx);
+              }
             }
+          } else if (item.target.startsWith("second:")) {
+            await modelHandler(trimmed, ctx, item.target.slice("second:".length) as ReviewModelTask, true);
           } else {
-            await modelHandler(trimmed, ctx, item.target);
+            await modelHandler(trimmed, ctx, item.target as ReviewModelTask);
           }
         }
       } catch (err) {
@@ -2248,6 +2382,13 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
             .sort(([a], [b]) => a.localeCompare(b)),
         ),
       );
+    const taskProfiles = (target: WaiModelTask): SecondaryModelConfig[] =>
+      isReviewModelTask(target)
+        ? resolveReviewModelCandidates(
+            config,
+            target === "review" ? resolveReviewLevel(config) : reviewTaskLevel(target as ReviewModelTask),
+          )
+        : [resolveModelTask(config, target).model];
     if (task) {
       if (task === "judge" && resolveJudgeCouncilMembers(config).length === 0) {
         ctx.ui.notify(
@@ -2256,8 +2397,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
         );
         return;
       }
-      const { model } = resolveModelTask(config, task);
-      tests.push({ task, model, label: secondaryModelLabel(model) });
+      for (const model of taskProfiles(task)) tests.push({ task, model, label: secondaryModelLabel(model) });
     } else {
       if (config.secondary.provider && config.secondary.id) {
         tests.push({ model: config.secondary, label: secondaryModelLabel(config.secondary) });
@@ -2265,11 +2405,12 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
       const seen = new Set(tests.map(({ model }) => profileKey(model)));
       for (const action of WAI_MODEL_TASKS) {
         if (action === "judge" && resolveJudgeCouncilMembers(config).length === 0) continue;
-        const { model } = resolveModelTask(config, action);
-        const key = profileKey(model);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        tests.push({ task: action, model, label: secondaryModelLabel(model) });
+        for (const model of taskProfiles(action)) {
+          const key = profileKey(model);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          tests.push({ task: action, model, label: secondaryModelLabel(model) });
+        }
       }
     }
 
@@ -2492,7 +2633,7 @@ export function registerWaiCommands(pi: ExtensionAPI, loopStates: Map<string, Lo
 
   pi.registerCommand("wai-test", {
     description:
-      "Test model connectivity (includes judge council). Optional: /wai-test <task>, including reviewMin/Med/High, advisor, explain, and vision.",
+      "Test model connectivity (includes second review models and judge council). Optional: /wai-test <task>, including reviewMin/Med/High, advisor, explain, and vision.",
     handler: testHandler,
   });
 

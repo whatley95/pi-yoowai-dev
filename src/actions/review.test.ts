@@ -30,6 +30,7 @@ import { gitSpawnEnv } from "../git-env.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ReviewResult, ReviewIssue, YoowaiConfig } from "../types.js";
 import { readRecentLogs } from "../logger.js";
+import { getSessionCost } from "../cost-tracker.js";
 
 /** A valid ReviewResult with optional overrides (constructed directly, so
  *  consensus does NOT get re-derived like validateReviewResult would). */
@@ -531,6 +532,8 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
     verdict?: "pass" | "needs-work" | "blocked" | "inconclusive";
     planStale?: boolean;
     failOnMarker?: string;
+    failStatus?: number;
+    onRequest?: () => void;
     stepComplete?: boolean;
     reviewOverrides?: Partial<ReviewResult>;
     integrationOverrides?: Partial<ReviewResult>;
@@ -603,12 +606,13 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
         });
         req.on("end", () => {
           bodies.push(body);
+          options?.onRequest?.();
           authorizations.push(req.headers.authorization);
           active += 1;
           peak = Math.max(peak, active);
           if (failOnMarker && body.includes(failOnMarker)) {
             active -= 1;
-            res.writeHead(500, { "Content-Type": "application/json" });
+            res.writeHead(options?.failStatus ?? 500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "stub failure" }));
             releaseAll();
             return;
@@ -641,6 +645,195 @@ describe("executeWaiReview diff-only budget guard (levels are strategy-only)", (
   function writeSettings(cwd: string, piYoowai: Record<string, unknown>): void {
     writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify({ "pi-yoowai": piYoowai }), "utf-8");
   }
+
+  async function reviewPair(
+    cwd: string,
+    firstOptions?: Parameters<typeof startStubServer>[0],
+    secondOptions?: Parameters<typeof startStubServer>[0],
+    settings: Record<string, unknown> = {},
+  ) {
+    const first = await startStubServer(firstOptions);
+    const second = await startStubServer(secondOptions);
+    const primary = {
+      provider: "openai",
+      id: "gpt-4o-mini",
+      thinking: "off",
+      backend: "http",
+      baseUrl: first.url,
+      apiKey: "primary-test-key",
+      contextWindow: 64_000,
+      maxOutputTokens: 2048,
+      maxRetries: 0,
+    };
+    const alternate = {
+      ...primary,
+      provider: "anthropic",
+      id: "claude-sonnet-4-6",
+      baseUrl: second.url,
+      apiKey: "alternate-test-key",
+      style: "openai-compatible",
+    };
+    writeSettings(cwd, {
+      secondary: primary,
+      reviewAlternates: { reviewHigh: alternate },
+      reviewLevel: "high",
+      reviewStrategy: "diff-only",
+      parallelReview: false,
+      toolUseLoop: false,
+      selfVerify: false,
+      ...settings,
+    });
+    return { first, second, primary, alternate };
+  }
+
+  it("alternates equal-load reviews between providers and reports the selected model", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("POOL_MARKER\n");
+    const { first, second } = await reviewPair(cwd);
+    const ctx = { cwd } as ExtensionContext;
+    const a = await executeWaiReview(cwd, "first pool review", ctx, { files: ["a.txt"] }, undefined, () => {});
+    const b = await executeWaiReview(cwd, "second pool review", ctx, { files: ["a.txt"] }, undefined, () => {});
+    assert.equal(a.error, undefined);
+    assert.equal(b.error, undefined);
+    assert.equal(a.model?.provider, "openai");
+    assert.equal(b.model?.provider, "anthropic");
+    assert.equal(a.level, "high");
+    assert.equal(b.level, "high");
+    assert.equal(first.bodies.length, 1);
+    assert.equal(second.bodies.length, 1);
+    assert.deepEqual(first.authorizations, ["Bearer primary-test-key"]);
+    assert.deepEqual(second.authorizations, ["Bearer alternate-test-key"]);
+    assert.equal(JSON.parse(second.bodies[0]).model, "claude-sonnet-4-6");
+  });
+
+  it(
+    "fails over a rate-limited review and applies completion only from the second model",
+    { skip: !hasGit },
+    async () => {
+      const cwd = makeRepoWithChange("POOL_MARKER\n");
+      const { first, second } = await reviewPair(
+        cwd,
+        { failOnMarker: "POOL_MARKER", failStatus: 429 },
+        { stepComplete: true },
+      );
+      setPlan(cwd, { summary: "pool routing", todo: ["Implement routing"], acceptanceCriteria: [] });
+      const updates: string[] = [];
+      const result = await executeWaiReview(
+        cwd,
+        "review pool routing",
+        { cwd } as ExtensionContext,
+        {},
+        undefined,
+        (_step, _stage, message) => {
+          updates.push(message);
+        },
+      );
+      assert.equal(result.error, undefined);
+      assert.equal(result.review?.verdict, "pass");
+      assert.equal(result.model?.provider, "anthropic");
+      assert.equal(getState(cwd).completedSteps, 1);
+      assert.equal(first.bodies.length, 1);
+      assert.equal(second.bodies.length, 1);
+      assert.ok(updates.some((message) => message.includes("unavailable; trying anthropic:")));
+    },
+  );
+
+  it("keeps code findings on the selected model without treating them as an outage", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("POOL_MARKER\n");
+    const { first, second } = await reviewPair(cwd, { verdict: "needs-work" });
+    const result = await executeWaiReview(cwd, "review findings", { cwd } as ExtensionContext, {}, undefined, () => {});
+    assert.equal(result.review?.verdict, "needs-work");
+    assert.equal(result.model?.provider, "openai");
+    assert.equal(first.bodies.length, 1);
+    assert.equal(second.bodies.length, 0);
+  });
+
+  it(
+    "restarts incomplete parallel work on the second model before recording review outcomes",
+    { skip: !hasGit },
+    async () => {
+      const cwd = makeRepoWithMultiFileChange({ "a.txt": "POOL_FAILED_WORKER\n", "b.txt": "POOL_PASSED_WORKER\n" });
+      const { first, second } = await reviewPair(
+        cwd,
+        { failOnMarker: "POOL_FAILED_WORKER", failStatus: 503 },
+        undefined,
+        { parallelReview: 2, reviewBatchFiles: 1 },
+      );
+      const result = await executeWaiReview(
+        cwd,
+        "review pool workers",
+        { cwd } as ExtensionContext,
+        {},
+        undefined,
+        () => {},
+      );
+      assert.equal(result.error, undefined);
+      assert.equal(result.review?.verdict, "pass");
+      assert.equal(result.review?.coverageGaps?.length ?? 0, 0);
+      assert.equal(result.model?.provider, "anthropic");
+      assert.equal(first.bodies.length, 2);
+      assert.equal(second.bodies.length, 2);
+      assert.equal(
+        Object.values(getReviewedFiles(cwd)).every((file) => file.verdict === "pass"),
+        true,
+      );
+      assert.equal(result.execution?.modelCalls, 4);
+      assert.equal(result.cost?.estimatedInputTokens, 300);
+      assert.equal(result.cost?.estimatedOutputTokens, 150);
+      assert.equal(getSessionCost(cwd).calls, 3, "paid primary work remains recorded exactly once");
+    },
+  );
+
+  it("keeps cost-budget refusals local without trying the second model", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("POOL_MARKER\n");
+    const { first, second } = await reviewPair(cwd, undefined, undefined, { costBudgetUsd: 0 });
+    const result = await executeWaiReview(cwd, "review budget", { cwd } as ExtensionContext, {}, undefined, () => {});
+    assert.match(result.error ?? "", /budget/);
+    assert.equal(first.bodies.length, 0);
+    assert.equal(second.bodies.length, 0);
+  });
+
+  it("stops failover when the workspace changes during the failed request", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("POOL_MARKER\n");
+    const { first, second } = await reviewPair(cwd, {
+      failOnMarker: "POOL_MARKER",
+      onRequest: () => writeFileSync(join(cwd, "a.txt"), "changed while reviewing\n"),
+    });
+    const result = await executeWaiReview(
+      cwd,
+      "review changing tree",
+      { cwd } as ExtensionContext,
+      {},
+      undefined,
+      () => {},
+    );
+    assert.match(result.error ?? "", /Workspace changed/);
+    assert.equal(first.bodies.length, 1);
+    assert.equal(second.bodies.length, 0);
+    assert.equal(getState(cwd).completedSteps, 0);
+  });
+
+  it("tries each unavailable model once and preserves both failures", { skip: !hasGit }, async () => {
+    const cwd = makeRepoWithChange("POOL_MARKER\n");
+    const { first, second } = await reviewPair(
+      cwd,
+      { failOnMarker: "POOL_MARKER", failStatus: 401 },
+      { failOnMarker: "POOL_MARKER", failStatus: 503 },
+    );
+    const result = await executeWaiReview(
+      cwd,
+      "review unavailable pair",
+      { cwd } as ExtensionContext,
+      {},
+      undefined,
+      () => {},
+    );
+    assert.match(result.error ?? "", /401/);
+    assert.match(result.error ?? "", /503/);
+    assert.equal(result.model?.provider, "anthropic");
+    assert.equal(first.bodies.length, 1);
+    assert.equal(second.bodies.length, 1);
+    assert.equal(Object.keys(getReviewedFiles(cwd)).length, 0);
+  });
 
   it("reports routed depth and explicit overrides even when no model is configured", { skip: !hasGit }, async () => {
     const cwd = makeRepoWithMultiFileChange({ "router.ts": "if (!isAdmin) throw new Error('Denied');\n" });

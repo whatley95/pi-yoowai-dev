@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReviewBatch, reviewDiffAllowance, type ReviewBatchInput } from "./review-helpers.js";
+import {
+  runReviewBatch,
+  reviewDiffAllowance,
+  ReviewBatchUnavailableError,
+  type ReviewBatchInput,
+} from "./review-helpers.js";
 import { estimateTokens } from "../token-budget.js";
 import { getAgentDir, setAgentDirForTests } from "../pi-paths.js";
 import { getSessionCost, recordCost } from "../cost-tracker.js";
@@ -88,6 +93,32 @@ function mockModel(answer: (system: string, user: string) => unknown): void {
 }
 
 describe("review batch evidence recovery", () => {
+  it("retains paid context rounds and execution when a later provider request fails", async () => {
+    const input = setup();
+    writeFileSync(join(input.cwd, "pubspec.lock"), "dependency: locked\n");
+    let requests = 0;
+    global.fetch = async () => {
+      if (++requests > 1) return new Response(JSON.stringify({ error: "overloaded" }), { status: 529 });
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: JSON.stringify({ tools: [{ tool: "read_file", path: "pubspec.lock" }] }) } }],
+          usage: { prompt_tokens: 100, completion_tokens: 50 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+    await assert.rejects(runReviewBatch(input), (error: unknown) => {
+      assert.ok(error instanceof ReviewBatchUnavailableError);
+      assert.equal(error.usage?.estimatedInputTokens, 100);
+      assert.equal(error.usage?.estimatedOutputTokens, 50);
+      assert.equal(error.execution.modelCalls, 2);
+      assert.equal(error.execution.contextRequests, 1);
+      return true;
+    });
+    assert.equal(requests, 2);
+    assert.equal(getSessionCost(input.cwd).calls, 1, "the paid context response is charged once");
+  });
+
   it("supplies a complete identical addition once, retaining its full patch and source tail", async () => {
     const input = setup();
     const content = "UNIQUE_SOURCE_MARKER\n";

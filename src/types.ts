@@ -33,6 +33,9 @@ export type WaiModelTask =
   | "explain"
   | "vision";
 
+/** Review roles that can select a primary and an optional alternate model. */
+export type ReviewModelTask = Extract<WaiModelTask, "review" | "reviewMin" | "reviewMed" | "reviewHigh">;
+
 /** Review depth preset. Higher levels spend more tokens and catch deeper issues. */
 export type ReviewLevel = "min" | "med" | "high";
 
@@ -63,6 +66,13 @@ export interface YoowaiConfig {
   secondary: import("./types/secondary-model.js").SecondaryModelConfig;
   /** Per-task model overrides. Any omitted field falls back to `secondary`. */
   taskModels?: Partial<Record<WaiModelTask, Partial<import("./types/secondary-model.js").SecondaryModelConfig>>>;
+  /** Optional second model per review role. Model identity needs both provider and id;
+   *  null disables an inherited alternate for that role. */
+  reviewAlternates?: Partial<
+    Record<ReviewModelTask, Partial<import("./types/secondary-model.js").SecondaryModelConfig> | null>
+  >;
+  /** Review pool selection. Least busy uses round-robin ties; default least-busy. */
+  reviewLoadBalance?: "round-robin" | "failover" | "least-busy";
   /** Council of models that judge in parallel when `wai.judge` runs; their verdicts are synthesized into one final judgment.
    *  Each entry is a partial secondary config (a "provider/model-id" string in settings is normalized to `{ provider, id }`),
    *  merged over `secondary` the same way `taskModels` overrides resolve. Prefer different model families per member.
@@ -448,6 +458,8 @@ export interface WaiToolParams {
 }
 
 export interface WaiToolResult {
+  /** Result reused from a previous assessment; cache reuse makes no model call. */
+  cached?: boolean;
   /** Locally derived diagnostics; these do not grant completion or change review gates. */
   recovery?: ReviewRecovery;
   workflow?: WorkflowSnapshot;
@@ -552,6 +564,8 @@ export interface CallSecondaryModelOptions {
   /** Explicit per-call secondary config (e.g. a judge council member). Takes precedence over
    *  taskModels/secondary resolution; auth, backend dispatch, retries, and cost budget still apply. */
   secondaryOverride?: import("./types/secondary-model.js").SecondaryModelConfig;
+  /** Keep a prepared review on its selected model rather than generic fallbacks. */
+  disableModelFallbacks?: boolean;
   /** When true, request native structured JSON output if the provider supports it. */
   structuredOutput?: boolean;
   /** Optional callback invoked with accumulated generated text during SDK streaming. */

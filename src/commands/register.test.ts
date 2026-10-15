@@ -31,6 +31,8 @@ import {
   mergeYoowaiConfig,
   resolveTaskModel,
   resolveReviewTaskModel,
+  resolveReviewModelCandidates,
+  resolveReviewAlternateModel,
   resolveJudgeCouncilMembers,
 } from "../config.js";
 import { setSdkGetModelOverride } from "../backends/sdk-backend.js";
@@ -746,6 +748,23 @@ describe("effective model requests in commands", () => {
                 reviewHigh: { id: "deep-review", baseUrl },
                 suggest: { id: "suggest-fallback", baseUrl },
               },
+              reviewAlternates: Object.fromEntries(
+                [
+                  ["review", "second-review"],
+                  ["reviewMed", "second-medium"],
+                  ["reviewHigh", "second-deep"],
+                ].map(([role, id]) => [
+                  role,
+                  {
+                    provider: "openai",
+                    id,
+                    backend: "http",
+                    baseUrl,
+                    apiKey: "second-test-key",
+                    thinking: "off",
+                  },
+                ]),
+              ),
             },
           }),
         );
@@ -780,7 +799,24 @@ describe("effective model requests in commands", () => {
                   : "deep-review";
         assert.deepStrictEqual(
           bodies.map((body) => body.model),
-          task ? [expected] : ["base-model", "deep-review", "review-fallback", "medium-review", "suggest-fallback"],
+          task
+            ? [
+                expected,
+                ...(task.toLowerCase().startsWith("review")
+                  ? [task === "reviewMin" ? "second-review" : task === "REVIEWMED" ? "second-medium" : "second-deep"]
+                  : []),
+              ]
+            : [
+                "base-model",
+                "deep-review",
+                "second-deep",
+                "review-fallback",
+                "second-review",
+                "medium-review",
+                "second-medium",
+                "suggest-fallback",
+              ],
+          notifications.join("\n"),
         );
         assert.ok(
           notifications.some((message) => message.includes("wai-test OK")),
@@ -1229,7 +1265,7 @@ describe("/wai-review-model", () => {
 });
 
 describe("review model overview", () => {
-  it("shows three effective depths first, then shared fallback, mode, and reset", () => {
+  it("shows effective primary/second pairs, separate second pickers, and load balancing", () => {
     const items = buildReviewModelItems({
       secondary: { provider: "picker", id: "base", thinking: "off" },
       reviewLevel: "auto",
@@ -1237,13 +1273,27 @@ describe("review model overview", () => {
     });
     assert.deepStrictEqual(
       items.map((item) => item.target),
-      ["reviewMin", "reviewMed", "reviewHigh", "review", "level", "reset"],
+      [
+        "reviewMin",
+        "reviewMed",
+        "reviewHigh",
+        "review",
+        "level",
+        "balance",
+        "second:reviewMin",
+        "second:reviewMed",
+        "second:reviewHigh",
+        "second:review",
+        "reset",
+        "reset-second",
+      ],
     );
     assert.match(items[0].text, /^review-min: picker:shared.*off.*via review/);
     assert.match(items[1].text, /^review-med: picker:shared.*via review/);
     assert.match(items[2].text, /^review-max \(high\): picker:deep.*high.*via reviewHigh.*✓ configured/);
     assert.match(items[3].text, /^Shared fallback: picker:shared/);
     assert.match(items[4].text, /automatic.*med default/);
+    assert.match(items[5].text, /least-busy.*alternate ties.*fail over/);
     assert.ok(!items[0].text.includes("✓ configured"), "inherited models have no own override marker");
   });
 
@@ -1423,6 +1473,235 @@ describe("review model overview", () => {
   }
 });
 
+describe("second review model selection", () => {
+  for (const args of ["second reset high", "balance round-robin"]) {
+    for (const failure of ["invalid settings", "cannot create settings directory"] as const) {
+      it(`reports ${failure} without confirming /wai-review-model ${args}`, async () => {
+        const tempRoot = mkdtempSync(join(tmpdir(), "wai-review-save-failure-"));
+        const cwd = mkdtempSync(join(tmpdir(), "wai-review-save-failure-cwd-"));
+        const originalAgentDir = getAgentDir();
+        try {
+          const agentDir = failure === "invalid settings" ? tempRoot : join(tempRoot, "blocked", "agent");
+          if (failure === "invalid settings") writeFileSync(join(agentDir, "settings.json"), "{broken");
+          else writeFileSync(join(tempRoot, "blocked"), "keep this file");
+          setAgentDirForTests(() => agentDir);
+          const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+          registerWaiCommands(
+            {
+              registerCommand: (
+                name: string,
+                def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+              ) => commands.set(name, def),
+            } as unknown as ExtensionAPI,
+            new Map(),
+          );
+          const notifications: Array<{ text: string; level: string }> = [];
+          const ctx = {
+            cwd,
+            ui: { notify: (text: string, level: string) => notifications.push({ text, level }) },
+          } as unknown as ExtensionContext;
+          await commands.get("wai-review-model")!.handler(args, ctx);
+          assert.ok(
+            notifications.some(({ text, level }) => text.startsWith("wai-review-model failed:") && level === "error"),
+          );
+          assert.ok(
+            !notifications.some(
+              ({ text }) =>
+                text.includes("disabled") ||
+                text.includes("Effective review models") ||
+                text.includes("override remains active"),
+            ),
+            JSON.stringify(notifications),
+          );
+          if (failure === "invalid settings")
+            assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), "{broken");
+          else assert.equal(readFileSync(join(tempRoot, "blocked"), "utf8"), "keep this file");
+        } finally {
+          setAgentDirForTests(() => originalAgentDir);
+          for (const dir of [tempRoot, cwd]) {
+            assert.equal(dirname(realpathSync(dir)), realpathSync(tmpdir()));
+            rmSync(dir, { recursive: true, force: true });
+          }
+        }
+      });
+    }
+  }
+
+  for (const scenario of [
+    "high",
+    "shared",
+    "same provider",
+    "switch provider",
+    "cancel",
+    "reset inherited",
+    "project override",
+    "balance",
+    "balance picker",
+    "overview second",
+    "malformed alternates",
+  ] as const) {
+    it(`manages an independent second profile: ${scenario}`, async () => {
+      const agentDir = mkdtempSync(join(tmpdir(), "wai-second-agent-"));
+      const cwd = mkdtempSync(join(tmpdir(), "wai-second-cwd-"));
+      const originalAgentDir = getAgentDir();
+      try {
+        setAgentDirForTests(() => agentDir);
+        const settingsPath = join(agentDir, "settings.json");
+        const previousSecond = {
+          provider: "picker",
+          id: "second-old",
+          thinking: "low",
+          backend: "http",
+          baseUrl: "https://second.invalid",
+          apiKey: "second-key",
+        };
+        const initial = {
+          unrelated: 42,
+          "pi-yoowai": {
+            secondary: {
+              provider: "picker",
+              id: "base",
+              thinking: "high",
+              baseUrl: "https://primary.invalid",
+              apiKey: "primary-key",
+            },
+            reviewLevel: "high",
+            taskModels: { review: { id: "shared" }, reviewHigh: { id: "deep" } },
+            reviewAlternates:
+              scenario === "malformed alternates"
+                ? []
+                : {
+                    review: { provider: "picker", id: "shared-second", thinking: "off" },
+                    ...(scenario === "same provider" || scenario === "switch provider"
+                      ? { reviewHigh: previousSecond }
+                      : {}),
+                  },
+          },
+        };
+        const initialText = JSON.stringify(initial);
+        writeFileSync(settingsPath, initialText);
+        const projectText = JSON.stringify({
+          "pi-yoowai": {
+            reviewAlternates: { reviewHigh: { provider: "picker", id: "project-second", thinking: "off" } },
+            reviewLoadBalance: "failover",
+          },
+        });
+        if (scenario === "project override") {
+          mkdirSync(join(cwd, ".pi"));
+          writeFileSync(join(cwd, ".pi", "settings.json"), projectText);
+        }
+        const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
+        registerWaiCommands(
+          {
+            registerCommand: (name: string, def: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) =>
+              commands.set(name, def),
+          } as unknown as ExtensionAPI,
+          new Map(),
+        );
+        const models = [
+          ...["base", "next", "shared-second", "second-old", "project-second"].map((id) => ({
+            provider: "picker",
+            id,
+            reasoning: false,
+          })),
+          { provider: "other", id: "next", reasoning: false },
+        ];
+        const notifications: string[] = [];
+        const titles: string[] = [];
+        let overviewCalls = 0;
+        const ctx = {
+          cwd,
+          modelRegistry:
+            scenario === "reset inherited" || scenario.startsWith("balance")
+              ? undefined
+              : {
+                  getAll: () => models,
+                  getAvailable: () => models,
+                  getProviderAuthStatus: () => ({ configured: true }),
+                  find: (provider: string, id: string) =>
+                    models.find((model) => model.provider === provider && model.id === id),
+                },
+          ui: {
+            notify: (text: string) => notifications.push(text),
+            select: async (title: string, items: string[]) => {
+              titles.push(title);
+              if (title.startsWith("Review models ("))
+                return overviewCalls++ === 0
+                  ? items.find((item) => item.startsWith("Second model for review-max"))
+                  : undefined;
+              if (title.startsWith("Pick provider")) return items.find((item) => item.startsWith("picker "));
+              if (title.startsWith("Pick model")) {
+                if (scenario === "project override")
+                  assert.ok(items.some((item) => item === "project-second ✓ current"));
+                return scenario === "cancel" ? undefined : items.find((item) => item.startsWith("next"));
+              }
+              if (title.startsWith("Pick thinking")) return items.find((item) => item.startsWith("off"));
+              if (title === "Pick review load balance:") return items.find((item) => item.startsWith("round-robin"));
+              throw new Error(`Unexpected picker: ${title}`);
+            },
+          },
+        } as unknown as ExtensionContext;
+        const args =
+          scenario === "shared"
+            ? "second all picker next"
+            : scenario === "reset inherited"
+              ? "second reset med"
+              : scenario === "balance"
+                ? "balance round-robin"
+                : scenario === "balance picker"
+                  ? "balance"
+                  : scenario === "overview second"
+                    ? ""
+                    : `second max ${scenario === "switch provider" ? "other" : "picker"}`;
+        await commands.get("wai-review-model")!.handler(args, ctx);
+        const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
+        const wai = saved["pi-yoowai"];
+        assert.equal(saved.unrelated, 42);
+        assert.deepStrictEqual(wai.secondary, initial["pi-yoowai"].secondary);
+        assert.deepStrictEqual(wai.taskModels, initial["pi-yoowai"].taskModels);
+        assert.equal(wai.reviewLevel, "high");
+        assert.ok(!titles.includes("Pick default review level:"), "second slots do not change review depth");
+        if (scenario === "cancel") {
+          assert.equal(readFileSync(settingsPath, "utf8"), initialText);
+        } else if (scenario === "reset inherited") {
+          assert.equal(wai.reviewAlternates.reviewMed, null);
+          assert.equal(resolveReviewAlternateModel(loadYoowaiConfig(cwd), "med"), undefined);
+          assert.equal(resolveReviewAlternateModel(loadYoowaiConfig(cwd), "min")?.id, "shared-second");
+          assert.equal(titles.length, 0, "disable requires no model registry");
+        } else if (scenario.startsWith("balance")) {
+          assert.equal(wai.reviewLoadBalance, "round-robin");
+          assert.deepStrictEqual(wai.reviewAlternates, initial["pi-yoowai"].reviewAlternates);
+        } else {
+          const target = scenario === "shared" ? "review" : "reviewHigh";
+          assert.ok(
+            !Array.isArray(wai.reviewAlternates),
+            "save alternates as an object even after malformed array settings",
+          );
+          assert.equal(wai.reviewAlternates[target].id, "next", notifications.join("\n"));
+          assert.equal(wai.reviewAlternates[target].provider, scenario === "switch provider" ? "other" : "picker");
+          assert.equal(wai.reviewAlternates[target].thinking, "off");
+          assert.equal(wai.reviewAlternates[target].apiKey, scenario === "same provider" ? "second-key" : undefined);
+          assert.equal(
+            wai.reviewAlternates[target].baseUrl,
+            scenario === "same provider" ? "https://second.invalid" : undefined,
+          );
+          if (scenario === "project override") {
+            assert.equal(resolveReviewAlternateModel(loadYoowaiConfig(cwd), "high")?.id, "project-second");
+            assert.equal(readFileSync(join(cwd, ".pi", "settings.json"), "utf8"), projectText);
+            assert.ok(notifications.some((text) => text.includes("project-second")));
+          }
+        }
+      } finally {
+        setAgentDirForTests(() => originalAgentDir);
+        for (const dir of [agentDir, cwd]) {
+          assert.equal(dirname(realpathSync(dir)), realpathSync(tmpdir()));
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    });
+  }
+});
+
 describe("buildModelConfigEntry", () => {
   it("preserves existing provider-specific fields when re-selecting the same provider", () => {
     const prev = {
@@ -1494,6 +1773,9 @@ describe("/wai-model reset all listed roles", () => {
   const excludedProfiles = (config: YoowaiConfig) => ({
     shared: resolveTaskModel(config, "review"),
     depths: (["min", "med", "high"] as const).map((level) => resolveReviewTaskModel(config, level)),
+    reviewPairs: ([undefined, "min", "med", "high"] as const).map((level) =>
+      resolveReviewModelCandidates(config, level),
+    ),
     synthesis: resolveTaskModel(config, "judge"),
     council: resolveJudgeCouncilMembers(config),
   });
@@ -1543,6 +1825,16 @@ describe("/wai-model reset all listed roles", () => {
           suggest: { id: "advisor", baseUrl: "https://task.example/v1", apiKey: "task-test-key" },
           futureRole: { id: "keep" },
         },
+        reviewAlternates: {
+          review: { provider: "other", id: "shared-second" },
+          reviewMed: {
+            provider: "old",
+            id: "medium-second",
+            apiKey: "second-test-key",
+            baseUrl: "https://second.example/v1",
+          },
+          reviewHigh: null,
+        },
         judgeCouncil: scenario === "disabled council" ? [] : ["member-one", { provider: "other", id: "member-two" }],
         reviewLevel: "auto",
         riskBasedReview: true,
@@ -1557,6 +1849,9 @@ describe("/wai-model reset all listed roles", () => {
                 review: { id: "project-review" },
                 reviewMin: { thinking: "off" },
                 suggest: { id: "project-advisor" },
+              },
+              reviewAlternates: {
+                reviewMin: { provider: "project", id: "project-second", apiKey: "project-second-key" },
               },
               judgeCouncil: ["project-member", { id: "second-project-member", thinking: "off" }],
               language: "French",

@@ -6,10 +6,13 @@ import { join } from "node:path";
 import {
   resolveTaskModel,
   resolveReviewTaskModel,
+  resolveReviewModelCandidates,
+  resolveReviewAlternateModel,
   resolveAdvisorTaskModel,
   loadYoowaiConfig,
   resolveJudgeCouncilMembers,
   formatLanguageDirective,
+  mergeYoowaiConfig,
 } from "./config.js";
 import { setAgentDirForTests, getAgentDir } from "./pi-paths.js";
 import type { YoowaiConfig } from "./types.js";
@@ -361,6 +364,245 @@ describe("resolveReviewTaskModel", () => {
     const result = resolveReviewTaskModel(config);
     assert.equal(result.provider, "anthropic");
     assert.equal(result.id, "claude-sonnet-4");
+  });
+});
+
+describe("review model pools", () => {
+  const sharedAlternate = { provider: "anthropic", id: "claude-sonnet-4" };
+
+  it("preserves primary-only selection and uses shared alternates for inherited depths", () => {
+    for (const level of [undefined, "min", "med", "high"] as const) {
+      assert.deepEqual(resolveReviewModelCandidates(baseConfig, level), [resolveReviewTaskModel(baseConfig, level)]);
+      const candidates = resolveReviewModelCandidates(
+        { ...baseConfig, reviewAlternates: { review: sharedAlternate } },
+        level,
+      );
+      assert.equal(candidates.length, 2);
+      assert.equal(candidates[0].id, baseConfig.secondary.id);
+      assert.equal(candidates[1].id, sharedAlternate.id);
+    }
+  });
+
+  it("prefers depth alternates and lets null disable shared inheritance", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      reviewAlternates: {
+        review: sharedAlternate,
+        reviewMin: null,
+        reviewHigh: { provider: "deepseek", id: "deepseek-chat" },
+      },
+    };
+    assert.equal(resolveReviewModelCandidates(config, "min").length, 1);
+    assert.equal(resolveReviewModelCandidates(config, "med")[1].id, sharedAlternate.id);
+    assert.equal(resolveReviewModelCandidates(config, "high")[1].id, "deepseek-chat");
+    assert.equal(resolveReviewModelCandidates(config)[1].id, sharedAlternate.id);
+  });
+
+  it("does not attach shared alternates to independent depth primaries", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      taskModels: { reviewHigh: { id: "gpt-4o" }, reviewMed: { thinking: "high" } },
+      reviewAlternates: { review: sharedAlternate },
+    };
+    assert.equal(resolveReviewModelCandidates(config, "high").length, 1);
+    assert.equal(resolveReviewModelCandidates(config, "med").length, 2);
+    config.reviewAlternates!.reviewHigh = sharedAlternate;
+    const candidates = resolveReviewModelCandidates(config, "high");
+    assert.equal(candidates[0].id, "gpt-4o");
+    assert.equal(candidates[1].id, sharedAlternate.id);
+  });
+
+  it("requires both identity fields for an alternate and deduplicates identical models", () => {
+    for (const invalid of [{ id: "claude-sonnet-4" }, { provider: "anthropic" }, { provider: " ", id: "claude" }]) {
+      assert.equal(resolveReviewModelCandidates({ ...baseConfig, reviewAlternates: { review: invalid } }).length, 1);
+    }
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      reviewAlternates: { review: { provider: "OPENAI", id: baseConfig.secondary.id, thinking: "high" } },
+    };
+    assert.equal(resolveReviewModelCandidates(config).length, 1);
+    assert.equal(resolveReviewAlternateModel(config)?.thinking, "high");
+  });
+
+  it("inherits request preferences without carrying credentials or capacity across models", () => {
+    const config: YoowaiConfig = {
+      secondary: {
+        ...baseConfig.secondary,
+        backend: "http",
+        thinking: "high",
+        cacheRetention: "long",
+        transport: "sse",
+        maxRetries: 0,
+        maxRetryDelayMs: 1000,
+        timeoutMs: 30000,
+        baseUrl: "https://private.example",
+        apiKey: "primary-key",
+        style: "openai-compatible",
+        authHeader: "X-Primary-Key",
+        authPrefix: "Private ",
+        contextWindow: 1000000,
+        maxOutputTokens: 32000,
+      },
+      reviewAlternates: { review: sharedAlternate },
+    };
+    const alternate = resolveReviewModelCandidates(config)[1];
+    assert.equal(alternate.thinking, "high");
+    assert.equal(alternate.backend, undefined, "second models default to Pi SDK instead of the primary's HTTP route");
+    assert.equal(alternate.cacheRetention, "long");
+    assert.equal(alternate.transport, "sse");
+    assert.equal(alternate.maxRetries, 0);
+    assert.equal(alternate.maxRetryDelayMs, 1000);
+    assert.equal(alternate.timeoutMs, 30000);
+    for (const key of [
+      "baseUrl",
+      "apiKey",
+      "style",
+      "authHeader",
+      "authPrefix",
+      "contextWindow",
+      "maxOutputTokens",
+    ] as const) {
+      assert.equal(alternate[key], undefined, key);
+    }
+    config.reviewAlternates!.review = { provider: "openai", id: "gpt-4o" };
+    assert.equal(resolveReviewModelCandidates(config)[1].contextWindow, undefined);
+    assert.equal(resolveReviewModelCandidates(config)[1].apiKey, undefined);
+  });
+
+  it("uses explicit alternate connection and capacity settings", () => {
+    const config: YoowaiConfig = {
+      ...baseConfig,
+      reviewAlternates: {
+        review: {
+          ...sharedAlternate,
+          backend: "http",
+          baseUrl: "https://alternate.example",
+          apiKey: "alternate-key",
+          style: "anthropic",
+          authHeader: false,
+          authPrefix: "Token ",
+          contextWindow: 200000,
+          maxOutputTokens: 8000,
+          thinking: "low",
+        },
+      },
+    };
+    const alternate = resolveReviewModelCandidates(config)[1];
+    assert.equal(alternate.backend, "http");
+    assert.equal(alternate.baseUrl, "https://alternate.example");
+    assert.equal(alternate.apiKey, "alternate-key");
+    assert.equal(alternate.style, "anthropic");
+    assert.equal(alternate.authHeader, false);
+    assert.equal(alternate.authPrefix, "Token ");
+    assert.equal(alternate.contextWindow, 200000);
+    assert.equal(alternate.maxOutputTokens, 8000);
+    assert.equal(alternate.thinking, "low");
+  });
+
+  it("merges role-specific settings layers, trims identities and supports explicit clearing", () => {
+    const global = mergeYoowaiConfig(baseConfig, {
+      reviewAlternates: {
+        review: { provider: " anthropic ", id: " claude-sonnet-4 ", thinking: "high" },
+        reviewMin: { provider: "deepseek", id: "deepseek-chat" },
+      },
+    });
+    const project = mergeYoowaiConfig(global, {
+      reviewAlternates: { review: { thinking: "low" }, reviewMin: null, reviewHigh: sharedAlternate },
+    });
+    assert.equal(project.reviewAlternates?.review?.provider, "anthropic");
+    assert.equal(project.reviewAlternates?.review?.id, "claude-sonnet-4");
+    assert.equal(project.reviewAlternates?.review?.thinking, "low");
+    assert.equal(project.reviewAlternates?.reviewMin, null);
+    assert.equal(project.reviewAlternates?.reviewHigh?.id, "claude-sonnet-4");
+    assert.equal(resolveReviewModelCandidates(project, "min").length, 1);
+  });
+
+  it("drops model-bound settings when a settings layer replaces the alternate identity", () => {
+    const global = mergeYoowaiConfig(baseConfig, {
+      reviewAlternates: {
+        review: {
+          ...sharedAlternate,
+          thinking: "high",
+          apiKey: "old-key",
+          baseUrl: "https://old.example",
+          style: "anthropic",
+          authHeader: "X-Old",
+          authPrefix: "Old ",
+          contextWindow: 200000,
+          maxOutputTokens: 12000,
+        },
+      },
+    });
+    const project = mergeYoowaiConfig(global, {
+      reviewAlternates: { review: { provider: "openai", id: "gpt-4o" } },
+    });
+    const alternate = resolveReviewModelCandidates(project)[1];
+    assert.equal(alternate.thinking, "high");
+    for (const key of [
+      "baseUrl",
+      "apiKey",
+      "style",
+      "authHeader",
+      "authPrefix",
+      "contextWindow",
+      "maxOutputTokens",
+    ] as const) {
+      assert.equal(alternate[key], undefined, key);
+    }
+  });
+
+  it("ignores malformed entries and incomplete identity replacement without losing valid settings", () => {
+    const global = mergeYoowaiConfig(baseConfig, { reviewAlternates: { review: sharedAlternate } });
+    for (const invalid of ["claude", [], 3, { provider: "openai" }, { id: "gpt-4o" }, { provider: 3, id: "gpt-4o" }]) {
+      const project = mergeYoowaiConfig(global, { reviewAlternates: { review: invalid, judge: sharedAlternate } });
+      assert.deepEqual(project.reviewAlternates, global.reviewAlternates);
+    }
+    for (const invalid of ["invalid", [], false, null]) {
+      assert.deepEqual(
+        mergeYoowaiConfig(global, { reviewAlternates: invalid }).reviewAlternates,
+        global.reviewAlternates,
+      );
+    }
+    assert.equal(
+      mergeYoowaiConfig(baseConfig, { reviewAlternates: { review: { thinking: "high" } } }).reviewAlternates,
+      undefined,
+    );
+  });
+
+  it("defaults to least-busy and accepts only supported load balance modes", () => {
+    assert.equal(mergeYoowaiConfig(baseConfig, {}).reviewLoadBalance, "least-busy");
+    for (const mode of ["least-busy", "round-robin", "failover"] as const) {
+      const config = mergeYoowaiConfig(baseConfig, { reviewLoadBalance: mode });
+      assert.equal(config.reviewLoadBalance, mode);
+      assert.equal(mergeYoowaiConfig(config, { reviewLoadBalance: "random" }).reviewLoadBalance, mode);
+    }
+  });
+
+  it("loads global and project pool settings from disk", () => {
+    const cwd = makeTempDir("config-review-pool-");
+    const agentDir = makeTempDir("config-review-pool-agent-");
+    const previousAgentDir = getAgentDir();
+    try {
+      setAgentDirForTests(() => agentDir);
+      writeFileSync(
+        join(agentDir, "settings.json"),
+        JSON.stringify({
+          "pi-yoowai": { reviewAlternates: { review: sharedAlternate }, reviewLoadBalance: "failover" },
+        }),
+      );
+      writeProjectSettings(cwd, { reviewAlternates: { reviewMin: null }, reviewLoadBalance: "least-busy" });
+      const loaded = loadYoowaiConfig(cwd);
+      assert.equal(loaded.reviewAlternates?.review?.id, sharedAlternate.id);
+      assert.equal(loaded.reviewAlternates?.reviewMin, null);
+      assert.equal(loaded.reviewLoadBalance, "least-busy");
+      writeFileSync(join(agentDir, "settings.json"), "{}");
+      writeProjectSettings(cwd, {});
+      assert.equal(loadYoowaiConfig(cwd).reviewLoadBalance, "least-busy");
+    } finally {
+      setAgentDirForTests(() => previousAgentDir);
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 });
 

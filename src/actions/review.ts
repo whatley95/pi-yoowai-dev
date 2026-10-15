@@ -7,7 +7,8 @@ import { loadYoowaiConfig, resolveReviewTaskModel, resolveJudgeCouncilMembers } 
 import { isSafeRelativePath, normalizeReviewPath, resolveProjectPath } from "../path-security.js";
 import { getDiff, splitDiffByFile, getVcsInfo } from "../diff-grabber.js";
 import { loadConventions, formatConventions } from "../conventions.js";
-import { providerSupportsJsonObject, estimateCost } from "../secondary-model.js";
+import { providerSupportsJsonObject, estimateCost, SecondaryModelUnavailableError } from "../secondary-model.js";
+import { acquireReviewModel } from "../review-model-router.js";
 import { loadFileContentsForReview, isReviewableFile, type FileContentEntry } from "../file-loader.js";
 import { buildRelatedContext, buildFileOutlines } from "../context-retrieval.js";
 import { buildCodemap } from "../codemap.js";
@@ -27,7 +28,7 @@ import {
   truncateToTokenBudget,
   type ReviewBudget,
 } from "../token-budget.js";
-import { getSessionCost, getReservedCost, formatCost } from "../cost-tracker.js";
+import { getSessionCost, getReservedCost, formatCost, emptyRecordedUsage } from "../cost-tracker.js";
 import { logEvent } from "../logger.js";
 import {
   getState,
@@ -58,6 +59,7 @@ import {
   runWithConcurrencyLimit,
   mergeReviewResults,
   runReviewBatch,
+  ReviewBatchUnavailableError,
   reviewDiffAllowance,
   type ReviewBatchInput,
   type ConcurrencyOutcome,
@@ -76,6 +78,8 @@ import type {
   ReviewLevel,
   ReviewLevelSelection,
   ReviewExecution,
+  SecondaryModelConfig,
+  YoowaiConfig,
 } from "../types.js";
 import { INCONCLUSIVE_REVIEW_GUIDANCE } from "../workflow-guidance.js";
 import { withReviewRecovery } from "../review-recovery.js";
@@ -162,14 +166,105 @@ type ReviewArguments = [
   progress: ProgressReporter,
 ];
 
+function mergeReviewExecution(a: ReviewExecution, b: ReviewExecution): ReviewExecution {
+  const merged = { ...a };
+  for (const key of Object.keys(merged) as Array<keyof ReviewExecution>) merged[key] += b[key];
+  return merged;
+}
+
+/** Failed provider calls do not return a batch result, but still took time and
+ *  made at least one model attempt. Successful calls report their own rounds. */
+function failedReviewExecution(elapsedMs: number, segment = false): ReviewExecution {
+  return {
+    batches: 1,
+    segments: segment ? 1 : 0,
+    modelCalls: 1,
+    contextRequests: 0,
+    modelTimeMs: elapsedMs,
+    contextTimeMs: 0,
+    verificationTimeMs: 0,
+  };
+}
+
 export async function executeWaiReview(...args: ReviewArguments): Promise<WaiToolResult> {
+  const [cwd, , , , signal, progress] = args;
   let levelSelection: ReviewLevelSelection | undefined;
-  const result = await executeReview(...args, (selection) => {
+  let route: ReturnType<typeof acquireReviewModel> | undefined;
+  let attempt = 0;
+  let workspace: ReturnType<typeof captureWorkspace> | undefined;
+  let attemptedCost: UsageCost | undefined;
+  let attemptedExecution: ReviewExecution | undefined;
+  const selectModel = (
+    selection: ReviewLevelSelection,
+    config: YoowaiConfig,
+    snapshot: ReturnType<typeof captureWorkspace>,
+  ): SecondaryModelConfig | undefined => {
     levelSelection = selection;
-  });
-  // Compute diagnostics for this invocation, including cache hits and local
-  // failures. Do not reuse a previous caller's selection reason from cache.
-  return withReviewRecovery({ ...result, ...(levelSelection ? { level: levelSelection.level, levelSelection } : {}) });
+    workspace ??= snapshot;
+    route ??= acquireReviewModel(cwd, config, selection.level);
+    return route.models[attempt];
+  };
+  const retryUnavailable = (error: unknown, usage?: UsageCost, execution?: ReviewExecution): void => {
+    signal?.throwIfAborted();
+    if (error instanceof SecondaryModelUnavailableError && route && attempt + 1 < route.models.length) {
+      if (usage) attemptedCost = attemptedCost ? mergeUsageCost(attemptedCost, usage) : usage;
+      if (execution)
+        attemptedExecution = attemptedExecution
+          ? mergeReviewExecution(attemptedExecution, execution)
+          : { ...execution };
+      throw error;
+    }
+  };
+  try {
+    let result: WaiToolResult;
+    try {
+      result = await executeReview(...args, selectModel, retryUnavailable);
+    } catch (error) {
+      if (!(error instanceof SecondaryModelUnavailableError) || !route) throw error;
+      signal?.throwIfAborted();
+      if (!workspace || !workspaceMatches(cwd, workspace)) {
+        result = {
+          action: "review",
+          error: "Workspace changed during review failover. Review the current tree again.",
+        };
+      } else {
+        const failed = route.models[attempt];
+        route.activate(++attempt);
+        const next = route.models[attempt];
+        progress(2, STAGES.review, `${failed.provider}:${failed.id} unavailable; trying ${next.provider}:${next.id}…`);
+        logEvent(cwd, "warn", "Review model unavailable; trying the second model", {
+          level: levelSelection?.level,
+          from: `${failed.provider}:${failed.id}`,
+          to: `${next.provider}:${next.id}`,
+        });
+        // Prepare a fresh budget, prompt and cache key for the second model.
+        // No failed/partial round is applied to plan or review-memory state.
+        result = await executeReview(...args, selectModel, retryUnavailable);
+        if (result.error) result.error = `${error.message}; second review model failed: ${result.error}`;
+      }
+    }
+    // Backend usage was recorded when each successful call settled. Aggregate
+    // only for this invocation's report; recording it again would double charge.
+    // A cache hit contributes no new usage or model rounds to the retry.
+    if (attemptedCost) {
+      result.cost = result.cached || !result.cost ? attemptedCost : mergeUsageCost(attemptedCost, result.cost);
+    } else if (attemptedExecution && result.cached) {
+      result.cost = emptyRecordedUsage(cwd);
+    }
+    if (attemptedExecution) {
+      result.execution = result.execution
+        ? mergeReviewExecution(attemptedExecution, result.execution)
+        : attemptedExecution;
+    }
+    // Compute diagnostics for this invocation, including cache hits and local
+    // failures. Do not reuse a previous caller's selection reason from cache.
+    return withReviewRecovery({
+      ...result,
+      ...(levelSelection ? { level: levelSelection.level, levelSelection } : {}),
+    });
+  } finally {
+    route?.release();
+  }
 }
 
 async function executeReview(
@@ -179,7 +274,12 @@ async function executeReview(
   options: ReviewOptions = {},
   signal: AbortSignal | undefined,
   progress: ProgressReporter,
-  onSelection: (selection: ReviewLevelSelection) => void,
+  onSelection: (
+    selection: ReviewLevelSelection,
+    config: YoowaiConfig,
+    workspace: ReturnType<typeof captureWorkspace>,
+  ) => SecondaryModelConfig | undefined,
+  retryUnavailable: (error: unknown, usage?: UsageCost, execution?: ReviewExecution) => void,
 ): Promise<WaiToolResult> {
   signal?.throwIfAborted();
   const config = loadYoowaiConfig(cwd);
@@ -271,12 +371,12 @@ async function executeReview(
     };
   }
   const selection = resolveReviewLevelSelection(config, options.level, changedFiles, diff, truncated);
-  onSelection(selection);
+  const selectedModel = onSelection(selection, config, workspace);
   const level = selection.level;
   const reviewSettings = getReviewLevelSettings(config, level);
   const effectiveConfig = { ...config, ...reviewSettings };
   // The effective depth selects the matching per-level model and tool loop.
-  let modelConfig = resolveReviewTaskModel(config, level);
+  let modelConfig = selectedModel ?? resolveReviewTaskModel(config, level);
   if (!modelConfig.provider || !modelConfig.id) {
     return { action: "review", error: REVIEW_NO_MODEL_ERROR };
   }
@@ -457,6 +557,9 @@ async function executeReview(
       : undefined,
     description,
     modelProfile,
+    // Hash the full selected settings so endpoint/auth changes cannot replay
+    // a result from a different configured service. Never persist raw keys.
+    modelSettings: buildCacheKey("review", { ...modelConfig }),
     modelCapacity: { contextWindow: modelConfig.contextWindow, maxOutputTokens: modelConfig.maxOutputTokens },
     language: config.language,
     currentStep,
@@ -513,6 +616,7 @@ async function executeReview(
         review: cached.review,
         model: cached.model,
         cost: cached.cost,
+        cached: true,
         level,
       };
     }
@@ -962,6 +1066,11 @@ async function executeReview(
           truncated: result.truncated,
         };
       } catch (error) {
+        if (error instanceof ReviewBatchUnavailableError) {
+          addExecution(error.execution);
+        } else if (error instanceof SecondaryModelUnavailableError) {
+          addExecution(failedReviewExecution(Date.now() - started, Boolean(p.hunk)));
+        }
         logEvent(cwd, signal?.aborted ? "info" : "warn", "Review batch stopped", {
           files: p.files,
           elapsedMs: Date.now() - started,
@@ -1002,14 +1111,27 @@ async function executeReview(
       }
     }
 
+    const errors = outcomes.flatMap((outcome) => (outcome.ok ? [] : [outcome.error]));
+    const failedUsage = errors.reduce<UsageCost | undefined>((total, error) => {
+      const usage = error instanceof SecondaryModelUnavailableError ? error.usage : undefined;
+      return usage ? (total ? mergeUsageCost(total, usage) : usage) : total;
+    }, undefined);
+    if (errors.length && errors.every((error) => error instanceof SecondaryModelUnavailableError)) {
+      const paidUsage = [...successes.map((success) => success.usage), ...errors.map((error) => error.usage)].reduce<
+        UsageCost | undefined
+      >((total, usage) => (usage ? (total ? mergeUsageCost(total, usage) : usage) : total), undefined);
+      retryUnavailable(errors[0], paidUsage, execution);
+    }
+
     if (successes.length === 0) {
       // Every batch failed: pin the attempted (scoped-aware) range so moving
       // HEAD cannot drop it before a successful retry.
       pinAttemptedRange(cwd, vcsInfo, diffOptions);
-      return { action: "review", error: failures.join("; "), model: modelProfile };
+      return { action: "review", error: failures.join("; "), model: modelProfile, execution, cost: failedUsage };
     }
 
     review = mergeReviewResults(successes.map((s) => s.review));
+    cost = failedUsage;
     for (const { usage } of successes) {
       const recorded = recordCostWithBudget(cwd, usage);
       cost = cost ? mergeUsageCost(cost, recorded) : recorded;
@@ -1062,13 +1184,24 @@ async function executeReview(
         continuationTruncated ||= integrated.truncated;
       } catch (error) {
         signal?.throwIfAborted();
+        const elapsed = Date.now() - integrationStarted;
+        if (error instanceof ReviewBatchUnavailableError) addExecution(error.execution);
+        else if (error instanceof SecondaryModelUnavailableError) addExecution(failedReviewExecution(elapsed));
+        if (error instanceof SecondaryModelUnavailableError && error.usage) {
+          cost = cost ? mergeUsageCost(cost, error.usage) : error.usage;
+        }
+        retryUnavailable(error, cost, {
+          ...execution,
+          verificationTimeMs: execution.verificationTimeMs + elapsed,
+        });
         review.contextLimited = true;
         review.coverageGaps = filesWithDiff;
         review.suggestions.push(
           `Segment integration check failed: ${error instanceof Error ? error.message : String(error)}`,
         );
+      } finally {
+        execution.verificationTimeMs += Date.now() - integrationStarted;
       }
-      execution.verificationTimeMs += Date.now() - integrationStarted;
     }
 
     if (failures.length > 0) {
@@ -1123,6 +1256,7 @@ async function executeReview(
 
     progress(7, STAGES.review, "Building review prompt…");
     let result: Awaited<ReturnType<typeof runReviewBatch>>;
+    const batchStarted = Date.now();
     try {
       result = await runReviewBatch({
         cwd,
@@ -1160,6 +1294,11 @@ async function executeReview(
         ...toolLoopOptions(loopConfig),
       });
     } catch (err) {
+      if (err instanceof ReviewBatchUnavailableError) addExecution(err.execution);
+      else if (err instanceof SecondaryModelUnavailableError)
+        addExecution(failedReviewExecution(Date.now() - batchStarted));
+      const paidUsage = err instanceof SecondaryModelUnavailableError ? err.usage : undefined;
+      retryUnavailable(err, paidUsage, execution);
       // The single batch failed entirely: the attempted range was NOT
       // reviewed, so pin it (scoped-aware) before returning — otherwise
       // moving HEAD would drop the whole range.
@@ -1168,6 +1307,8 @@ async function executeReview(
         action: "review",
         error: err instanceof Error ? err.message : String(err),
         model: modelProfile,
+        execution,
+        cost: paidUsage,
       };
     }
     review = result.review;

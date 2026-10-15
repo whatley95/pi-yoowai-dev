@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildReviewEvidencePack } from "./evidence-pack.js";
-import { callSecondaryModel } from "../secondary-model.js";
+import { callSecondaryModel, SecondaryModelUnavailableError } from "../secondary-model.js";
 import { ToolLoopCoverageError } from "../tool-loop.js";
 import { resolveReviewToolContext } from "./review-tool-context.js";
 import { deduplicateAddedSource } from "./review-chunks.js";
@@ -272,6 +272,17 @@ export function reviewDiffAllowance(input: ReviewBatchInput): number {
   );
 }
 
+/** Retain completed context rounds when a later provider request fails. */
+export class ReviewBatchUnavailableError extends SecondaryModelUnavailableError {
+  constructor(
+    error: SecondaryModelUnavailableError,
+    readonly execution: ReviewExecution,
+  ) {
+    super(error.message, { cause: error });
+    this.usage = error.usage;
+  }
+}
+
 export async function runReviewBatch(input: ReviewBatchInput): Promise<{
   review: ReviewResult;
   usage: UsageCost;
@@ -431,6 +442,7 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       // override, task-based resolution would clobber a per-level model with
       // the generic review task model.
       secondaryOverride: modelConfig,
+      disableModelFallbacks: true,
       structuredOutput: true,
       onStreamProgress: progress ? createStreamProgressCallback(progress, 8, STAGES.review) : undefined,
       onStreamPhase: progress
@@ -460,6 +472,13 @@ export async function runReviewBatch(input: ReviewBatchInput): Promise<{
       },
     });
   } catch (error) {
+    if (error instanceof SecondaryModelUnavailableError) {
+      // Tool-loop callbacks count completed requests. Include the failed call,
+      // keeping its elapsed time separate from completed context requests.
+      execution.modelCalls++;
+      execution.modelTimeMs = Math.max(execution.modelTimeMs, Date.now() - started - execution.contextTimeMs);
+      throw new ReviewBatchUnavailableError(error, execution);
+    }
     if (!(error instanceof ToolLoopCoverageError)) throw error;
     logEvent(cwd, "warn", "Review context coverage incomplete", {
       files: relevantPaths,

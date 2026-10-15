@@ -71,6 +71,7 @@ const workflowOutput = object({
   recovery: optional(RecoverySchema),
   workflow: optional(WorkflowSchema),
   workspaceFingerprint: optional(Type.String()),
+  cached: optional(Type.Boolean()),
   elapsedMs: optional(Type.Number()),
   execution: optional(
     object({

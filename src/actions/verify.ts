@@ -62,6 +62,7 @@ export async function verifyResult<T>(
     sessionManager: options.sessionManager,
     task: options.task,
     secondaryOverride: modelConfig,
+    disableModelFallbacks: options.task === "review",
     structuredOutput: true,
   });
 

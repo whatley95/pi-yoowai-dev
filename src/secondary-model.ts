@@ -75,6 +75,30 @@ function isMissingApiKeyError(err: unknown): boolean {
   return msg.includes("no api key") || msg.includes("api key not found") || msg.includes("missing api key");
 }
 
+/** A provider/authentication outage, distinct from local evidence, policy,
+ * cancellation, validation, and spend limits. Review pools may retry this
+ * failure with their other configured model. */
+export class SecondaryModelUnavailableError extends Error {
+  /** Completed, already recorded requests before a later round failed. */
+  usage?: UsageCost;
+}
+
+function isModelUnavailableError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const statusField = (err as Error & { status?: unknown }).status;
+  // Prefer the provider status over text in the response body. An invalid
+  // request mentioning "500 tokens" is still a 400, not a server outage.
+  const match = err.message.match(
+    /(?:API error|HTTP(?: error)?|status(?: code)?)[\s:=(]+(\d{3})\b|(?:^|request failed \(error\):\s*)\(?(\d{3})\b/i,
+  );
+  const status = typeof statusField === "number" ? statusField : match ? Number(match[1] ?? match[2]) : undefined;
+  if (status !== undefined) return [401, 402, 403, 404, 429].includes(status) || (status >= 500 && status < 600);
+  if (isMissingApiKeyError(err)) return true;
+  return /unauthorized|invalid api key|authentication (?:failed|error)|credential.*rejected|insufficient (?:credits|quota)|quota exceeded|overloaded|temporarily unavailable|rate limit|too many requests|time(?:out|d out)|econnreset|econnrefused|etimedout|enotfound|eai_again|network error|fetch failed|finish_reason: (?:error|network_error)|terminated/i.test(
+    err.message,
+  );
+}
+
 type ModelAttempt = {
   provider: string;
   model: string;
@@ -103,7 +127,7 @@ export async function callSecondaryModel(
       secondary: effectiveSecondary,
     },
   ];
-  for (const fallback of config?.secondaryFallback ?? []) {
+  for (const fallback of options.disableModelFallbacks ? [] : (config?.secondaryFallback ?? [])) {
     attempts.push({
       provider: (fallback.provider || provider).toLowerCase(),
       model: fallback.id || model,
@@ -113,6 +137,8 @@ export async function callSecondaryModel(
   }
 
   const lastErrors: string[] = [];
+  let allUnavailable = true;
+  let failedUsage: UsageCost | undefined;
   for (let i = 0; i < attempts.length; i++) {
     options.signal?.throwIfAborted();
     const attempt = attempts[i];
@@ -120,12 +146,16 @@ export async function callSecondaryModel(
       const promptWithLanguage = languageDirective ? `${systemPrompt}\n\n${languageDirective}` : systemPrompt;
       const result = await runSingleAttempt(attempt, promptWithLanguage, userPrompt, options, config, cwd);
       options.signal?.throwIfAborted();
-      return result;
+      return failedUsage ? { ...result, usage: mergeUsageCost(failedUsage, result.usage) } : result;
     } catch (err) {
       options.signal?.throwIfAborted();
       // A local evidence limit is a coverage result, not a provider outage.
       // Replaying the entire review through fallback models hides the cause.
       if (err instanceof ToolLoopCoverageError) throw err;
+      allUnavailable &&= err instanceof SecondaryModelUnavailableError;
+      if (err instanceof SecondaryModelUnavailableError && err.usage) {
+        failedUsage = failedUsage ? mergeUsageCost(failedUsage, err.usage) : err.usage;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       lastErrors.push(`${attempt.provider}:${attempt.model} -> ${msg}`);
       if (cwd) {
@@ -140,7 +170,13 @@ export async function callSecondaryModel(
     }
   }
 
-  throw new Error(`All secondary model attempts failed: ${lastErrors.join("; ")}`);
+  const message = `All secondary model attempts failed: ${lastErrors.join("; ")}`;
+  if (allUnavailable) {
+    const error = new SecondaryModelUnavailableError(message);
+    error.usage = failedUsage;
+    throw error;
+  }
+  throw new Error(message);
 }
 
 async function runSingleAttempt(
@@ -257,6 +293,7 @@ async function runSingleAttempt(
             relevantPaths: opts.relevantPaths,
           });
         } catch (piErr) {
+          opts.signal?.throwIfAborted();
           const sdkMsg = err instanceof Error ? err.message : String(err);
           const piMsg = piErr instanceof Error ? piErr.message : String(piErr);
           const combined = new Error(`SDK backend failed: ${sdkMsg}; pi fallback also failed: ${piMsg}`);
@@ -269,7 +306,9 @@ async function runSingleAttempt(
               backend: "sdk->pi",
             });
           }
-          throw combined;
+          throw isModelUnavailableError(err)
+            ? new SecondaryModelUnavailableError(combined.message, { cause: combined })
+            : combined;
         }
       }
 
@@ -282,10 +321,14 @@ async function runSingleAttempt(
           backend,
         });
       }
+      if (isModelUnavailableError(err)) {
+        throw new SecondaryModelUnavailableError(err instanceof Error ? err.message : String(err), { cause: err });
+      }
       throw err;
     }
   };
 
+  let attemptUsage: UsageCost | undefined;
   const doCall: typeof invokeBackend = async (sys, user, opts) => {
     opts.signal?.throwIfAborted();
     if (!cwd) return invokeBackend(sys, user, opts);
@@ -302,36 +345,46 @@ async function runSingleAttempt(
       opts.signal?.throwIfAborted();
       if (getSessionId(cwd) !== sessionId || !work.isGenerationCurrent())
         throw new Error("Wai work cancelled: session changed.");
-      return { ...result, usage: recordCost(cwd, { ...result.usage }) };
+      const usage = recordCost(cwd, { ...result.usage });
+      attemptUsage = attemptUsage ? mergeUsageCost(attemptUsage, usage) : usage;
+      return { ...result, usage };
     } finally {
       releaseReservation();
     }
   };
 
-  if (options.enableToolLoop && cwd) {
-    // NOTE: The tool-loop path is intentionally excluded from continuation handling.
-    // It manages its own multi-turn flow (tool requests/results) and decides when the
-    // final structured result is complete, so length-truncation continuation does not apply.
-    const result = await executeToolLoop(cwd, systemPrompt, userPrompt, options, doCall, options.maxToolIterations);
-    return { ...result, rounds: 0 };
+  const run = async () => {
+    if (options.enableToolLoop && cwd) {
+      // NOTE: The tool-loop path is intentionally excluded from continuation handling.
+      // It manages its own multi-turn flow (tool requests/results) and decides when the
+      // final structured result is complete, so length-truncation continuation does not apply.
+      const result = await executeToolLoop(cwd, systemPrompt, userPrompt, options, doCall, options.maxToolIterations);
+      return { ...result, rounds: 0 };
+    }
+
+    const maxContinuations =
+      typeof config?.maxContinuations === "number" && config.maxContinuations >= 0
+        ? Math.floor(config.maxContinuations)
+        : DEFAULT_MAX_CONTINUATIONS;
+
+    return callWithContinuation(
+      cwd,
+      provider,
+      model,
+      systemPrompt,
+      userPrompt,
+      options,
+      doCall,
+      maxContinuations,
+      config?.costBudgetUsd,
+    );
+  };
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof SecondaryModelUnavailableError) error.usage = attemptUsage;
+    throw error;
   }
-
-  const maxContinuations =
-    typeof config?.maxContinuations === "number" && config.maxContinuations >= 0
-      ? Math.floor(config.maxContinuations)
-      : DEFAULT_MAX_CONTINUATIONS;
-
-  return callWithContinuation(
-    cwd,
-    provider,
-    model,
-    systemPrompt,
-    userPrompt,
-    options,
-    doCall,
-    maxContinuations,
-    config?.costBudgetUsd,
-  );
 }
 
 const DEFAULT_MAX_CONTINUATIONS = 3;
